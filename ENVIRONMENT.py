@@ -3,7 +3,7 @@ from SCHEDULER import RoundRobinScheduler, EnhancedRoundRobinScheduler
 import matplotlib.pyplot as plt
 import numpy as np
 from typing import Optional
-
+#upd
 
 def test_round_robin_scheduler():
     # Создаем ресурсную сетку: 3 МГц (15 RB), 1 кадр (10 TTI)
