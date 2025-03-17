@@ -25,6 +25,7 @@ from typing import Dict, List, Optional, Union, Tuple
 # from MOVEMENT_MODEL import MovementModel, RandomWalkModel, LinearModel, CircularModel
 # from CHANNEL_MODEL import ChannelModel, FreeSpaceModel, OkumuraHataModel
 # from TRAFFIC_MODEL import TrafficModel, ConstantBitRate, VoipModel, WebBrowsingModel
+#upd
 
 class UserEquipment:
     """
