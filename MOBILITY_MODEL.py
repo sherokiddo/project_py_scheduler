@@ -28,7 +28,7 @@ class RandomWalkModel:
                is_first_move: bool, time_ms: int) -> Tuple[Tuple[float, float], float, float]:
         """
         Обновляет позицию, скорость и направление устройства на основе модели случайного блуждания.
-
+    
         Args:
             current_position: Текущие координаты устройства (x, y).
             current_velocity: Текущая скорость устройства (м/с).
@@ -37,7 +37,7 @@ class RandomWalkModel:
             current_direction: Текущее направление движения (радианы).
             is_first_move: Флаг, указывающий, является ли это первым движением устройства.
             time_ms: Время, прошедшее с последнего обновления (миллисекунды).
-
+    
         Returns:
             new_position: Новые координаты устройства (x, y).
             new_velocity: Новая скорость устройства (м/с).
@@ -56,24 +56,22 @@ class RandomWalkModel:
         
         new_x = current_position[0] + delta_x
         new_y = current_position[1] + delta_y
+        new_direction = current_direction
         
-        # Здесь сделан отскок при выходе за границу. Вроде работает, а вроде и нет.
-        # Нужно подумать и немного переделать
         if new_x < self.x_min or new_x > self.x_max:
-            self.direction = np.pi - self.direction
-            new_x = current_position[0] + delta_x * np.cos(self.direction)
-
-        if new_y < self.y_min or new_y > self.y_max:
-            self.direction = -self.direction
-            new_y = current_position[1] + delta_y * np.sin(self.direction)
-            
-        self.velocity = np.random.uniform(velocity_min, velocity_max)
-        self.direction = np.random.uniform(0, 2 * np.pi)
+            new_direction = np.pi - current_direction
+            new_x = current_position[0] + np.cos(new_direction) * current_velocity * time_s
         
+        if new_y < self.y_min or new_y > self.y_max:
+            new_direction = -current_direction
+            new_y = current_position[1] + np.sin(new_direction) * current_velocity * time_s
+            
+        if self.x_min <= new_x <= self.x_max and self.y_min <= new_y <= self.y_max:
+            new_direction = np.random.uniform(0, 2 * np.pi)
+        
+        new_velocity = np.random.uniform(velocity_min, velocity_max)
         new_position = (new_x, new_y)
-        new_velocity = self.velocity
-        new_direction = self.direction
-
+        
         return new_position, new_velocity, new_direction, is_first_move
     
 class RandomWaypointModel:
@@ -103,12 +101,12 @@ class RandomWaypointModel:
                                                                                    float, float, bool]:
         """
         Выбирает новую точку назначения, скорость и направление для устройства.
-
+    
         Args:
             current_position: Текущие координаты устройства (x, y)
             velocity_min: Минимальная скорость устройства (м/с)
             velocity_max: Максимальная скорость устройства (м/с)
-
+    
         Returns:
             new_destination: Новые координаты точки назначения (x, y)
             new_velocity: Новая скорость устройства (м/с)
@@ -134,10 +132,9 @@ class RandomWaypointModel:
                destination: Tuple[float, float], is_paused: bool, pause_timer: float, 
                time_ms: int) -> Tuple[Tuple[float, float], float, float, 
                                       Tuple[float, float], bool, float]:
-        
         """
         Обновляет позицию, скорость, направление и состояние устройства на основе модели Random Waypoint.
-
+    
         Args:
             current_position: Текущие координаты устройства (x, y)
             current_velocity: Текущая скорость устройства (м/с)
@@ -148,7 +145,7 @@ class RandomWaypointModel:
             is_paused: Флаг, указывающий, находится ли устройство в режиме паузы
             pause_timer: Текущее время, прошедшее в режиме паузы (мс)
             time_ms: Время, прошедшее с последнего обновления (миллисекунды)
-
+    
         Returns:
             new_position: Новые координаты устройства (x, y)
             new_velocity: Новая скорость устройства (м/с)
@@ -210,13 +207,13 @@ class RandomDirectionModel:
                                                                                  float, float, bool, bool]:
         """
         Выбирает новое случайное направление и вычисляет точку на границе области моделирования.
-
+    
         Args:
             current_position: Текущие координаты устройства (x, y).
             velocity_min: Минимальная скорость устройства (м/с).
             velocity_max: Максимальная скорость устройства (м/с).
             is_first_move: Флаг, указывающий, является ли это первым движением устройства.
-
+    
         Returns:
             new_destination: Координаты точки на границе (x, y).
             new_velocity: Новая скорость устройства (м/с).
@@ -282,7 +279,7 @@ class RandomDirectionModel:
                                                            Tuple[float, float], bool, float, bool]:
         """
         Обновляет позицию, скорость, направление и состояние устройства на основе модели Random Direction.
-
+    
         Args:
             current_position: Текущие координаты устройства (x, y).
             current_velocity: Текущая скорость устройства (м/с).
@@ -294,7 +291,7 @@ class RandomDirectionModel:
             pause_timer: Текущее время, прошедшее в режиме паузы (мс).
             is_first_move: Флаг, указывающий, является ли это первым движением устройства.
             time_ms: Время, прошедшее с последнего обновления (миллисекунды).
-
+    
         Returns:
             new_position: Новые координаты устройства (x, y).
             new_velocity: Новая скорость устройства (м/с).
@@ -341,7 +338,7 @@ def visualize_user_mobility(ue_collection: UECollection, x_min: float,
         y_min: Минимальная граница по оси Y
         y_max: Максимальная граница по оси Y
     """
-    plt.figure(figsize=(10, 10))
+    plt.figure(figsize=(10, 6))
     plt.title("Карта передвижения пользователей")
     plt.xlabel("X координата (м)")
     plt.ylabel("Y координата (м)")
@@ -361,27 +358,24 @@ def example_usage():
     """Пример использования модели передвижения пользователей"""
     ue_collection = UECollection()
     
-    ue1 = UserEquipment(UE_ID=1, x=0, y=0, velocity_min=1, velocity_max=5)
-    ue2 = UserEquipment(UE_ID=2, x=10, y=15, velocity_min=1, velocity_max=5)
-                                      
-    random_direction_model = RandomDirectionModel(x_min=-50, x_max=50, y_min=-50, 
-                                                  y_max=50, pause_time=50)                                 
+    ue1 = UserEquipment(UE_ID=1, x=0, y=0, velocity_min=5, velocity_max=20)
+                                          
+    random_direction_model = RandomDirectionModel(x_min=-30, x_max=30, y_min=-30, 
+                                                y_max=30, pause_time=50)                            
     
     ue1.SET_MOBILITY_MODEL(random_direction_model)
-    ue2.SET_MOBILITY_MODEL(random_direction_model)
     
     ue_collection.ADD_USER(ue1)
-    ue_collection.ADD_USER(ue2)
     
-    simulation_duration = 100000
+    simulation_duration = 200000
     update_interval = 500
     
     for t in range(simulation_duration):
         if t % update_interval == 0:
             ue_collection.UPDATE_ALL_USERS(time_ms=update_interval)
         
-    visualize_user_mobility(ue_collection=ue_collection, x_min=-100, x_max=100, 
-                            y_min=-100, y_max=100)  
+    visualize_user_mobility(ue_collection=ue_collection, x_min=-50, x_max=50, 
+                            y_min=-50, y_max=50)  
     
 if __name__ == "__main__":
     example_usage()
