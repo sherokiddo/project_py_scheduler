@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from typing import Tuple
-from UE_MODULE import UserEquipment, Buffer, UECollection
+from UE_MODULE import UserEquipment, UECollection
 
 class RandomWalkModel:
     """
@@ -179,67 +179,60 @@ class RandomWaypointModel:
             new_y = current_position[1] + current_velocity * np.sin(current_direction) * time_s
             new_position = (new_x, new_y)
             return new_position, current_velocity, current_direction, destination, is_paused, pause_timer
+
+def visualize_user_mobility(ue_collection: UECollection, x_min: float, 
+                            x_max: float, y_min: float, y_max: float):
+    """
+    Функция для построения карты передвижения пользователей.
+
+    Args:
+        ue_collection: Коллекция пользователей (объект UECollection)
+        x_min: Минимальная граница по оси X
+        x_max: Максимальная граница по оси X
+        y_min: Минимальная граница по оси Y
+        y_max: Максимальная граница по оси Y
+    """
+    plt.figure(figsize=(10, 10))
+    plt.title("Карта передвижения пользователей")
+    plt.xlabel("X координата (м)")
+    plt.ylabel("Y координата (м)")
+    plt.xlim(x_min, x_max)
+    plt.ylim(y_min, y_max)
     
-def test_random_walk():
-    random_walk_model = RandomWalkModel(x_min=-100, x_max=100, y_min=-100, y_max=100)
+    for ue in ue_collection.GET_ALL_USERS():
+        x_coords = ue.x_coordinates
+        y_coords = ue.y_coordinates
+        plt.plot(x_coords, y_coords, label=f"UE {ue.UE_ID}")
     
-    ue = UserEquipment(UE_ID=1, x=0.0, y=0.0, velocity_min=1.0, velocity_max=5.0)
-    ue.SET_MOBILITY_MODEL(random_walk_model)
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+    
+def example_usage():
+    """Пример использования модели передвижения пользователей"""
+    ue_collection = UECollection()
+    
+    ue1 = UserEquipment(UE_ID=1, x=0, y=0, velocity_min=1, velocity_max=5)
+    ue2 = UserEquipment(UE_ID=2, x=50, y=50, velocity_min=1, velocity_max=5)
+    
+    random_waypoint_model = RandomWaypointModel(x_min=-100, x_max=100, y_min=-100, 
+                                                y_max=100, pause_time=50)
+    
+    ue1.SET_MOBILITY_MODEL(random_waypoint_model)
+    ue2.SET_MOBILITY_MODEL(random_waypoint_model)
+    
+    ue_collection.ADD_USER(ue1)
+    ue_collection.ADD_USER(ue2)
     
     simulation_duration = 100000
     update_interval = 500
     
-    x_coords = [ue.position[0]]
-    y_coords = [ue.position[1]]
-    
     for t in range(simulation_duration):
-        if t % 500 == 0:
-            ue.UPD_POSITION(time_ms=update_interval, bs_position=(0, 0))
-            
-            x_coords.append(ue.position[0])
-            y_coords.append(ue.position[1])
-    
-    plt.figure(figsize=(8, 8))
-    plt.plot(x_coords, y_coords, linestyle='-', color='b', label='Траектория')
-    plt.xlim(-50, 50)
-    plt.ylim(-50, 50)
-    plt.title("Траектория движения пользователя")
-    plt.xlabel("Ось X (м)")
-    plt.ylabel("Ось Y (м)")
-    plt.grid(True)
-    plt.legend()
-    plt.show()
-    
-def test_random_waypoint():
-    random_waypoint_model = RandomWaypointModel(x_min=-100, x_max=100, y_min=-100, y_max=100, pause_time=50)
-    
-    ue = UserEquipment(UE_ID=1, x=0.0, y=0.0, velocity_min=1.0, velocity_max=5.0)
-    ue.SET_MOBILITY_MODEL(random_waypoint_model)
-    
-    simulation_duration = 1000000
-    update_interval = 500
-    
-    x_coords = [ue.position[0]]
-    y_coords = [ue.position[1]]
-    
-    for t in range(simulation_duration):
-        if t % 500 == 0:
-            ue.UPD_POSITION(time_ms=update_interval, bs_position=(0, 0))
-            
-            x_coords.append(ue.position[0])
-            y_coords.append(ue.position[1])
-            
-    plt.figure(figsize=(8, 8))
-    plt.plot(x_coords, y_coords, linestyle='-', color='b', label='Траектория')
-    plt.xlim(-100, 100)
-    plt.ylim(-100, 100)
-    plt.title("Траектория движения пользователя")
-    plt.xlabel("Ось X (м)")
-    plt.ylabel("Ось Y (м)")
-    plt.grid(True)
-    plt.legend()
-    plt.show()
+        if t % update_interval == 0:
+            ue_collection.UPDATE_ALL_USERS(time_ms=update_interval)
+        
+    visualize_user_mobility(ue_collection=ue_collection, x_min=-100, x_max=100, 
+                            y_min=-100, y_max=100)  
     
 if __name__ == "__main__":
-    #test_random_walk()
-    test_random_waypoint()
+    example_usage()

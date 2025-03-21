@@ -141,6 +141,10 @@ class UserEquipment:
             time_ms: Текущее время в миллисекундах
             bs_position: Координаты базовой станции (x, y) в метрах
         """
+        # Проблема разных параметров. Разные модели передвижения при вызове update принимают и 
+        # возвращают разные параметры. Нужно сделать так, чтобы при определённой модели вызывался
+        # метод update именно с нужными для модели параметрами
+        
         # Пример вызова функции update для модели Random Walk:
         #if self.mobility_model:
         #    self.position, self.velocity, self.direction, self.is_first_move = self.mobility_model.update(
