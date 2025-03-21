@@ -152,11 +152,18 @@ class UserEquipment:
         #    )
         
         # Пример вызова функции update для модели Random Waypoint:
+        #if self.mobility_model:
+        #    self.position, self.velocity, self.direction, self.destination, self.is_paused, self.pause_timer = self.mobility_model.update(
+        #        self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction,
+        #        self.destination, self.is_paused, self.pause_timer, time_ms
+        #    )
+            
+        # Пример вызова функции update для модели Random Direction:
         if self.mobility_model:
-            self.position, self.velocity, self.direction, self.destination, self.is_paused, self.pause_timer = self.mobility_model.update(
+            self.position, self.velocity, self.direction, self.destination, self.is_paused, self.pause_timer, self.is_first_move = self.mobility_model.update(
                 self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction,
-                self.destination, self.is_paused, self.pause_timer, time_ms
-            )
+                self.destination, self.is_paused, self.pause_timer, self.is_first_move, time_ms
+            )    
             
         self.x_coordinates.append(self.position[0])
         self.y_coordinates.append(self.position[1])
