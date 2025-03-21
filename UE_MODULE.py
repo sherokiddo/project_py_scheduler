@@ -7,22 +7,35 @@
 # в сети LTE, включая их перемещение, генерацию трафика, управление буфером
 # и оценку качества канала.
 #
-# Версия: 1.0.0
-# Дата последнего изменения: 2025-03-16
-# Автор: Брагин Кирилл
+# Версия: 1.0.1
+# Дата последнего изменения: 2025-03-20
+# Автор: Норицин Иван
 # Версия Python Kernel: 3.12.9
 #
 # Зависимости:
-# - MOVEMENT_MODEL.py (модели перемещения пользователей)
+# - MOBILITY_MODEL.py (модели перемещения пользователей)
 # - CHANNEL_MODEL.py (модели распространения сигнала)
 # - TRAFFIC_MODEL.py (модели генерации трафика)
+#
+# Изменения:
+#   v.1.0.1 - 2025-03-20
+#      - movement_model -> mobility_model
+#      - Добавлены новые параметры при инициализации UE: 
+#        velocity_min, velocity_max
+#      - Добавлены параметры для работы моделей передвижения:
+#        destination, is_paused, pause_timer, is_first_move
+#      - Добавлены параметры для хранения координат пользователя:
+#        x_coordinates, y_coordinates
+#      - Разные примеры вызова функции mobility_model.update в UPD_POSITION
+#      - Добавление новых координат UE в x_coordinates, y_coordinates
+#
 #------------------------------------------------------------------------------
 """
 
 import numpy as np
 from typing import Dict, List, Optional, Union, Tuple
 # Импорты из других модулей (будут созданы позже)
-# from MOVEMENT_MODEL import MovementModel, RandomWalkModel, LinearModel, CircularModel
+# from MOBILITY_MODEL import MovementModel, RandomWalkModel, LinearModel, CircularModel
 # from CHANNEL_MODEL import ChannelModel, FreeSpaceModel, OkumuraHataModel
 # from TRAFFIC_MODEL import TrafficModel, ConstantBitRate, VoipModel, WebBrowsingModel
 #upd
@@ -32,6 +45,7 @@ class UserEquipment:
     Класс, представляющий пользовательское устройство (UE) в сети LTE.
     """
     def __init__(self, UE_ID: int, x: float = 0.0, y: float = 0.0,
+                 velocity_min: float = 0.0, velocity_max: float = 0.0,
                  buffer_size: int = 1048576, ue_class: str = "pedestrian"):
         """
         Инициализация пользовательского устройства.
@@ -40,6 +54,8 @@ class UserEquipment:
             UE_ID: Уникальный идентификатор пользователя
             x: Начальная координата X (м)
             y: Начальная координата Y (м)
+            velocity_min: Минимальная скорость в м/с
+            velocity_max: Максимальная скорость в м/с
             buffer_size: Размер буфера в байтах
             ue_class: Класс пользователя (стационарный, пешеход, машина, поезд)
         """
@@ -49,8 +65,20 @@ class UserEquipment:
         
         # Параметры движения (будут настроены через модель движения)
         self.velocity = 0.0  # Скорость в м/с
+        self.velocity_min = velocity_min # Минимальная скорость в м/с
+        self.velocity_max = velocity_max # Максимальная скорость в м/с
         self.direction = 0.0  # Направление в радианах (ранее angle)
-        self.movement_model = None  # Установить позже
+        self.mobility_model = None  # Установить позже
+        
+        # Параметры, в расположении которых я не уверен буду обозначать - (?)
+        # Возможно они подлежат перемещению отсюда, а возможно нет
+        self.destination = (0, 0) # (?) Место назначения (для Random Waypoint)
+        self.is_paused = True # (?) Флаг, который обозначает стоит ли устройство на паузе
+        self.pause_timer = 0.0 # (?) Таймер паузы устройства
+        self.is_first_move = True # (?) Флаг первого движения устройства
+        self.x_coordinates = [self.position[0]] # Координаты X для карты передвижения
+        self.y_coordinates = [self.position[1]] # Координаты Y для карты передвижения
+        
         
         # Буфер данных
         self.buffer = Buffer(buffer_size)
@@ -77,7 +105,7 @@ class UserEquipment:
         self.total_transmitted_packets = 0
         self.total_dropped_packets = 0
     
-    def SET_MOVEMENT_MODEL(self, model):
+    def SET_MOBILITY_MODEL(self, model):
         """
         Установить модель движения пользователя. Метод можно будет вызвать
         глобально и по конкретному UE_ID
@@ -85,7 +113,7 @@ class UserEquipment:
         Args:
             model: Объект модели движения
         """
-        self.movement_model = model
+        self.mobility_model = model
     
     def SET_CH_MODEL(self, model):
         """
@@ -113,10 +141,21 @@ class UserEquipment:
             time_ms: Текущее время в миллисекундах
             bs_position: Координаты базовой станции (x, y) в метрах
         """
-        if self.movement_model:
-            self.position, self.velocity, self.direction = self.movement_model.update(
-                self.position, self.velocity, self.direction, time_ms
+        # Пример вызова функции update для модели Random Walk:
+        #if self.mobility_model:
+        #    self.position, self.velocity, self.direction, self.is_first_move = self.mobility_model.update(
+        #        self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction, self.is_first_move, time_ms
+        #    )
+        
+        # Пример вызова функции update для модели Random Waypoint:
+        if self.mobility_model:
+            self.position, self.velocity, self.direction, self.destination, self.is_paused, self.pause_timer = self.mobility_model.update(
+                self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction,
+                self.destination, self.is_paused, self.pause_timer, time_ms
             )
+            
+        self.x_coordinates.append(self.position[0])
+        self.y_coordinates.append(self.position[1])
         
         # Обновить расстояние до БС
         self.distance_to_bs = np.sqrt(
