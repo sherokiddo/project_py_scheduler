@@ -1,7 +1,5 @@
 import numpy as np
-import matplotlib.pyplot as plt
 from typing import Tuple
-from UE_MODULE import UserEquipment, UECollection
 
 class RandomWalkModel:
     """
@@ -326,56 +324,95 @@ class RandomDirectionModel:
             new_position = (new_x, new_y)
             return new_position, current_velocity, current_direction, destination, is_paused, pause_timer, is_first_move
 
-def visualize_user_mobility(ue_collection: UECollection, x_min: float, 
-                            x_max: float, y_min: float, y_max: float):
+class GaussMarkovModel:
     """
-    Функция для построения карты передвижения пользователей.
+    Модель передвижения Gauss-Markov для пользовательского устройства (UE).
+    Устройство движется в соответствии с моделью Гаусса-Маркова, где скорость и направление
+    изменяются на основе предыдущих значений и случайных отклонений. При приближении к границам
+    области моделирования направление корректируется для предотвращения выхода за пределы.
+    """
+    def __init__(self, x_min: float, x_max: float, y_min: float, y_max: float,
+                 alpha: float, boundary_threshold: float):
+        """
+        Инициализация модели Gauss-Markov.
 
-    Args:
-        ue_collection: Коллекция пользователей (объект UECollection)
-        x_min: Минимальная граница по оси X
-        x_max: Максимальная граница по оси X
-        y_min: Минимальная граница по оси Y
-        y_max: Максимальная граница по оси Y
-    """
-    plt.figure(figsize=(10, 6))
-    plt.title("Карта передвижения пользователей")
-    plt.xlabel("X координата (м)")
-    plt.ylabel("Y координата (м)")
-    plt.xlim(x_min, x_max)
-    plt.ylim(y_min, y_max)
-    
-    for ue in ue_collection.GET_ALL_USERS():
-        x_coords = ue.x_coordinates
-        y_coords = ue.y_coordinates
-        plt.plot(x_coords, y_coords, label=f"UE {ue.UE_ID}")
-    
-    plt.legend()
-    plt.grid(True)
-    plt.show()
-    
-def example_usage():
-    """Пример использования модели передвижения пользователей"""
-    ue_collection = UECollection()
-    
-    ue1 = UserEquipment(UE_ID=1, x=0, y=0, velocity_min=5, velocity_max=20)
-                                          
-    random_direction_model = RandomDirectionModel(x_min=-30, x_max=30, y_min=-30, 
-                                                y_max=30, pause_time=50)                            
-    
-    ue1.SET_MOBILITY_MODEL(random_direction_model)
-    
-    ue_collection.ADD_USER(ue1)
-    
-    simulation_duration = 200000
-    update_interval = 500
-    
-    for t in range(simulation_duration):
-        if t % update_interval == 0:
-            ue_collection.UPDATE_ALL_USERS(time_ms=update_interval)
+        Args:
+            x_min: Минимальная граница по оси X.
+            x_max: Максимальная граница по оси X.
+            y_min: Минимальная граница по оси Y.
+            y_max: Максимальная граница по оси Y.
+            alpha: Параметр памяти модели (влияет на зависимость текущих значений от предыдущих).
+            boundary_threshold: Расстояние до границы, при котором начинается корректировка направления.
+        """
+        self.x_min = x_min
+        self.x_max = x_max
+        self.y_min = y_min
+        self.y_max = y_max
+        self.alpha = alpha
+        self.boundary_threshold = boundary_threshold
         
-    visualize_user_mobility(ue_collection=ue_collection, x_min=-50, x_max=50, 
-                            y_min=-50, y_max=50)  
-    
-if __name__ == "__main__":
-    example_usage()
+    def update(self, current_position: Tuple[float, float], current_velocity: float,
+               current_direction: float, mean_velocity: float, mean_direction: float,
+               time_ms: int) -> Tuple[Tuple[float, float], float, float, float]:
+        """
+        Обновляет позицию, скорость и направление устройства на основе модели Gauss-Markov.
+
+        Args:
+            current_position: Текущие координаты устройства (x, y).
+            current_velocity: Текущая скорость устройства (м/с).
+            current_direction: Текущее направление движения (радианы).
+            mean_velocity: Средняя скорость устройства (м/с).
+            mean_direction: Среднее направление движения (радианы).
+            time_ms: Время, прошедшее с последнего обновления (миллисекунды).
+
+        Returns:
+            new_position: Новые координаты устройства (x, y).
+            new_velocity: Новая скорость устройства (м/с).
+            new_direction: Новое направление движения (радианы).
+            mean_direction: Обновленное среднее направление движения (радианы).
+        """
+        time_s = time_ms / 1000.0
+        
+        x, y = current_position
+        
+        # При пересечении установленной "защитной" границы меняем среднее направление
+        if x < self.x_min + self.boundary_threshold:
+            if y < self.y_min + self.boundary_threshold:
+                mean_direction = np.deg2rad(45)
+            elif y > self.y_max - self.boundary_threshold:
+                mean_direction = np.deg2rad(315)
+            else:
+                mean_direction = np.deg2rad(0)
+        elif x > self.x_max - self.boundary_threshold:
+            if y < self.y_min + self.boundary_threshold:
+                mean_direction = np.deg2rad(135)
+            elif y > self.y_max - self.boundary_threshold:
+                mean_direction = np.deg2rad(225)
+            else:
+                mean_direction = np.deg2rad(180)
+        elif y < self.y_min + self.boundary_threshold:
+            mean_direction = np.deg2rad(90)
+        elif y > self.y_max - self.boundary_threshold:
+            mean_direction = np.deg2rad(270)
+        
+        new_velocity = (self.alpha * current_velocity + (1 - self.alpha) * mean_velocity +
+                        np.sqrt(1 - self.alpha**2) * np.random.normal(0, 1))
+        
+        new_direction = (self.alpha * current_direction + (1 - self.alpha) * mean_direction +
+                        np.sqrt(1 - self.alpha**2) * np.random.normal(0, 1)) 
+        
+        new_x = current_position[0] + new_velocity * np.cos(new_direction) * time_s
+        new_y = current_position[1] + new_velocity * np.sin(new_direction) * time_s
+        
+        # Если всё же пользователь залез за область симуляции - делаем отскок
+        if new_x < self.x_min or new_x > self.x_max:
+            new_direction = np.pi - current_direction
+            new_x = current_position[0] + np.cos(new_direction) * current_velocity * time_s
+        
+        if new_y < self.y_min or new_y > self.y_max:
+            new_direction = -current_direction
+            new_y = current_position[1] + np.sin(new_direction) * current_velocity * time_s
+        
+        new_position = (new_x, new_y)
+        
+        return new_position, new_velocity, new_direction, mean_direction
