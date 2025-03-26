@@ -9,7 +9,7 @@
 #
 # Версия: 1.0.2
 # Дата последнего изменения: 2025-03-22
-# Автор: Норицин Иван
+# Автор: Брагин Кирилл, Норицин Иван
 # Версия Python Kernel: 3.12.9
 #
 # Зависимости:
@@ -39,11 +39,12 @@
 #------------------------------------------------------------------------------
 """
 
+
 import numpy as np
-import matplotlib.pyplot as plt
 from typing import Dict, List, Optional, Union, Tuple
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel
 # Импорты из других модулей (будут созданы позже)
+# from MOVEMENT_MODEL import MovementModel, RandomWalkModel, LinearModel, CircularModel
 # from CHANNEL_MODEL import ChannelModel, FreeSpaceModel, OkumuraHataModel
 # from TRAFFIC_MODEL import TrafficModel, ConstantBitRate, VoipModel, WebBrowsingModel
 #upd
@@ -53,8 +54,6 @@ class UserEquipment:
     Класс, представляющий пользовательское устройство (UE) в сети LTE.
     """
     def __init__(self, UE_ID: int, x: float = 0.0, y: float = 0.0,
-                 velocity_min: float = 0.0, velocity_max: float = 0.0,
-                 mean_velocity: float = 0.0, mean_direction: float = 0.0,
                  buffer_size: int = 1048576, ue_class: str = "pedestrian"):
         """
         Инициализация пользовательского устройства.
@@ -63,8 +62,6 @@ class UserEquipment:
             UE_ID: Уникальный идентификатор пользователя
             x: Начальная координата X (м)
             y: Начальная координата Y (м)
-            velocity_min: Минимальная скорость в м/с
-            velocity_max: Максимальная скорость в м/с
             buffer_size: Размер буфера в байтах
             ue_class: Класс пользователя (стационарный, пешеход, машина, поезд)
         """
@@ -74,23 +71,8 @@ class UserEquipment:
         
         # Параметры движения (будут настроены через модель движения)
         self.velocity = 0.0  # Скорость в м/с
-        self.velocity_min = velocity_min # Минимальная скорость в м/с
-        self.velocity_max = velocity_max # Максимальная скорость в м/с
         self.direction = 0.0  # Направление в радианах (ранее angle)
-        self.mobility_model = None  # Установить позже
-        
-        # Параметры, в расположении которых я не уверен буду обозначать - (?)
-        # Возможно они подлежат перемещению отсюда, а возможно нет
-        self.destination = (0, 0) # (?) Место назначения (для Random Waypoint)
-        self.is_paused = True # (?) Флаг, который обозначает стоит ли устройство на паузе
-        self.pause_timer = 0.0 # (?) Таймер паузы устройства
-        self.is_first_move = True # (?) Флаг первого движения устройства
-        self.mean_velocity = mean_velocity # Средняя скорость (Для Gauss-Markov)
-        self.mean_direction = mean_direction # Среднее направление (Для Gauss-Markov)
-        
-        self.x_coordinates = [self.position[0]] # Координаты X для карты передвижения
-        self.y_coordinates = [self.position[1]] # Координаты Y для карты передвижения
-        
+        self.movement_model = None  # Установить позже
         
         # Буфер данных
         self.buffer = Buffer(buffer_size)
@@ -117,7 +99,7 @@ class UserEquipment:
         self.total_transmitted_packets = 0
         self.total_dropped_packets = 0
     
-    def SET_MOBILITY_MODEL(self, model):
+    def SET_MOVEMENT_MODEL(self, model):
         """
         Установить модель движения пользователя. Метод можно будет вызвать
         глобально и по конкретному UE_ID
@@ -125,7 +107,7 @@ class UserEquipment:
         Args:
             model: Объект модели движения
         """
-        self.mobility_model = model
+        self.movement_model = model
     
     def SET_CH_MODEL(self, model):
         """
@@ -152,34 +134,11 @@ class UserEquipment:
         Args:
             time_ms: Текущее время в миллисекундах
             bs_position: Координаты базовой станции (x, y) в метрах
-        """       
-        # Вызов функции update для модели Random Walk:
-        if isinstance(self.mobility_model, RandomWalkModel):
-            self.position, self.velocity, self.direction, self.is_first_move = self.mobility_model.update(
-                self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction, self.is_first_move, time_ms
+        """
+        if self.movement_model:
+            self.position, self.velocity, self.direction = self.movement_model.update(
+                self.position, self.velocity, self.direction, time_ms
             )
-        
-        # Вызов функции update для модели Random Waypoint:
-        if isinstance(self.mobility_model, RandomWaypointModel):
-            self.position, self.velocity, self.direction, self.destination, self.is_paused, self.pause_timer = self.mobility_model.update(
-                self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction,
-                self.destination, self.is_paused, self.pause_timer, time_ms
-            )
-            
-        # Вызов функции update для модели Random Direction:
-        if isinstance(self.mobility_model, RandomDirectionModel):
-            self.position, self.velocity, self.direction, self.destination, self.is_paused, self.pause_timer, self.is_first_move = self.mobility_model.update(
-                self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction,
-                self.destination, self.is_paused, self.pause_timer, self.is_first_move, time_ms
-            )   
-            
-        if isinstance(self.mobility_model, GaussMarkovModel):
-            self.position, self.velocity, self.direction, self.mean_direction = self.mobility_model.update(
-                self.position, self.velocity, self.direction, self.mean_velocity, self.mean_direction, time_ms
-            )
-            
-        self.x_coordinates.append(self.position[0])
-        self.y_coordinates.append(self.position[1])
         
         # Обновить расстояние до БС
         self.distance_to_bs = np.sqrt(
@@ -535,56 +494,3 @@ def prepare_users_for_scheduler(ue_collection: UECollection, time_ms: int) -> Li
     
     return users_data
 
-def visualize_user_mobility(ue_collection: UECollection, x_min: float, 
-                            x_max: float, y_min: float, y_max: float):
-    """
-    Функция для построения карты передвижения пользователей.
-
-    Args:
-        ue_collection: Коллекция пользователей (объект UECollection)
-        x_min: Минимальная граница по оси X
-        x_max: Максимальная граница по оси X
-        y_min: Минимальная граница по оси Y
-        y_max: Максимальная граница по оси Y
-    """
-    plt.figure(figsize=(10, 6))
-    plt.title("Карта передвижения пользователей")
-    plt.xlabel("X координата (м)")
-    plt.ylabel("Y координата (м)")
-    plt.xlim(x_min, x_max)
-    plt.ylim(y_min, y_max)
-    
-    for ue in ue_collection.GET_ALL_USERS():
-        x_coords = ue.x_coordinates
-        y_coords = ue.y_coordinates
-        plt.plot(x_coords, y_coords, label=f"UE {ue.UE_ID}")
-    
-    plt.legend()
-    plt.grid(True)
-    plt.show()
-
-def example_usage_mobility_model():
-    """Пример использования модели передвижения пользователей"""
-    ue_collection = UECollection()
-    
-    ue1 = UserEquipment(UE_ID=1, x=0, y=0, mean_velocity=2, mean_direction=270)                                         
-
-    gauss_markov_model = GaussMarkovModel(x_min=-30, x_max=30, y_min=-30, 
-                                          y_max=30, alpha=0.75, boundary_threshold=5)                         
-    
-    ue1.SET_MOBILITY_MODEL(gauss_markov_model)
-    
-    ue_collection.ADD_USER(ue1)
-    
-    simulation_duration = 200000
-    update_interval = 500
-    
-    for t in range(simulation_duration):
-        if t % update_interval == 0:
-            ue_collection.UPDATE_ALL_USERS(time_ms=update_interval)
-        
-    visualize_user_mobility(ue_collection=ue_collection, x_min=-50, x_max=50, 
-                            y_min=-50, y_max=50)  
-    
-if __name__ == "__main__":
-    example_usage_mobility_model()

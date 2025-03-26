@@ -1,245 +1,177 @@
-# SCHEDULER.py
-from typing import List, Dict, Optional
-from LTE_GRID_ver_alpha import RES_GRID_LTE, SchedulerInterface
-#upd
+"""
+#------------------------------------------------------------------------------
+# Модуль: SCHEDULER - Планировщик ресурсов для сети LTE
+#------------------------------------------------------------------------------
+# Описание:
+# Предоставляет классы и методы для распределения ресурсных блоков между
+# пользовательскими устройствами (UE) в сети LTE. Реализует алгоритм
+# планирования Round Robin.
+
+# Версия: 1.0.5
+# Дата последнего изменения: 2025-03-23
+# Версия Python Kernel: 3.12.9
+# Автор: Брагин Кирилл
+
+# Зависимости:
+# - UE_MODULE.py (модели пользовательского оборудования)
+# - LTE_GRID_ver_alpha.py (модель ресурсной сетки LTE)
+
+# Изменения v1.0.5:
+# - пофикшен баг с выделением ресурсов пользователям в ситуациях, когда количество
+# юзеров намного больше чем количество RB в слоте. Выявлена ошибка в расчете последнего
+# обслуженного UE last_served_user метода schedule
+# - LTE_GRID_ver_alpha.py (модель ресурсной сетки LTE)
+#------------------------------------------------------------------------------
+"""
+
+from typing import Dict, List, Optional, Union, Tuple
+import numpy as np
+from UE_MODULE import UserEquipment, UECollection
+from LTE_GRID_ver_alpha import RES_GRID_LTE, SchedulerInterface, RES_BLCK
 
 class RoundRobinScheduler(SchedulerInterface):
     """
-    Планировщик, использующий алгоритм Round Robin для распределения 
-    ресурсных блоков LTE между пользователями.
+    Реализация алгоритма планирования Round Robin.
     """
+    
     def __init__(self, lte_grid: RES_GRID_LTE):
         """
         Инициализация планировщика Round Robin.
-        
-        Args:
-            lte_grid: Объект RES_GRID_LTE для работы с ресурсной сеткой
         """
         super().__init__(lte_grid)
-        self.active_users = []  # Список активных пользователей
-        self.current_user_idx = 0  # Индекс текущего пользователя для Round Robin
+        self.last_served_index = -1  # Индекс последнего обслуженного пользователя
     
-    def add_user(self, user_id: int):
+    def schedule(self, tti: int, users: List[Dict]) -> Dict:
         """
-        Добавить пользователя в список активных.
+        Распределить ресурсные блоки между пользователями по алгоритму Round Robin.
+        """
+        # Фильтруем только активных пользователей (с данными в буфере)
+        active_users = [user for user in users if user.get('buffer_size', 0) > 0]
         
-        Args:
-            user_id: Идентификатор пользователя
-        """
-        if user_id not in self.active_users:
-            self.active_users.append(user_id)
-    
-    def remove_user(self, user_id: int):
-        """
-        Удалить пользователя из списка активных.
+        if not active_users:
+            return {'allocation': {}, 'statistics': {'allocated_rbs': 0, 'active_users': 0}}
         
-        Args:
-            user_id: Идентификатор пользователя
-        """
-        if user_id in self.active_users:
-            self.active_users.remove(user_id)
-            # Корректировка индекса текущего пользователя при необходимости
-            if self.current_user_idx >= len(self.active_users) and len(self.active_users) > 0:
-                self.current_user_idx = 0
-    
-    def schedule(self, tti: int, users: List[Dict] = None):
-        """
-        Метод планирования ресурсов для заданного TTI.
-        Реализация алгоритма Round Robin.
+        # Сортируем пользователей по ID для предсказуемого порядка
+        active_users = sorted(active_users, key=lambda u: u['UE_ID'])
         
-        Args:
-            tti: Индекс TTI для планирования
-            users: Список пользователей с их параметрами (опционально)
-            
-        Returns:
-            Dict: Результаты планирования
-        """
-        if not self.active_users:
-            return {"allocated_count": 0, "message": "Нет активных пользователей"}
-        
-        # Получаем список свободных ресурсных блоков для данного TTI
+        # Получаем свободные ресурсные блоки для текущего TTI
         free_rbs = self.lte_grid.GET_FREE_RB_FOR_TTI(tti)
         
-        if not free_rbs:
-            return {"allocated_count": 0, "message": "Нет свободных ресурсных блоков"}
+        # Подготавливаем результат
+        allocation = {user['UE_ID']: [] for user in active_users}
         
-        # Сортируем ресурсные блоки по частотному индексу
-        free_rbs.sort(key=lambda rb: rb.freq_idx)
-        
-        # Общее количество назначенных ресурсных блоков
-        allocated_count = 0
-        
-        # Распределяем ресурсные блоки между пользователями
-        for rb in free_rbs:
-            # Определяем пользователя, которому назначим текущий RB
-            if not self.active_users:
-                break
+        # Распределяем RB между пользователями по кругу
+        if active_users and free_rbs:
+            num_users = len(active_users)
             
-            user_id = self.active_users[self.current_user_idx]
+            # Определяем начальный индекс для этого TTI
+            start_user_index = (self.last_served_index + 1) % num_users
             
-            # Назначаем ресурсный блок пользователю
-            if self.lte_grid.ALLOCATE_RB(tti, rb.freq_idx, user_id):
-                allocated_count += 1
+            # Отслеживаем последнего обслуженного пользователя
+            last_user_index = None
             
-            # Переходим к следующему пользователю (Round Robin)
-            self.current_user_idx = (self.current_user_idx + 1) % len(self.active_users)
-        
-        return {
-            "allocated_count": allocated_count,
-            "message": f"Успешно назначено {allocated_count} ресурсных блоков"
-        }
-    
-    def schedule_all_ttis(self):
-        """
-        Распределить ресурсные блоки для всех TTI.
-        
-        Returns:
-            int: Общее количество назначенных ресурсных блоков
-        """
-        total_allocated = 0
-        
-        for tti in range(self.lte_grid.total_tti):
-            result = self.schedule(tti)
-            total_allocated += result["allocated_count"]
-        
-        return total_allocated
-
-class EnhancedRoundRobinScheduler(RoundRobinScheduler):
-    """
-    Улучшенная версия планировщика Round Robin, которая распределяет 
-    ресурсные блоки группами смежных RB.
-    """
-    def __init__(self, lte_grid: RES_GRID_LTE, min_rb_per_user=1, max_rb_per_user=None):
-        """
-        Инициализация улучшенного планировщика Round Robin.
-        
-        Args:
-            lte_grid: Объект RES_GRID_LTE для работы с ресурсной сеткой
-            min_rb_per_user: Минимальное число RB для одного пользователя за TTI
-            max_rb_per_user: Максимальное число RB для одного пользователя за TTI
-                           (None = без ограничения)
-        """
-        super().__init__(lte_grid)
-        self.min_rb_per_user = min_rb_per_user
-        self.max_rb_per_user = max_rb_per_user if max_rb_per_user is not None else float('inf')
-    
-    def schedule(self, tti: int, users: List[Dict] = None):
-        """
-        Метод планирования ресурсов для заданного TTI.
-        Улучшенная версия Round Robin с группировкой ресурсов.
-        
-        Args:
-            tti: Индекс TTI для планирования
-            users: Список пользователей с их параметрами (опционально)
-            
-        Returns:
-            Dict: Результаты планирования
-        """
-        if not self.active_users:
-            return {"allocated_count": 0, "message": "Нет активных пользователей"}
-        
-        # Получаем список свободных ресурсных блоков для данного TTI
-        free_rbs = self.lte_grid.GET_FREE_RB_FOR_TTI(tti)
-        
-        if not free_rbs:
-            return {"allocated_count": 0, "message": "Нет свободных ресурсных блоков"}
-        
-        # Сортируем ресурсные блоки по частотному индексу
-        free_rbs.sort(key=lambda rb: rb.freq_idx)
-        
-        # Группируем смежные ресурсные блоки
-        rb_groups = self._group_adjacent_rbs(free_rbs)
-        
-        # Общее количество назначенных ресурсных блоков
-        allocated_count = 0
-        
-        # Распределяем группы ресурсных блоков между пользователями
-        while rb_groups and self.active_users:
-            user_id = self.active_users[self.current_user_idx]
-            
-            # Выбираем подходящую группу RB для пользователя
-            group_idx, group = self._select_rb_group(rb_groups, user_id)
-            
-            if group_idx is not None:
-                # Ограничиваем количество RB для пользователя, если нужно
-                if len(group) > self.max_rb_per_user:
-                    # Разделяем группу на две части
-                    to_allocate = group[:self.max_rb_per_user]
-                    rb_groups[group_idx] = group[self.max_rb_per_user:]
-                else:
-                    to_allocate = group
-                    # Удаляем группу из списка доступных
-                    rb_groups.pop(group_idx)
+            # Назначаем RB пользователям
+            for i, rb in enumerate(free_rbs):
+                # Определяем пользователя для текущего RB
+                user_index = (start_user_index + i) % num_users
+                user = active_users[user_index]
                 
-                # Назначаем выбранные RB пользователю
-                freq_indices = [rb.freq_idx for rb in to_allocate]
-                allocated = self.lte_grid.ALLOCATE_RB_GROUP(tti, freq_indices, user_id)
-                allocated_count += allocated
+                # Назначаем RB пользователю
+                if self.lte_grid.ALLOCATE_RB(tti, rb.freq_idx, user['UE_ID']):
+                    allocation[user['UE_ID']].append(rb.freq_idx)
+                    last_user_index = user_index
             
-            # Переходим к следующему пользователю (Round Robin)
-            self.current_user_idx = (self.current_user_idx + 1) % len(self.active_users)
+            # Обновляем индекс последнего обслуженного пользователя
+            if last_user_index is not None:
+                self.last_served_index = last_user_index
         
-        return {
-            "allocated_count": allocated_count,
-            "message": f"Успешно назначено {allocated_count} ресурсных блоков с группировкой"
+        # Собираем статистику
+        statistics = {
+            'allocated_rbs': sum(len(rbs) for rbs in allocation.values()),
+            'active_users': len(active_users),
+            'allocation_per_user': {ue_id: len(rbs) for ue_id, rbs in allocation.items()}
         }
+        
+        return {'allocation': allocation, 'statistics': statistics}
     
-    def _group_adjacent_rbs(self, rbs):
+    def schedule_with_ue_collection(self, tti: int, ue_collection: UECollection) -> Dict:
         """
-        Группировка смежных ресурсных блоков.
+        Распределить ресурсные блоки между пользователями по алгоритму Round Robin,
+        используя коллекцию UE.
+        """
+        # Получаем список всех пользователей и сортируем их по ID
+        all_users = ue_collection.GET_ALL_USERS()
+        all_users = sorted(all_users, key=lambda ue: ue.UE_ID)
         
-        Args:
-            rbs: Список ресурсных блоков
+        # Преобразуем список объектов UserEquipment в список словарей
+        users_data = []
+        for ue in all_users:
+            buffer_status = ue.GET_BUFFER_STATUS(tti)
+            channel_quality = ue.GET_CH_QUALITY()
             
-        Returns:
-            List[List[RES_BLCK]]: Список групп смежных ресурсных блоков
-        """
-        if not rbs:
-            return []
+            users_data.append({
+                'UE_ID': ue.UE_ID,
+                'buffer_size': buffer_status['size'],
+                'packet_count': buffer_status['packet_count'],
+                'cqi': channel_quality['cqi'],
+                'SINR': channel_quality['SINR']
+            })
         
-        groups = []
-        current_group = [rbs[0]]
+        # Вызываем основной метод планирования
+        result = self.schedule(tti, users_data)
         
-        for i in range(1, len(rbs)):
-            # Если текущий RB смежный с последним в группе
-            if rbs[i].freq_idx == current_group[-1].freq_idx + 1:
-                current_group.append(rbs[i])
-            else:
-                # Закрываем текущую группу и начинаем новую
-                groups.append(current_group)
-                current_group = [rbs[i]]
+        # Обновляем список назначенных RB для каждого пользователя
+        for ue_id, rb_indices in result['allocation'].items():
+            user = ue_collection.GET_USER(ue_id)
+            if user:
+                user.assigned_rbs = rb_indices
         
-        # Добавляем последнюю группу
-        if current_group:
-            groups.append(current_group)
-        
-        return groups
+        return result
+
+#возможно, следующую часть кода стоит выпилить из модуля, но пока работает не трогаю, перенесу потом
     
-    def _select_rb_group(self, rb_groups, user_id):
+    def update_throughput(self, ue_collection: UECollection, allocation: Dict,
+                         time_interval_ms: int):
         """
-        Выбор подходящей группы RB для пользователя.
-        
-        Args:
-            rb_groups: Список групп ресурсных блоков
-            user_id: Идентификатор пользователя
-            
-        Returns:
-            Tuple[int, List[RES_BLCK]]: Индекс выбранной группы и сама группа,
-                                       или (None, None), если подходящей группы нет
+        Обновить пропускную способность для каждого пользователя на основе назначенных RB.
         """
-        # Сначала ищем группу, размер которой точно соответствует min_rb_per_user
-        for i, group in enumerate(rb_groups):
-            if len(group) == self.min_rb_per_user:
-                return i, group
+        for ue_id, rb_indices in allocation.items():
+            user = ue_collection.GET_USER(ue_id)
+            if user and rb_indices:
+                # Рассчитываем количество бит, которое может быть передано
+                # через назначенные RB с учетом CQI пользователя
+                bits_transmitted = self._calculate_bits_transmitted(user.cqi, len(rb_indices))
+                
+                # Обновляем статистику пропускной способности пользователя
+                user.UPD_THROUGHPUT(bits_transmitted, time_interval_ms)
+    
+    def _calculate_bits_transmitted(self, cqi: int, num_rbs: int) -> int:
+        """
+        Рассчитать количество бит, которое может быть передано через заданное
+        количество RB с учетом CQI.
+        """
+        # Таблица соответствия CQI и скорости передачи данных (бит/RB)
+        # Значения взяты из спецификации 3GPP
+        cqi_to_bits = {
+            1: 78,     # QPSK, кодовая скорость 0.076
+            2: 120,    # QPSK, кодовая скорость 0.117
+            3: 193,    # QPSK, кодовая скорость 0.188
+            4: 308,    # QPSK, кодовая скорость 0.300
+            5: 449,    # QPSK, кодовая скорость 0.438
+            6: 602,    # QPSK, кодовая скорость 0.588
+            7: 378,    # 16QAM, кодовая скорость 0.369
+            8: 490,    # 16QAM, кодовая скорость 0.478
+            9: 616,    # 16QAM, кодовая скорость 0.601
+            10: 466,   # 64QAM, кодовая скорость 0.455
+            11: 567,   # 64QAM, кодовая скорость 0.554
+            12: 666,   # 64QAM, кодовая скорость 0.650
+            13: 772,   # 64QAM, кодовая скорость 0.754
+            14: 873,   # 64QAM, кодовая скорость 0.852
+            15: 948    # 64QAM, кодовая скорость 0.926
+        }
         
-        # Затем ищем группу, размер которой больше или равен min_rb_per_user
-        for i, group in enumerate(rb_groups):
-            if len(group) >= self.min_rb_per_user:
-                return i, group
+        # Получаем количество бит на один RB
+        bits_per_rb = cqi_to_bits.get(cqi, 78)  # По умолчанию используем значение для CQI=1
         
-        # Если нет подходящих групп, берем самую большую из доступных
-        if rb_groups:
-            largest_group_idx = max(range(len(rb_groups)), key=lambda i: len(rb_groups[i]))
-            return largest_group_idx, rb_groups[largest_group_idx]
-        
-        return None, None
+        # Рассчитываем общее количество бит
+        return bits_per_rb * num_rbs
