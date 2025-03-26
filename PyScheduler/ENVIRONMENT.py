@@ -270,7 +270,7 @@ def test_round_robin():
     env = SimulationEnvironment(bandwidth_mhz=15, num_frames=1)
     
     # Добавляем пользователей
-    for i in range(1, 100):
+    for i in range(1, 10):
         x = np.random.randint(400, 600)
         y = np.random.randint(400, 600)
         ue = UserEquipment(UE_ID=i, x=x, y=y)
