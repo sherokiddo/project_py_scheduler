@@ -54,6 +54,7 @@ class UserEquipment:
     def __init__(self, UE_ID: int, x: float = 0.0, y: float = 0.0,
                  velocity_min: float = 0.0, velocity_max: float = 0.0,
                  mean_velocity: float = 0.0, mean_direction: float = 0.0,
+                 is_indoor: bool = False,
                  buffer_size: int = 1048576, ue_class: str = "pedestrian"):
         """
         Инициализация пользовательского устройства.
@@ -101,7 +102,13 @@ class UserEquipment:
         self.channel_model = None  # Установить позже
         self.cqi = 1  # Текущий CQI (1-15)
         self.SINR = 0.0  # Текущее отношение сигнал/шум+помехи в dB
-        self.distance_to_bs = 0.0  # Расстояние до базовой станции в метрах
+        
+        self.is_indoor = is_indoor # Находится ли UE в помещении
+        self.UE_height = 1.0
+        self.dist_to_BS_2D = 0.0  # 2D-Расстояние до базовой станции в метрах
+        self.dist_to_BS_2D_in = 0.0 # 2D-Расстояние до БС в (часть помещения)
+        self.dist_to_BS_2D_out = 0.0 # 2D-Расстояние до БС в (часть улицы)
+        self.dist_to_BS_3D = 0.0 # 3D-Расстояние до базовой станции в метрах
         
         # Параметры для алгоритмов планирования
         self.current_throughput = 0.0  # Текущая пропускная способность (бит/с)
@@ -144,7 +151,9 @@ class UserEquipment:
         """
         self.traffic_model = model
     
-    def UPD_POSITION(self, time_ms: int, bs_position: Tuple[float, float] = (0, 0)):
+    def UPD_POSITION(self, time_ms: int, bs_position: Tuple[float, float] = (0, 0),
+                     indoor_boundaries: Tuple[float, float, float, float] = (0, 0, 0, 0),
+                     bs_height: float = 35):
         """
         Обновить позицию пользователя согласно модели движения.
         
@@ -180,11 +189,15 @@ class UserEquipment:
         self.x_coordinates.append(self.position[0])
         self.y_coordinates.append(self.position[1])
         
-        # Обновить расстояние до БС
-        self.distance_to_bs = np.sqrt(
-            (self.position[0] - bs_position[0])**2 + 
-            (self.position[1] - bs_position[1])**2
-        )
+        # Обновление 2D и 3D расстояний до базовой станции
+        if self.is_indoor:
+            self._calculate_distances_to_BS(bs_position, bs_height, indoor_boundaries)
+            
+        else:
+            self.dist_to_BS_2D = np.hypot(self.position[0] - bs_position[0],
+                                          self.position[1] - bs_position[1])
+            
+            self.dist_to_BS_3D = np.hypot(self.dist_to_BS_2D, bs_height - self.UE_height)
     
     def UPD_CH_QUALITY(self, time_ms: int, bs_position: Tuple[float, float] = (0, 0)):
         """
@@ -265,7 +278,7 @@ class UserEquipment:
         return {
             'cqi': self.cqi,
             'SINR': self.SINR,
-            'distance': self.distance_to_bs #возможно оно тут нафиг не надо я пока не вставлял расчеты SINR
+            'distance': self.dist_to_BS_2D #возможно оно тут нафиг не надо я пока не вставлял расчеты SINR
         }
     
     def SINR_TO_CQI(self, SINR: float) -> int:
@@ -288,6 +301,66 @@ class UserEquipment:
             # Линейная интерполяция
             step = (22.976 + 6.934) / 14
             return int(1 + (SINR + 6.934) / step)
+        
+    def _calculate_distances_to_BS(self, bs_position: Tuple[float, float], bs_height: float,
+                                   indoor_boundaries: Tuple[float, float, float, float]) -> None:
+        """
+        Вычисляет расстояние от пользователя до базовой станции с учетом нахождения внутри здания.
+        Разделяет расстояние на часть внутри здания (indoor) и снаружи (outdoor).
+    
+        Args:
+            bs_position: Координаты базовой станции (x, y) в метрах.
+            bs_height: Высота антенны базовой станции над землёй в метрах.
+            indoor_boundaries: Границы здания в формате (x_min, y_min, x_max, y_max).
+        """
+        x_min, y_min, x_max, y_max = indoor_boundaries
+        
+        ue_x, ue_y = self.position
+        bs_x, bs_y = bs_position
+        
+        if (x_min <= bs_x <= x_max) and (y_min <= bs_y <= y_max):
+            distance = np.hypot(bs_x - ue_x, bs_y - ue_y)
+            self.dist_to_BS_2D = distance
+            self.dist_to_BS_2D_in = distance
+            self.dist_to_BS_2D_out = 0.0
+            return
+        
+        dx = bs_x - ue_x
+        dy = bs_y - ue_y
+        
+        t_values = []
+        
+        if dx != 0:
+            t_x_min = (x_min - ue_x) / dx
+            t_x_max = (x_max - ue_x) / dx
+            t_values.extend([t_x_min, t_x_max])
+            
+        if dy != 0:
+            t_y_min = (y_min - ue_y) / dy
+            t_y_max = (y_max - ue_y) / dy
+            t_values.extend([t_y_min, t_y_max])
+            
+        t_valid = [t for t in t_values if t > 0]
+        
+        if not t_valid:
+            self.dist_to_BS_2D = np.hypot(dx, dy)
+            self.dist_to_BS_2D_in = self.dist_to_BS_2D
+            self.dist_to_BS_2D_out = 0.0
+            return
+        
+        t_exit = min(t_valid)
+    
+        exit_x = ue_x + dx * t_exit
+        exit_y = ue_y + dy * t_exit
+        
+        d_in = np.hypot(exit_x - ue_x, exit_y - ue_y)
+        d_total = np.hypot(dx, dy)
+        d_out = d_total - d_in
+
+        self.dist_to_BS_2D = d_total
+        self.dist_to_BS_2D_in = d_in
+        self.dist_to_BS_2D_out = d_out
+        self.dist_to_BS_3D = np.hypot(self.dist_to_BS_2D, bs_height - self.UE_height)
 
 class Buffer:
     """
@@ -473,7 +546,8 @@ class UECollection:
         """
         return list(self.users.values())
     
-    def UPDATE_ALL_USERS(self, time_ms: int):
+    def UPDATE_ALL_USERS(self, time_ms: int, 
+                         indoor_boundaries: Tuple[float, float, float, float] = (0, 0, 0, 0)):
         """
         Обновить состояние всех пользователей.
         
@@ -482,7 +556,7 @@ class UECollection:
         """
         for ue in self.users.values():
             # Обновление позиции
-            ue.UPD_POSITION(time_ms, self.bs_position)
+            ue.UPD_POSITION(time_ms, self.bs_position, indoor_boundaries)
             
             # Обновление качества канала
             ue.UPD_CH_QUALITY(time_ms, self.bs_position)
@@ -564,23 +638,29 @@ def visualize_user_mobility(ue_collection: UECollection, x_min: float,
 
 def example_usage_mobility_model():
     """Пример использования модели передвижения пользователей"""
-    ue_collection = UECollection()
+    ue_collection = UECollection(bs_position=(40, 40))
     
-    ue1 = UserEquipment(UE_ID=1, x=0, y=0, mean_velocity=2, mean_direction=270)                                         
+    ue1 = UserEquipment(UE_ID=1, x=0, y=0, mean_velocity=2, mean_direction=270, is_indoor=False) 
 
-    gauss_markov_model = GaussMarkovModel(x_min=-30, x_max=30, y_min=-30, 
-                                          y_max=30, alpha=0.75, boundary_threshold=5)                         
+    x_min_h = -10
+    y_min_h = -10
+    x_max_h = 10
+    y_max_h = 10                                  
+
+    gauss_markov_model = GaussMarkovModel(x_min=x_min_h, x_max=x_max_h, y_min=y_min_h, 
+                                          y_max=y_max_h, alpha=0.75, boundary_threshold=5)                         
     
     ue1.SET_MOBILITY_MODEL(gauss_markov_model)
     
     ue_collection.ADD_USER(ue1)
     
-    simulation_duration = 200000
+    simulation_duration = 1000
     update_interval = 500
     
     for t in range(simulation_duration):
         if t % update_interval == 0:
-            ue_collection.UPDATE_ALL_USERS(time_ms=update_interval)
+            ue_collection.UPDATE_ALL_USERS(time_ms=update_interval, 
+                                           indoor_boundaries=(x_min_h, y_min_h, x_max_h, y_max_h))
         
     visualize_user_mobility(ue_collection=ue_collection, x_min=-50, x_max=50, 
                             y_min=-50, y_max=50)  
