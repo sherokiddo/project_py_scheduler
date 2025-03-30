@@ -7,8 +7,8 @@
 # в сети LTE, включая их перемещение, генерацию трафика, управление буфером
 # и оценку качества канала.
 #
-# Версия: 1.0.2
-# Дата последнего изменения: 2025-03-22
+# Версия: 1.0.3
+# Дата последнего изменения: 2025-03-30
 # Автор: Брагин Кирилл, Норицин Иван
 # Версия Python Kernel: 3.12.9
 #
@@ -35,11 +35,22 @@
 #        тестирования моделей перемещения
 #      - Добавлены параметры для работы модели передвижения Gauss-Markov:
 #        mean_velocity, mean_direction   
+
+#   v1.0.3 - 2025-03-30
+#      - Параметр расстояния от UE до базовой станции разбит на 4 отдельных:
+#        dist_to_BS_2D, dist_to_BS_2D_in, dist_to_BS_2D_out, dist_to_BS_3D  
+#      - Добавлена функция расчёта дистанций от UE до базовой станции:
+#        _calculate_distances_to_BS    
+#      - Добавлен новый параметр, обозначающий indoor/outdoor состояние UE
+#      - Теперь параметры скоростей и направлений выбираются автоматически
+#        в зависимости от типа UE (ue_class) при помощи новой функции:
+#        _set_scenario_parameters
+#      - Из модуля удалены функции визуализации перемещения пользователей и 
+#        тестирования моделей перемещения
 #
 #------------------------------------------------------------------------------
 """
 import numpy as np
-import matplotlib.pyplot as plt
 from typing import Dict, List, Optional, Union, Tuple
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel
 # Импорты из других модулей (будут созданы позже)
@@ -52,9 +63,6 @@ class UserEquipment:
     Класс, представляющий пользовательское устройство (UE) в сети LTE.
     """
     def __init__(self, UE_ID: int, x: float = 0.0, y: float = 0.0,
-                 velocity_min: float = 0.0, velocity_max: float = 0.0,
-                 mean_velocity: float = 0.0, mean_direction: float = 0.0,
-                 is_indoor: bool = False,
                  buffer_size: int = 1048576, ue_class: str = "pedestrian"):
         """
         Инициализация пользовательского устройства.
@@ -63,8 +71,6 @@ class UserEquipment:
             UE_ID: Уникальный идентификатор пользователя
             x: Начальная координата X (м)
             y: Начальная координата Y (м)
-            velocity_min: Минимальная скорость в м/с
-            velocity_max: Максимальная скорость в м/с
             buffer_size: Размер буфера в байтах
             ue_class: Класс пользователя (стационарный, пешеход, машина, поезд)
         """
@@ -72,21 +78,23 @@ class UserEquipment:
         self.position = (x, y)  # Координаты (x, y) в метрах
         self.ue_class = ue_class
         
-        # Параметры движения (будут настроены через модель движения)
-        self.velocity = 0.0  # Скорость в м/с
-        self.velocity_min = velocity_min # Минимальная скорость в м/с
-        self.velocity_max = velocity_max # Максимальная скорость в м/с
-        self.direction = 0.0  # Направление в радианах (ранее angle)
-        self.mobility_model = None  # Установить позже
+        # Параметры движения (настраиваются автоматически, в зависимости от сценария движения)
+        self.velocity_min = 0.0 # Минимальная скорость в м/с
+        self.velocity_max = 0.0 # Максимальная скорость в м/с
+        self.mean_velocity = 0.0 # Средняя скорость (Для Gauss-Markov)
+        self.mean_direction = 0.0 # Среднее направление (Для Gauss-Markov)
+        self.is_indoor = False # Находится ли UE в помещении
+        self._set_scenario_parameters()
         
-        # Параметры, в расположении которых я не уверен буду обозначать - (?)
-        # Возможно они подлежат перемещению отсюда, а возможно нет
-        self.destination = (0, 0) # (?) Место назначения (для Random Waypoint)
-        self.is_paused = True # (?) Флаг, который обозначает стоит ли устройство на паузе
-        self.pause_timer = 0.0 # (?) Таймер паузы устройства
-        self.is_first_move = True # (?) Флаг первого движения устройства
-        self.mean_velocity = mean_velocity # Средняя скорость (Для Gauss-Markov)
-        self.mean_direction = mean_direction # Среднее направление (Для Gauss-Markov)
+        self.mobility_model = None  # Установить позже
+        self.velocity = 0.0  # Скорость в м/с
+        self.direction = 0.0  # Направление в радианах (ранее angle)
+        
+        self.destination = (0, 0) # Место назначения (для Random Waypoint)
+        self.is_paused = True # Флаг, который обозначает стоит ли устройство на паузе
+        self.pause_timer = 0.0 # Таймер паузы устройства
+        self.is_first_move = True # Флаг первого движения устройства
+
         
         self.x_coordinates = [self.position[0]] # Координаты X для карты передвижения
         self.y_coordinates = [self.position[1]] # Координаты Y для карты передвижения
@@ -103,7 +111,9 @@ class UserEquipment:
         self.cqi = 1  # Текущий CQI (1-15)
         self.SINR = 0.0  # Текущее отношение сигнал/шум+помехи в dB
         
-        self.is_indoor = is_indoor # Находится ли UE в помещении
+        self.SINR_values = [] # Временный параметр для демонстрации результатов
+        self.CQI_values = [] # Временный параметр для демонстрации результатов
+        
         self.UE_height = 1.0
         self.dist_to_BS_2D = 0.0  # 2D-Расстояние до базовой станции в метрах
         self.dist_to_BS_2D_in = 0.0 # 2D-Расстояние до БС в (часть помещения)
@@ -151,9 +161,8 @@ class UserEquipment:
         """
         self.traffic_model = model
     
-    def UPD_POSITION(self, time_ms: int, bs_position: Tuple[float, float] = (0, 0),
-                     indoor_boundaries: Tuple[float, float, float, float] = (0, 0, 0, 0),
-                     bs_height: float = 35):
+    def UPD_POSITION(self, time_ms: int, bs_position: Tuple[float, float], bs_height: float,
+                     indoor_boundaries: Tuple[float, float, float, float] = (0, 0, 0, 0)):
         """
         Обновить позицию пользователя согласно модели движения.
         
@@ -197,9 +206,11 @@ class UserEquipment:
             self.dist_to_BS_2D = np.hypot(self.position[0] - bs_position[0],
                                           self.position[1] - bs_position[1])
             
+            self.dist_to_BS_2D_out = self.dist_to_BS_2D
+            
             self.dist_to_BS_3D = np.hypot(self.dist_to_BS_2D, bs_height - self.UE_height)
     
-    def UPD_CH_QUALITY(self, time_ms: int, bs_position: Tuple[float, float] = (0, 0)):
+    def UPD_CH_QUALITY(self):
         """
         Обновить качество канала согласно модели распространения.
         
@@ -209,9 +220,12 @@ class UserEquipment:
         """
         if self.channel_model:
             self.SINR = self.channel_model.calculate_SINR(
-                self.position, bs_position, time_ms
+                self.dist_to_BS_2D, self.dist_to_BS_3D, self.UE_height
             )
             self.cqi = self.SINR_TO_CQI(self.SINR)
+            
+            self.SINR_values.append(self.SINR)
+            self.CQI_values.append(self.cqi)
     
     def GEN_TRFFC(self, time_ms: int):
         """
@@ -362,6 +376,39 @@ class UserEquipment:
         self.dist_to_BS_2D_out = d_out
         self.dist_to_BS_3D = np.hypot(self.dist_to_BS_2D, bs_height - self.UE_height)
 
+    def _set_scenario_parameters(self):
+        
+        if self.ue_class == "indoor":
+            self.velocity_min = 0.0
+            self.velocity_max = 1.0
+            self.mean_velocity = 0.5
+            self.mean_direction = np.random.randint(0, 360)
+            self.is_indoor = True
+        
+        elif self.ue_class == "pedestrian":
+            self.velocity_min = 0.5
+            self.velocity_max = 1.7
+            self.mean_velocity = 1.2
+            self.mean_direction = np.random.randint(0, 360)
+            self.is_indoor = False
+            
+        elif self.ue_class == "cyclist":
+            self.velocity_min = 2.0
+            self.velocity_max = 5.5
+            self.mean_velocity = 3.9
+            self.mean_direction = np.random.randint(0, 360)
+            self.is_indoor = False
+            
+        elif self.ue_class == "car":
+            self.velocity_min = 0.0
+            self.velocity_max = 16.7
+            self.mean_velocity = 11.1
+            self.mean_direction = np.random.randint(0, 360)
+            self.is_indoor = False
+            
+        else:
+            raise ValueError("Недопустимое значение типа передвижения устройства!")
+
 class Buffer:
     """
     Класс для моделирования буфера пользовательского устройства.
@@ -484,7 +531,7 @@ class UECollection:
     Класс для управления коллекцией пользовательских устройств.
     Задел, чтобы не создавать их вручную и можно было регулировать количество.
     """
-    def __init__(self, bs_position: Tuple[float, float] = (0, 0)):
+    def __init__(self):
         """
         Инициализация коллекции UE.
         
@@ -492,7 +539,6 @@ class UECollection:
             bs_position: Координаты базовой станции (x, y) в метрах
         """
         self.users = {}  # Словарь {UE_ID: UserEquipment}
-        self.bs_position = bs_position
     
     def ADD_USER(self, ue: UserEquipment) -> bool:
         """
@@ -546,7 +592,7 @@ class UECollection:
         """
         return list(self.users.values())
     
-    def UPDATE_ALL_USERS(self, time_ms: int, 
+    def UPDATE_ALL_USERS(self, time_ms: int, bs_position: Tuple[float, float], bs_height: float,
                          indoor_boundaries: Tuple[float, float, float, float] = (0, 0, 0, 0)):
         """
         Обновить состояние всех пользователей.
@@ -556,10 +602,10 @@ class UECollection:
         """
         for ue in self.users.values():
             # Обновление позиции
-            ue.UPD_POSITION(time_ms, self.bs_position, indoor_boundaries)
+            ue.UPD_POSITION(time_ms, bs_position, bs_height, indoor_boundaries)
             
             # Обновление качества канала
-            ue.UPD_CH_QUALITY(time_ms, self.bs_position)
+            ue.UPD_CH_QUALITY()
             
             # Генерация нового трафика
             ue.GEN_TRFFC(time_ms)
@@ -607,63 +653,3 @@ def prepare_users_for_scheduler(ue_collection: UECollection, time_ms: int) -> Li
         })
     
     return users_data
-
-def visualize_user_mobility(ue_collection: UECollection, x_min: float, 
-                            x_max: float, y_min: float, y_max: float):
-    """
-    Функция для построения карты передвижения пользователей.
-
-    Args:
-        ue_collection: Коллекция пользователей (объект UECollection)
-        x_min: Минимальная граница по оси X
-        x_max: Максимальная граница по оси X
-        y_min: Минимальная граница по оси Y
-        y_max: Максимальная граница по оси Y
-    """
-    plt.figure(figsize=(10, 6))
-    plt.title("Карта передвижения пользователей")
-    plt.xlabel("X координата (м)")
-    plt.ylabel("Y координата (м)")
-    plt.xlim(x_min, x_max)
-    plt.ylim(y_min, y_max)
-    
-    for ue in ue_collection.GET_ALL_USERS():
-        x_coords = ue.x_coordinates
-        y_coords = ue.y_coordinates
-        plt.plot(x_coords, y_coords, label=f"UE {ue.UE_ID}")
-    
-    plt.legend()
-    plt.grid(True)
-    plt.show()
-
-def example_usage_mobility_model():
-    """Пример использования модели передвижения пользователей"""
-    ue_collection = UECollection(bs_position=(40, 40))
-    
-    ue1 = UserEquipment(UE_ID=1, x=0, y=0, mean_velocity=2, mean_direction=270, is_indoor=False) 
-
-    x_min_h = -10
-    y_min_h = -10
-    x_max_h = 10
-    y_max_h = 10                                  
-
-    gauss_markov_model = GaussMarkovModel(x_min=x_min_h, x_max=x_max_h, y_min=y_min_h, 
-                                          y_max=y_max_h, alpha=0.75, boundary_threshold=5)                         
-    
-    ue1.SET_MOBILITY_MODEL(gauss_markov_model)
-    
-    ue_collection.ADD_USER(ue1)
-    
-    simulation_duration = 1000
-    update_interval = 500
-    
-    for t in range(simulation_duration):
-        if t % update_interval == 0:
-            ue_collection.UPDATE_ALL_USERS(time_ms=update_interval, 
-                                           indoor_boundaries=(x_min_h, y_min_h, x_max_h, y_max_h))
-        
-    visualize_user_mobility(ue_collection=ue_collection, x_min=-50, x_max=50, 
-                            y_min=-50, y_max=50)  
-    
-if __name__ == "__main__":
-    example_usage_mobility_model()
