@@ -85,8 +85,7 @@ def example_usage_mobility_model():
     for t in range(simulation_duration):
         if t % update_interval == 0:
             ue_collection.UPDATE_ALL_USERS(time_ms=update_interval, bs_position=bs.position, 
-                                           bs_height=bs.height, 
-                                           indoor_boundaries=(x_min_h, y_min_h, x_max_h, y_max_h))
+                                           bs_height=bs.height)
         
     visualize_user_mobility(ue_collection=ue_collection, x_min=-1000, x_max=1000, 
                             y_min=-1000, y_max=1000)

@@ -53,8 +53,8 @@
 import numpy as np
 from typing import Dict, List, Optional, Union, Tuple
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel
+from CHANNEL_MODEL import RMaModel
 # Импорты из других модулей (будут созданы позже)
-# from CHANNEL_MODEL import ChannelModel, FreeSpaceModel, OkumuraHataModel
 # from TRAFFIC_MODEL import TrafficModel, ConstantBitRate, VoipModel, WebBrowsingModel
 #upd
 
@@ -114,7 +114,7 @@ class UserEquipment:
         self.SINR_values = [] # Временный параметр для демонстрации результатов
         self.CQI_values = [] # Временный параметр для демонстрации результатов
         
-        self.UE_height = 1.0
+        self.UE_height = 0.0
         self.dist_to_BS_2D = 0.0  # 2D-Расстояние до базовой станции в метрах
         self.dist_to_BS_2D_in = 0.0 # 2D-Расстояние до БС в (часть помещения)
         self.dist_to_BS_2D_out = 0.0 # 2D-Расстояние до БС в (часть улицы)
@@ -218,14 +218,21 @@ class UserEquipment:
             time_ms: Текущее время в миллисекундах
             bs_position: Координаты базовой станции (x, y) в метрах
         """
-        if self.channel_model:
+        if isinstance(self.channel_model, RMaModel):
+            if self.UE_height == 0.0:
+                if self.is_indoor == True:
+                    self.UE_height = np.random.uniform(1, 10)
+                else:
+                    self.UE_height = 1.0
+            
             self.SINR = self.channel_model.calculate_SINR(
                 self.dist_to_BS_2D, self.dist_to_BS_3D, self.UE_height
             )
-            self.cqi = self.SINR_TO_CQI(self.SINR)
-            
-            self.SINR_values.append(self.SINR)
-            self.CQI_values.append(self.cqi)
+        
+        self.cqi = self.SINR_TO_CQI(self.SINR)
+        
+        self.SINR_values.append(self.SINR)
+        self.CQI_values.append(self.cqi)
     
     def GEN_TRFFC(self, time_ms: int):
         """
