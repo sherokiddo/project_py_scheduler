@@ -2,11 +2,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 from UE_MODULE import UserEquipment, UECollection
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel
-from CHANNEL_MODEL import RMaModel
+from CHANNEL_MODEL import RMaModel, UMaModel
 from BS_MODULE import BaseStation
 
-def visualize_user_mobility(ue_collection: UECollection, x_min: float, 
-                            x_max: float, y_min: float, y_max: float):
+def visualize_user_mobility(ue_collection: UECollection, bs: BaseStation,
+                            x_min: float, x_max: float, y_min: float, y_max: float):
     """
     Функция для построения карты передвижения пользователей.
 
@@ -17,12 +17,15 @@ def visualize_user_mobility(ue_collection: UECollection, x_min: float,
         y_min: Минимальная граница по оси Y
         y_max: Максимальная граница по оси Y
     """
+    x_bs, y_bs = bs.position
+    
     plt.figure(figsize=(10, 6))
     plt.title("Карта передвижения пользователей")
     plt.xlabel("X координата (м)")
     plt.ylabel("Y координата (м)")
     plt.xlim(x_min, x_max)
     plt.ylim(y_min, y_max)
+    plt.plot(x_bs, y_bs, marker = 'o', label='Base Station')
     
     for ue in ue_collection.GET_ALL_USERS():
         x_coords = ue.x_coordinates
@@ -63,19 +66,19 @@ def example_usage_mobility_model():
     
     bs = BaseStation(x=3000, y=3000)
     
-    ue1 = UserEquipment(UE_ID=1, x=0, y=0, ue_class="car") 
+    ue1 = UserEquipment(UE_ID=1, x=1500, y=1500, ue_class="car") 
 
-    x_min_h = -1000
-    y_min_h = -1000
-    x_max_h = 1000
-    y_max_h = 1000                      
+    x_min_h = -5000
+    y_min_h = -5000
+    x_max_h = 5000
+    y_max_h = 5000                      
 
     gauss_markov_model = GaussMarkovModel(x_min=x_min_h, x_max=x_max_h, y_min=y_min_h, y_max=y_max_h)  
-
-    rma_channel_model = RMaModel(bs)                       
+  
+    uma_channel_model = UMaModel(bs)                 
     
     ue1.SET_MOBILITY_MODEL(gauss_markov_model)
-    ue1.SET_CH_MODEL(rma_channel_model)
+    ue1.SET_CH_MODEL(uma_channel_model)
     
     ue_collection.ADD_USER(ue1)
     
@@ -87,8 +90,8 @@ def example_usage_mobility_model():
             ue_collection.UPDATE_ALL_USERS(time_ms=update_interval, bs_position=bs.position, 
                                            bs_height=bs.height)
         
-    visualize_user_mobility(ue_collection=ue_collection, x_min=-1000, x_max=1000, 
-                            y_min=-1000, y_max=1000)
+    visualize_user_mobility(ue_collection=ue_collection, bs=bs, 
+                            x_min=-5000, x_max=5000, y_min=-5000, y_max=5000)
     
     visualize_sinr_cqi_user(ue_collection, simulation_duration, update_interval)
     

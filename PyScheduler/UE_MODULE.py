@@ -53,7 +53,7 @@
 import numpy as np
 from typing import Dict, List, Optional, Union, Tuple
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel
-from CHANNEL_MODEL import RMaModel
+from CHANNEL_MODEL import RMaModel, UMaModel
 # Импорты из других модулей (будут созданы позже)
 # from TRAFFIC_MODEL import TrafficModel, ConstantBitRate, VoipModel, WebBrowsingModel
 #upd
@@ -225,6 +225,19 @@ class UserEquipment:
                 else:
                     self.UE_height = 1.0
             
+            self.SINR = self.channel_model.calculate_SINR(
+                self.dist_to_BS_2D, self.dist_to_BS_3D, self.UE_height
+            )
+            
+        if isinstance(self.channel_model, UMaModel):
+            if self.UE_height == 0.0:
+                if self.is_indoor == True:
+                    N_fl = np.random.uniform(4, 8)
+                    n_fl = np.random.uniform(1, N_fl)
+                    self.UE_height = 3 * (n_fl - 1) + 1.5
+                else:
+                    self.UE_height = 1.5
+                    
             self.SINR = self.channel_model.calculate_SINR(
                 self.dist_to_BS_2D, self.dist_to_BS_3D, self.UE_height
             )
