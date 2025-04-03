@@ -190,7 +190,7 @@ class UMaModel:
     Реализует расчеты вероятности прямой видимости (LOS), затухания радиосигнала и
     отношения сигнал/шум (SINR) согласно модели радоканала UMa по спецификации 3GPP TR 38.901.
     """
-    def __init__(self, bs: BaseStation):
+    def __init__(self, bs: BaseStation, o2i_model: str = "low"):
         """Инициализация модели UMa.
         
         Args:
@@ -203,6 +203,8 @@ class UMaModel:
         
         self.sigma_SF_LOS = 4.0
         self.sigma_SF_NLOS = 6.0
+        
+        self.o2i_model = o2i_model
         
     def calculate_breakpoint_distance(self, UE_height: float, d_2D: float):
         """
@@ -271,7 +273,8 @@ class UMaModel:
         
         return los_probability
     
-    def calculate_path_loss(self, d_2D: float, d_3D: float, UE_height: float):
+    def calculate_path_loss(self, d_2D: float, d_2D_in: float, d_3D: float, 
+                            UE_height: float, ue_class: str):
         """
         Расчет затухания сигнала с учетом LOS/NLOS условий.
 
@@ -290,6 +293,10 @@ class UMaModel:
             PL = self._calculate_los_path_loss(d_2D, d_3D, UE_height)
         else:
             PL = self._calculate_nlos_path_loss(d_2D, d_3D, UE_height)
+            
+        if ue_class == "indoor":
+            o2i_penetration_loss = o2i_building_penetration_loss(self.o2i_model, d_2D_in, self.bs.frequency_GHz)
+            PL = PL + o2i_penetration_loss
             
         return PL
     
@@ -351,7 +358,8 @@ class UMaModel:
         else:
             return 10000.0
         
-    def calculate_SINR(self, d_2D: float, d_3D: float, UE_height: float):
+    def calculate_SINR(self, d_2D: float, d_2D_in: float, d_3D: float, 
+                            UE_height: float, ue_class: str):
         """
         Расчет отношения сигнал-интерференция-шум (SINR).
 
@@ -363,15 +371,36 @@ class UMaModel:
         Returns:
             Значение SINR в дБ
         """
-        path_loss = self.calculate_path_loss(d_2D, d_3D, UE_height)
+        path_loss = self.calculate_path_loss(d_2D, d_2D_in, d_3D, UE_height, ue_class)
         cable_loss = 2
         interference_margin = 2
         
-        P_signal = self.bs.tx_power + self.bs.antenna_gain - cable_loss - path_loss - interference_margin
-            
+        P_signal = self.bs.tx_power + self.bs.antenna_gain - cable_loss - path_loss - interference_margin  
+        
         P_interference = -95
-        P_noise = -174 * 10 * np.log10(self.bs.frequency_Hz)
+        P_noise = -174 + 10 * np.log10(self.bs.bandwidth * 1e6)
         
         SINR = P_signal - 10 * np.log10(10 ** (P_interference / 10) + 10 ** (P_noise / 10))
         
         return SINR
+    
+def o2i_building_penetration_loss(model_type: str, d_2D_in: float, fc_GHz: float):
+    
+    L_concrete = 5 + 4 * fc_GHz
+    
+    if model_type == "low":
+        L_glass = 2 + 0.2 * fc_GHz
+        PL_tw = 5 - 10 * np.log10(0.3 * 10**(-L_glass / 10) + 0.7 * 10**(-L_concrete / 10))
+        sigma_p = 4.4
+        
+    elif model_type == "high":
+        L_IRR_glass = 23 + 0.3 * fc_GHz
+        PL_tw = 5 - 10 * np.log10(0.7 * 10**(-L_IRR_glass / 10) + 0.3 * 10**(-L_concrete/10))
+        sigma_p = 6.5
+        
+    PL_in = 0.5 * d_2D_in
+    
+    random_loss = np.random.normal(0, sigma_p**2)
+    
+    return PL_tw + PL_in
+    

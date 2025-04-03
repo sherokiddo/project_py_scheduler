@@ -209,6 +209,9 @@ class UserEquipment:
             self.dist_to_BS_2D_out = self.dist_to_BS_2D
             
             self.dist_to_BS_3D = np.hypot(self.dist_to_BS_2D, bs_height - self.UE_height)
+            
+        print(self.dist_to_BS_2D)
+            
     
     def UPD_CH_QUALITY(self):
         """
@@ -226,7 +229,7 @@ class UserEquipment:
                     self.UE_height = 1.0
             
             self.SINR = self.channel_model.calculate_SINR(
-                self.dist_to_BS_2D, self.dist_to_BS_3D, self.UE_height
+                self.dist_to_BS_2D, self.dist_to_BS_2D_in, self.dist_to_BS_3D, self.UE_height, self.ue_class
             )
             
         if isinstance(self.channel_model, UMaModel):
@@ -239,11 +242,11 @@ class UserEquipment:
                     self.UE_height = 1.5
                     
             self.SINR = self.channel_model.calculate_SINR(
-                self.dist_to_BS_2D, self.dist_to_BS_3D, self.UE_height
+                self.dist_to_BS_2D, self.dist_to_BS_2D_in, self.dist_to_BS_3D, self.UE_height, self.ue_class
             )
         
         self.cqi = self.SINR_TO_CQI(self.SINR)
-        
+                
         self.SINR_values.append(self.SINR)
         self.CQI_values.append(self.cqi)
     
@@ -344,7 +347,7 @@ class UserEquipment:
     
         Args:
             bs_position: Координаты базовой станции (x, y) в метрах.
-            bs_height: Высота антенны базовой станции над землёй в метрах.
+            bs_height: Высота антенны базовой станции над землёй в метрах.
             indoor_boundaries: Границы здания в формате (x_min, y_min, x_max, y_max).
         """
         x_min, y_min, x_max, y_max = indoor_boundaries

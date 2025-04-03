@@ -59,6 +59,7 @@ def visualize_sinr_cqi_user(ue_collection: UECollection, simulation_duration: fl
         plt.step(time, cqi_values)
         plt.grid(True)
         plt.show()
+        
 
 def example_usage_mobility_model():
     """Пример использования модели передвижения пользователей"""
@@ -66,18 +67,19 @@ def example_usage_mobility_model():
     
     bs = BaseStation(x=3000, y=3000)
     
-    ue1 = UserEquipment(UE_ID=1, x=1500, y=1500, ue_class="car") 
+    ue1 = UserEquipment(UE_ID=1, x=2200, y=2200, ue_class="indoor") 
 
-    x_min_h = -5000
-    y_min_h = -5000
-    x_max_h = 5000
-    y_max_h = 5000                      
+    x_min_h = 2195
+    y_min_h = 2195
+    x_max_h = 2205
+    y_max_h = 2205                      
 
-    gauss_markov_model = GaussMarkovModel(x_min=x_min_h, x_max=x_max_h, y_min=y_min_h, y_max=y_max_h)  
+    #gauss_markov_model = GaussMarkovModel(x_min=x_min_h, x_max=x_max_h, y_min=y_min_h, y_max=y_max_h)  
+    random_waypoint_model = RandomWaypointModel(x_min=x_min_h, x_max=x_max_h, y_min=y_min_h, y_max=y_max_h, pause_time=500)
   
     uma_channel_model = UMaModel(bs)                 
     
-    ue1.SET_MOBILITY_MODEL(gauss_markov_model)
+    ue1.SET_MOBILITY_MODEL(random_waypoint_model)
     ue1.SET_CH_MODEL(uma_channel_model)
     
     ue_collection.ADD_USER(ue1)
@@ -88,7 +90,7 @@ def example_usage_mobility_model():
     for t in range(simulation_duration):
         if t % update_interval == 0:
             ue_collection.UPDATE_ALL_USERS(time_ms=update_interval, bs_position=bs.position, 
-                                           bs_height=bs.height)
+                                           bs_height=bs.height, indoor_boundaries=(x_min_h, y_min_h, x_min_h, x_max_h))
         
     visualize_user_mobility(ue_collection=ue_collection, bs=bs, 
                             x_min=-5000, x_max=5000, y_min=-5000, y_max=5000)
