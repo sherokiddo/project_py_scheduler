@@ -59,7 +59,7 @@ def visualize_sinr_cqi_user(ue_collection: UECollection, simulation_duration: fl
         plt.step(time, cqi_values)
         plt.grid(True)
         plt.show()
-        
+
 
 def example_usage_mobility_model():
     """Пример использования модели передвижения пользователей"""
@@ -74,10 +74,17 @@ def example_usage_mobility_model():
     x_max_h = 2205
     y_max_h = 2205                      
 
+# =============================================================================
+#     x_min_h = -5000
+#     y_min_h = -5000
+#     x_max_h = 5000
+#     y_max_h = 5000    
+# =============================================================================
+
     #gauss_markov_model = GaussMarkovModel(x_min=x_min_h, x_max=x_max_h, y_min=y_min_h, y_max=y_max_h)  
     random_waypoint_model = RandomWaypointModel(x_min=x_min_h, x_max=x_max_h, y_min=y_min_h, y_max=y_max_h, pause_time=500)
   
-    uma_channel_model = UMaModel(bs)                 
+    uma_channel_model = UMaModel(bs)                
     
     ue1.SET_MOBILITY_MODEL(random_waypoint_model)
     ue1.SET_CH_MODEL(uma_channel_model)

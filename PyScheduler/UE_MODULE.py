@@ -210,8 +210,6 @@ class UserEquipment:
             
             self.dist_to_BS_3D = np.hypot(self.dist_to_BS_2D, bs_height - self.UE_height)
             
-        print(self.dist_to_BS_2D)
-            
     
     def UPD_CH_QUALITY(self):
         """

@@ -71,7 +71,8 @@ class RMaModel:
         los_probability = np.exp(-(d_2D - 10) / 1000)
         return los_probability
          
-    def calculate_path_loss(self, d_2D: float, d_3D: float, UE_height: float):
+    def calculate_path_loss(self, d_2D: float, d_2D_in: float, d_3D: float, 
+                            UE_height: float, ue_class: str):
         """
         Расчет затухания сигнала с учетом LOS/NLOS условий.
 
@@ -90,6 +91,14 @@ class RMaModel:
             PL = self._calculate_los_path_loss(d_2D, d_3D, UE_height)
         else:
             PL = self._calculate_nlos_path_loss(d_2D, d_3D, UE_height)
+            
+        if ue_class == "indoor":
+            o2i_penetration_loss = o2i_building_penetration_loss("low", d_2D_in, self.bs.frequency_GHz)
+            PL = PL + o2i_penetration_loss
+        
+        elif ue_class == "car":
+            o2i_penetration_loss = o2i_car_penetration_loss()
+            PL = PL + o2i_penetration_loss
             
         return PL
             
@@ -159,7 +168,8 @@ class RMaModel:
         else:
             return 10000.0
         
-    def calculate_SINR(self, d_2D: float, d_3D: float, UE_height: float):
+    def calculate_SINR(self, d_2D: float, d_2D_in: float, d_3D: float, 
+                            UE_height: float, ue_class: str):
         """
         Расчет отношения сигнал-интерференция-шум (SINR).
 
@@ -171,7 +181,7 @@ class RMaModel:
         Returns:
             Значение SINR в дБ
         """
-        path_loss = self.calculate_path_loss(d_2D, d_3D, UE_height)
+        path_loss = self.calculate_path_loss(d_2D, d_2D_in, d_3D, UE_height, ue_class)
         cable_loss = 2
         interference_margin = 2
         
@@ -291,11 +301,16 @@ class UMaModel:
         
         if is_LOS:
             PL = self._calculate_los_path_loss(d_2D, d_3D, UE_height)
+
         else:
             PL = self._calculate_nlos_path_loss(d_2D, d_3D, UE_height)
-            
+
         if ue_class == "indoor":
             o2i_penetration_loss = o2i_building_penetration_loss(self.o2i_model, d_2D_in, self.bs.frequency_GHz)
+            PL = PL + o2i_penetration_loss
+        
+        elif ue_class == "car":
+            o2i_penetration_loss = o2i_car_penetration_loss()
             PL = PL + o2i_penetration_loss
             
         return PL
@@ -385,7 +400,17 @@ class UMaModel:
         return SINR
     
 def o2i_building_penetration_loss(model_type: str, d_2D_in: float, fc_GHz: float):
-    
+    """
+    Расчет потерь при проникновении сигнала в здание (Outdoor-to-Indoor).
+
+    Args:
+        model_type: Тип модели ('low' или 'high').
+        d_2D_in: Внутреннее расстояние в здании в метрах.
+        fc_GHz: Частота сигнала в ГГц.
+
+    Returns:
+        float: Суммарные потери при проникновении в здание в дБ.
+    """
     L_concrete = 5 + 4 * fc_GHz
     
     if model_type == "low":
@@ -400,7 +425,15 @@ def o2i_building_penetration_loss(model_type: str, d_2D_in: float, fc_GHz: float
         
     PL_in = 0.5 * d_2D_in
     
-    random_loss = np.random.normal(0, sigma_p**2)
+    random_loss = np.random.normal(0, sigma_p)
     
-    return PL_tw + PL_in
-    
+    return PL_tw + PL_in + random_loss
+     
+def o2i_car_penetration_loss():
+    """
+    Расчет потерь при проникновении сигнала в автомобиль (Outdoor-to-Indoor car).
+
+    Returns:
+        float: Случайные потери при проникновении в автомобиль в дБ.
+    """
+    return np.random.normal(9, 5)
