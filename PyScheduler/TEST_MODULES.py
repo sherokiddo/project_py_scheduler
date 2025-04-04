@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from UE_MODULE import UserEquipment, UECollection
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel
-from CHANNEL_MODEL import RMaModel, UMaModel
+from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
 from BS_MODULE import BaseStation
 
 def visualize_user_mobility(ue_collection: UECollection, bs: BaseStation,
@@ -60,49 +60,65 @@ def visualize_sinr_cqi_user(ue_collection: UECollection, simulation_duration: fl
         plt.grid(True)
         plt.show()
 
-
-def example_usage_mobility_model():
-    """Пример использования модели передвижения пользователей"""
+def example_usage_modules():
+    """Пример использования разработанных модулей"""
+    
+    # Создание коллекции пользовательских устройств
     ue_collection = UECollection()
     
+    # Создание объекта базовой станции
     bs = BaseStation(x=3000, y=3000)
     
-    ue1 = UserEquipment(UE_ID=1, x=2200, y=2200, ue_class="indoor") 
+    # Создание объектов пользовательских устройств
+    ue1 = UserEquipment(UE_ID=1, x=2300, y=2300, ue_class="indoor")
+    ue2 = UserEquipment(UE_ID=2, x=2000, y=2000, ue_class="car")
+    
+    # Границы симуляции
+    x_min_global = -5000
+    y_min_global = -5000
+    x_max_global = 5000
+    y_max_global = 5000    
 
-    x_min_h = 2195
-    y_min_h = 2195
-    x_max_h = 2205
-    y_max_h = 2205                      
+    x_min_h = 2295
+    y_min_h = 2295
+    x_max_h = 2305
+    y_max_h = 2305                      
 
-# =============================================================================
-#     x_min_h = -5000
-#     y_min_h = -5000
-#     x_max_h = 5000
-#     y_max_h = 5000    
-# =============================================================================
-
-    #gauss_markov_model = GaussMarkovModel(x_min=x_min_h, x_max=x_max_h, y_min=y_min_h, y_max=y_max_h)  
-    random_waypoint_model = RandomWaypointModel(x_min=x_min_h, x_max=x_max_h, y_min=y_min_h, y_max=y_max_h, pause_time=500)
+    # Создание объектов моделей передвижения пользователей
+    gauss_markov_model = GaussMarkovModel(x_min=x_min_global, x_max=x_max_global, 
+                                          y_min=y_min_global, y_max=y_max_global) 
+    
+    random_waypoint_model = RandomWaypointModel(x_min=x_min_h, x_max=x_max_h, 
+                                                y_min=y_min_h, y_max=y_max_h, 
+                                                pause_time=500)
   
-    uma_channel_model = UMaModel(bs)                
+    # Создание объекта модели канала
+    umi_channel_model = UMiModel(bs)             
     
+    # Установка модели передвижения и модели канала для устройства
     ue1.SET_MOBILITY_MODEL(random_waypoint_model)
-    ue1.SET_CH_MODEL(uma_channel_model)
+    ue2.SET_MOBILITY_MODEL(gauss_markov_model)
+    ue1.SET_CH_MODEL(umi_channel_model)
+    ue2.SET_CH_MODEL(umi_channel_model)
     
+    # Добавление пользовательских устройств в коллекцию
     ue_collection.ADD_USER(ue1)
+    ue_collection.ADD_USER(ue2)
     
+    # Временные параметры симуляции
     simulation_duration = 100000
     update_interval = 250
     
+    # Симуляция и визуализация результатов
     for t in range(simulation_duration):
         if t % update_interval == 0:
             ue_collection.UPDATE_ALL_USERS(time_ms=update_interval, bs_position=bs.position, 
                                            bs_height=bs.height, indoor_boundaries=(x_min_h, y_min_h, x_min_h, x_max_h))
         
     visualize_user_mobility(ue_collection=ue_collection, bs=bs, 
-                            x_min=-5000, x_max=5000, y_min=-5000, y_max=5000)
+                            x_min=1500, x_max=3500, y_min=1500, y_max=3500)
     
     visualize_sinr_cqi_user(ue_collection, simulation_duration, update_interval)
     
 if __name__ == "__main__":
-    example_usage_mobility_model()
+    example_usage_modules()
