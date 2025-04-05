@@ -6,7 +6,6 @@
 # Предоставляет среду для симуляции работы системы LTE, включая взаимодействие
 # пользовательских устройств, планировщиков ресурсов и визуализацию результатов.
 #------------------------------------------------------------------------------
-
 # Версия: 1.0.0
 # Дата последнего изменения: 2025-03-18
 # Версия Python Kernel: 3.12.9
@@ -14,7 +13,7 @@
 
 # Зависимости:
 # - UE_MODULE.py (модели пользовательского оборудования)
-# - LTE_GRID_ver_alpha.py (модель ресурсной сетки LTE)
+# - RES_GRID (модель ресурсной сетки LTE)
 # - SCHEDULER.py (модель планировщика)
 #------------------------------------------------------------------------------
 """
@@ -23,9 +22,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from typing import Dict, List, Optional, Union
 from UE_MODULE import UserEquipment, UECollection
-from LTE_GRID_ver_alpha import RES_GRID_LTE
+from RES_GRID import RES_GRID_LTE
 from SCHEDULER import RoundRobinScheduler
-%matplotlib
+# %matplotlib
 
 class SimulationEnvironment:
     """

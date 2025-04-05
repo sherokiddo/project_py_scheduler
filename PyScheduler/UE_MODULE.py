@@ -35,7 +35,7 @@
 #        тестирования моделей перемещения
 #      - Добавлены параметры для работы модели передвижения Gauss-Markov:
 #        mean_velocity, mean_direction   
-
+#
 #   v1.0.3 - 2025-03-30
 #      - Параметр расстояния от UE до базовой станции разбит на 4 отдельных:
 #        dist_to_BS_2D, dist_to_BS_2D_in, dist_to_BS_2D_out, dist_to_BS_3D  
@@ -48,9 +48,19 @@
 #      - Из модуля удалены функции визуализации перемещения пользователей и 
 #        тестирования моделей перемещения
 #
+#   v1.0.4 - 2025-04-06
+#      - Общий рефакторинг и код-ревью  
+#      - Добавлены валидация для некоторых методов. Даны рекомендации по
+#        по реализации следующих валидаций   
+#      - Изменен буфер пользователя для подготовки интеграции с моделями
+#       генерации трафика. Теперь буфер FIFO, но приоритеты оставлены
+#       заглушкой для реализации гибридного буфера с учетом QoS
+#      - Подготовка к реализации адаптивной кодовой модуляции
+#
 #------------------------------------------------------------------------------
 """
 import numpy as np
+from collections import deque
 from typing import Dict, List, Optional, Union, Tuple
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel
 from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
@@ -83,6 +93,8 @@ class UserEquipment:
         self.velocity_max = 0.0 # Максимальная скорость в м/с
         self.mean_velocity = 0.0 # Средняя скорость (Для Gauss-Markov)
         self.mean_direction = 0.0 # Среднее направление (Для Gauss-Markov)
+        #@sherokiddo пишет: "В рамках рефакторинга выпилить mean_velocity и mean_direction из атрибутов юзера
+        #пусть живут в модели Гаусс-Маркова"
         self.is_indoor = False # Находится ли UE в помещении
         self._set_scenario_parameters()
         
@@ -142,6 +154,9 @@ class UserEquipment:
             model: Объект модели движения
         """
         self.mobility_model = model
+        
+        #@sherokiddo: "А вот как валидировать метод, по корректному model...
+        # если у нас нет единого парента для всех моделей...?"
     
     def SET_CH_MODEL(self, model):
         """
@@ -151,6 +166,8 @@ class UserEquipment:
             model: Объект модели канала
         """
         self.channel_model = model
+        
+        #@sherokiddo: "Абаюнда тому что в SET_MOBILITY_MODEL"
     
     def SET_TRAFFIC_MODEL(self, model):
         """
@@ -160,6 +177,8 @@ class UserEquipment:
             model: Объект модели трафика
         """
         self.traffic_model = model
+        
+        #@sherokiddo: "Предусмотреть валидацию"
     
     def UPD_POSITION(self, time_ms: int, bs_position: Tuple[float, float], bs_height: float,
                      indoor_boundaries: Tuple[float, float, float, float] = (0, 0, 0, 0)):
@@ -219,6 +238,18 @@ class UserEquipment:
             time_ms: Текущее время в миллисекундах
             bs_position: Координаты базовой станции (x, y) в метрах
         """
+        
+        if not self.channel_model:
+            raise ValueError("Ошибка! Модель канала не определена! {}".format(self.UE_ID))
+            
+        # @shrokiddo: "Добавил валидацию назначения модели, а то небыло"
+        # рекомендую сделать валидацию вызова UPD_POSITION, потому что он
+        # должен вызываться раньше UPD_CH_QUALITY 
+        # (сначала получаем координаты а потом качество канала), а это неявно
+        # а если вдруг координаты не менялись, можно упростить расчеты и просто
+        # дублировать предыдущий SINR...хотя...зачем тогда модели.
+        # вариант чисто на подумать
+        
         if isinstance(self.channel_model, RMaModel):
             if self.UE_height == 0.0:
                 if self.is_indoor == True:
@@ -260,6 +291,11 @@ class UserEquipment:
                 
         self.SINR_values.append(self.SINR)
         self.CQI_values.append(self.cqi)
+        
+        #@sherokiddo пишет: "Ваня, я понимаю, что в моделях передвижения юзеров разные вводы и выводы.
+        # Но блин тут то для всех моделей одинаково всё! Не по чистокоду. В рамках рефакторинга
+        # сделай единый метод вызова для любой модели (желательно в MOBILITY_MODEL)
+        # тут же столько оптимизировать можно...Подумай на досуге в общем"
     
     def GEN_TRFFC(self, time_ms: int):
         """
@@ -442,10 +478,15 @@ class UserEquipment:
             
         else:
             raise ValueError("Недопустимое значение типа передвижения устройства!")
-
+        # @sherokiddo пишет: "В рамках рефакторинга выпилить mean_velocity и mean_direction из атрибутов юзера
+        # пусть живут в модели Гаусс-Маркова.
+        # атрибут self.mean_direction = np.random.randint(0, 360) сделать глобальным, чего тут его дублировать
+        # можно было сделать через словари, но так тоже лаконично. с точки зрения оптимизации еще вариантов не знаю"
+        
 class Buffer:
     """
-    Класс для моделирования буфера пользовательского устройства.
+    Класс для моделирования буфера пользовательского устройства. Пока функционирует по логике
+    FIFO. Есть костыль для приоритетов пакетов, но не раскрыт.
     """
     def __init__(self, max_size: int = 1048576):  # 1 MB по умолчанию
         """
@@ -456,7 +497,7 @@ class Buffer:
         """
         self.max_size = max_size
         self.current_size = 0
-        self.packets = []  # Список пакетов в буфере
+        self.queue = deque()  # Теперь очередь для хранения пакетов
         self.dropped_packets = 0  # Счетчик отброшенных пакетов
     
     def ADD_PACKET(self, packet_size: int, creation_time: int, priority: int = 0) -> bool:
@@ -479,57 +520,53 @@ class Buffer:
         packet = {
             'size': packet_size,
             'creation_time': creation_time,
-            'priority': priority
+            'priority': priority #не используется для FIFO
         }
         
-        self.packets.append(packet)
+        self.queue.append(packet)  # Добавляем пакет в конец очереди
         self.current_size += packet_size
         return True
-    
-    def GET_PACKETS(self, max_bytes: int, current_time: int) -> Tuple[List[Dict], int]:
+        #@sherokiddo: "Возможно, у пакета появится атрибут метки QoS или приоритет
+        # заглушку для него сделал. В дальнейшем реализовать функцию CHCK_PRIORITY или CHCK_PR
+        # а также реализовать логику переполнения буфера и отбрасывания пакетов
+        # а также, добавить возможность менять приоритет пакета через метод
+        # а напоследок, метод для получения пакетов определенного приоритета GET_PCKT_BY_PR"
+
+    def GET_PACKETS(self, max_bytes: int) -> Tuple[List[Dict], int]:
         """
-        Получить пакеты из буфера для передачи.
-        
+        Получить пакеты из буфера для передачи.Ранее был реализован по методу
+        Priority Queue (очередь с приоритетами), теперь FIFO.
+        Возможно, для реализации QoS понадобится гибридный подход
+        @sherokiddo: "Можешь обратится ко мне, я сделаю гибридный буфер"
+
         Args:
             max_bytes: Максимальное количество байт для передачи
-            current_time: Текущее время (в мс)
-            
+
         Returns:
             Tuple[List[Dict], int]: (список пакетов, общий размер в байтах)
         """
-        # Сортировка пакетов по приоритету и времени ожидания
-        sorted_packets = sorted(
-            self.packets, 
-            key=lambda p: (10 - p['priority'], current_time - p['creation_time']), 
-            reverse=True
-        )
-        
         selected_packets = []
         total_size = 0
-        
-        for packet in sorted_packets:
-            if total_size + packet['size'] <= max_bytes:
-                selected_packets.append(packet)
-                total_size += packet['size']
-        
-        # Удаляем выбранные пакеты из буфера
-        for packet in selected_packets:
-            self.packets.remove(packet)
+
+        while self.queue and total_size + self.queue[0]['size'] <= max_bytes:
+            packet = self.queue.popleft()  # Извлекаем из начала очереди
+            selected_packets.append(packet)
+            total_size += packet['size']
             self.current_size -= packet['size']
-        
+
         return selected_packets, total_size
     
     def GET_STATUS(self, current_time: int) -> Dict:
         """
         Получить статистику состояния буфера.
-        
+
         Args:
             current_time: Текущее время (в мс)
-            
+
         Returns:
             Dict: Статистика буфера
         """
-        if not self.packets:
+        if not self.queue:
             return {
                 'size': 0,
                 'packet_count': 0,
@@ -537,12 +574,11 @@ class Buffer:
                 'average_delay': 0,
                 'utilization': 0.0
             }
-        
-        delays = [current_time - packet['creation_time'] for packet in self.packets]
-        
+
+        delays = [current_time - packet['creation_time'] for packet in self.queue]
         return {
             'size': self.current_size,
-            'packet_count': len(self.packets),
+            'packet_count': len(self.queue),
             'oldest_packet_delay': max(delays),
             'average_delay': sum(delays) / len(delays),
             'utilization': (self.current_size / self.max_size) * 100
@@ -559,6 +595,29 @@ class Buffer:
         """
         self.packets.clear()
         self.current_size = 0
+    #@sherokiddo: "Возможно пригодится метод для удаления пакетов, у которых
+    # капнула уже большая задержка. типа REMOVE_OLD_PCKT
+
+# Далее пример создания буфера, может пригодится для понимания логики
+# # Создание буфера с максимальным размером 1 MB
+# buffer = Buffer(max_size=1048576)
+
+# # Добавление нескольких пакетов
+# buffer.ADD_PACKET(packet_size=50000, creation_time=1000, priority=5)
+# buffer.ADD_PACKET(packet_size=30000, creation_time=2000, priority=3)
+# buffer.ADD_PACKET(packet_size=70000, creation_time=3000, priority=1)
+
+# # Получение пакетов на передачу (максимум 100000 байт)
+# selected_packets, total_bytes = buffer.GET_PACKETS(max_bytes=100000)
+# print(f"Переданные пакеты: {selected_packets}, общий размер: {total_bytes} байт")
+
+# # Проверка состояния буфера
+# status = buffer.GET_STATUS(current_time=4000)
+# print(f"Состояние буфера: {status}")
+
+# # Очистка буфера
+# buffer.DESTROY_BUFFER()
+# print("Буфер очищен.")
 
 class UECollection:
     """

@@ -14,20 +14,20 @@
 
 # Зависимости:
 # - UE_MODULE.py (модели пользовательского оборудования)
-# - LTE_GRID_ver_alpha.py (модель ресурсной сетки LTE)
+# - RES_GRID (модель ресурсной сетки LTE)
 
 # Изменения v1.0.5:
 # - пофикшен баг с выделением ресурсов пользователям в ситуациях, когда количество
 # юзеров намного больше чем количество RB в слоте. Выявлена ошибка в расчете последнего
 # обслуженного UE last_served_user метода schedule
-# - LTE_GRID_ver_alpha.py (модель ресурсной сетки LTE)
+# - RES_GRID (модель ресурсной сетки LTE)
 #------------------------------------------------------------------------------
 """
 
 from typing import Dict, List, Optional, Union, Tuple
 import numpy as np
 from UE_MODULE import UserEquipment, UECollection
-from LTE_GRID_ver_alpha import RES_GRID_LTE, SchedulerInterface, RES_BLCK
+from RES_GRID import RES_GRID_LTE, SchedulerInterface, RES_BLCK
 
 class RoundRobinScheduler(SchedulerInterface):
     """
