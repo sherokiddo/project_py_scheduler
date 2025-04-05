@@ -499,92 +499,92 @@ class RES_GRID_LTE:
                     }
         return status
     
-    def visualize_grid(self, tti_start: int = 0, tti_end: Optional[int] = None, 
-                       show_UE_IDs: bool = True, save_path: Optional[str] = None):
-        """
-        Визуализация ресурсной сетки.Живет тут для примера и проверки кода.
-        Потом выпилить отсюда, и впилить в отдельный модуль.
+    # def visualize_grid(self, tti_start: int = 0, tti_end: Optional[int] = None, 
+    #                    show_UE_IDs: bool = True, save_path: Optional[str] = None):
+    #     """
+    #     Визуализация ресурсной сетки.Живет тут для примера и проверки кода.
+    #     Потом выпилить отсюда, и впилить в отдельный модуль.
         
-        Args:
-            tti_start: Начальный TTI для визуализации
-            tti_end: Конечный TTI для визуализации (не включительно)
-            show_UE_IDs: Показывать ли ID пользователей на графике
-            save_path: Путь для сохранения изображения (если None, то изображение отображается)
-        """
-        if tti_end is None:
-            tti_end = min(tti_start + 10, self.total_tti)
+    #     Args:
+    #         tti_start: Начальный TTI для визуализации
+    #         tti_end: Конечный TTI для визуализации (не включительно)
+    #         show_UE_IDs: Показывать ли ID пользователей на графике
+    #         save_path: Путь для сохранения изображения (если None, то изображение отображается)
+    #     """
+    #     if tti_end is None:
+    #         tti_end = min(tti_start + 10, self.total_tti)
         
-        # Создаем матрицу для отображения статуса RB
-        # 0 для свободных, >0 для занятых блоков (значение = UE_ID)
-        grid = np.zeros((self.num_rb, tti_end - tti_start))
+    #     # Создаем матрицу для отображения статуса RB
+    #     # 0 для свободных, >0 для занятых блоков (значение = UE_ID)
+    #     grid = np.zeros((self.num_rb, tti_end - tti_start))
         
-        for tti in range(tti_start, tti_end):
-            for freq_idx in range(self.num_rb):
-                rb = self.GET_RB(tti, freq_idx)
-                if rb:
-                    if rb.CHCK_RB():
-                        grid[freq_idx, tti - tti_start] = 0
-                    else:
-                        # Для визуализации используем UE_ID как цвет
-                        grid[freq_idx, tti - tti_start] = rb.UE_ID if rb.UE_ID is not None else 0
+    #     for tti in range(tti_start, tti_end):
+    #         for freq_idx in range(self.num_rb):
+    #             rb = self.GET_RB(tti, freq_idx)
+    #             if rb:
+    #                 if rb.CHCK_RB():
+    #                     grid[freq_idx, tti - tti_start] = 0
+    #                 else:
+    #                     # Для визуализации используем UE_ID как цвет
+    #                     grid[freq_idx, tti - tti_start] = rb.UE_ID if rb.UE_ID is not None else 0
         
-        plt.figure(figsize=(15, 10))
+    #     plt.figure(figsize=(15, 10))
         
-        # Создаем маску для свободных блоков
-        mask_free = (grid == 0)
+    #     # Создаем маску для свободных блоков
+    #     mask_free = (grid == 0)
         
-        # Создаем кастомную цветовую карту
-        cmap = plt.cm.jet
-        cmap.set_bad('white', 1.0)  # Свободные блоки будут белыми
+    #     # Создаем кастомную цветовую карту
+    #     cmap = plt.cm.jet
+    #     cmap.set_bad('white', 1.0)  # Свободные блоки будут белыми
         
-        # Создаем матрицу с NaN для свободных блоков
-        grid_masked = np.ma.array(grid, mask=mask_free)
+    #     # Создаем матрицу с NaN для свободных блоков
+    #     grid_masked = np.ma.array(grid, mask=mask_free)
         
-        # Отображаем матрицу
-        plt.imshow(grid_masked, aspect='auto', cmap=cmap, interpolation='nearest')
-        plt.colorbar(label='User ID')
+    #     # Отображаем матрицу
+    #     plt.imshow(grid_masked, aspect='auto', cmap=cmap, interpolation='nearest')
+    #     plt.colorbar(label='User ID')
         
-        # Отдельно отображаем свободные блоки
-        plt.imshow(mask_free, aspect='auto', cmap='binary', alpha=0.3, interpolation='nearest')
+    #     # Отдельно отображаем свободные блоки
+    #     plt.imshow(mask_free, aspect='auto', cmap='binary', alpha=0.3, interpolation='nearest')
         
-        plt.xlabel('TTI')
-        plt.ylabel('Frequency (RB index)')
-        plt.title(f'LTE Resource Grid (Bandwidth: {self.bandwidth} MHz, TTI: {tti_start}-{tti_end-1})')
+    #     plt.xlabel('TTI')
+    #     plt.ylabel('Frequency (RB index)')
+    #     plt.title(f'LTE Resource Grid (Bandwidth: {self.bandwidth} MHz, TTI: {tti_start}-{tti_end-1})')
         
-        # Настройка осей
-        plt.yticks(np.arange(0, self.num_rb, 5))
-        plt.xticks(np.arange(0, tti_end - tti_start, 1), np.arange(tti_start, tti_end, 1))
+    #     # Настройка осей
+    #     plt.yticks(np.arange(0, self.num_rb, 5))
+    #     plt.xticks(np.arange(0, tti_end - tti_start, 1), np.arange(tti_start, tti_end, 1))
         
-        # Добавление линий для разделения кадров
-        for i in range(tti_start, tti_end, 10):
-            rel_i = i - tti_start
-            if 0 <= rel_i < (tti_end - tti_start):
-                plt.axvline(x=rel_i, color='red', linestyle='-', linewidth=1, label='Frame boundary' if i == tti_start else None)
+    #     # Добавление линий для разделения кадров
+    #     for i in range(tti_start, tti_end, 10):
+    #         rel_i = i - tti_start
+    #         if 0 <= rel_i < (tti_end - tti_start):
+    #             plt.axvline(x=rel_i, color='red', linestyle='-', linewidth=1, label='Frame boundary' if i == tti_start else None)
         
-        # Добавление линий для разделения подкадров
-        for i in range(tti_start, tti_end):
-            rel_i = i - tti_start
-            if 0 <= rel_i < (tti_end - tti_start):
-                plt.axvline(x=rel_i, color='gray', linestyle='--', linewidth=0.5)
+    #     # Добавление линий для разделения подкадров
+    #     for i in range(tti_start, tti_end):
+    #         rel_i = i - tti_start
+    #         if 0 <= rel_i < (tti_end - tti_start):
+    #             plt.axvline(x=rel_i, color='gray', linestyle='--', linewidth=0.5)
         
-        # Добавление текста с ID пользователей, если требуется
-        if show_UE_IDs:
-            for tti in range(tti_start, tti_end):
-                for freq_idx in range(self.num_rb):
-                    rb = self.GET_RB(tti, freq_idx)
-                    if rb and not rb.CHCK_RB():
-                        plt.text(tti - tti_start, freq_idx, str(rb.UE_ID), 
-                                 ha='center', va='center', color='black', fontsize=8)
+    #     # Добавление текста с ID пользователей, если требуется
+    #     if show_UE_IDs:
+    #         for tti in range(tti_start, tti_end):
+    #             for freq_idx in range(self.num_rb):
+    #                 rb = self.GET_RB(tti, freq_idx)
+    #                 if rb and not rb.CHCK_RB():
+    #                     plt.text(tti - tti_start, freq_idx, str(rb.UE_ID), 
+    #                              ha='center', va='center', color='black', fontsize=8)
         
-        plt.grid(True, color='black', linestyle='-', linewidth=0.2)
-        plt.tight_layout()
+    #     plt.grid(True, color='black', linestyle='-', linewidth=0.2)
+    #     plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            plt.close()
-        else:
-            plt.gca().invert_yaxis()
-            plt.show()
+    #     if save_path:
+    #         plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    #         plt.close()
+    #     else:
+    #         plt.gca().invert_yaxis()
+    #         plt.show()
 
 
 class SchedulerInterface:
@@ -615,31 +615,31 @@ class SchedulerInterface:
         raise NotImplementedError("Этот метод должен быть переопределен в дочернем классе")
 
 
-def example_usage():
-    """Пример использования модели ресурсной сетки LTE"""
-    # Создание ресурсной сетки с полосой 10 МГц (50 RB) и 1 кадром (10 TTI)
-    lte_grid = RES_GRID_LTE(bandwidth=3, num_frames=1)
+# def example_usage():
+#     """Пример использования модели ресурсной сетки LTE"""
+#     # Создание ресурсной сетки с полосой 10 МГц (50 RB) и 1 кадром (10 TTI)
+#     lte_grid = RES_GRID_LTE(bandwidth=3, num_frames=1)
     
-    print(f"Создана LTE сетка с полосой {lte_grid.bandwidth} МГц")
-    print(f"Количество ресурсных блоков: {lte_grid.num_rb}")
-    print(f"Количество TTI: {lte_grid.total_tti}")
+#     print(f"Создана LTE сетка с полосой {lte_grid.bandwidth} МГц")
+#     print(f"Количество ресурсных блоков: {lte_grid.num_rb}")
+#     print(f"Количество TTI: {lte_grid.total_tti}")
     
-    # Визуализация пустой сетки
-    print("Визуализация пустой ресурсной сетки рис1")
-    lte_grid.visualize_grid()
+#     # Визуализация пустой сетки
+#     print("Визуализация пустой ресурсной сетки рис1")
+#     lte_grid.visualize_grid()
     
-    # Назначение нескольких ресурсных блоков для проверки визуализации
-    lte_grid.ALLOCATE_RB(0, 0, 1)  # TTI 0, RB 0, User 1
-    lte_grid.ALLOCATE_RB(0, 1, 1)  # TTI 0, RB 1, User 1
-    lte_grid.ALLOCATE_RB(1, 5, 2)  # TTI 1, RB 5, User 2
-    lte_grid.ALLOCATE_RB_GROUP(2, [10, 11, 12], 3)  # TTI 2, RBs 10-12, User 3
+#     # Назначение нескольких ресурсных блоков для проверки визуализации
+#     lte_grid.ALLOCATE_RB(0, 0, 1)  # TTI 0, RB 0, User 1
+#     lte_grid.ALLOCATE_RB(0, 1, 1)  # TTI 0, RB 1, User 1
+#     lte_grid.ALLOCATE_RB(1, 5, 2)  # TTI 1, RB 5, User 2
+#     lte_grid.ALLOCATE_RB_GROUP(2, [10, 11, 12], 3)  # TTI 2, RBs 10-12, User 3
     
-    # Визуализация сетки с назначенными ресурсами
-    print("Визуализация сетки с назначенными ресурсами рис2")
-    lte_grid.visualize_grid()
+#     # Визуализация сетки с назначенными ресурсами
+#     print("Визуализация сетки с назначенными ресурсами рис2")
+#     lte_grid.visualize_grid()
     
-    return lte_grid
+#     return lte_grid
 
 
-if __name__ == "__main__":
-    example_usage()
+# if __name__ == "__main__":
+#     example_usage()
