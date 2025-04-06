@@ -746,3 +746,89 @@ def prepare_users_for_scheduler(ue_collection: UECollection, time_ms: int) -> Li
         })
     
     return users_data
+
+# Далее тесты для проверки работоспособности буфера и примеры работы с ним. 
+# Можно удалить или закомментить после того, как будут сделаны генераторы трафика.
+def test_buffer_fifo():
+    """
+    Тестирование работы буфера по принципу FIFO.
+    Сценарии:
+    1. Добавление пакетов в буфер
+    2. Извлечение пакетов в порядке поступления
+    3. Обработка переполнения буфера
+    4. Проверка статистики буфера
+    """
+    # Создаем пользователей с разными характеристиками
+    users = [
+        UserEquipment(UE_ID=1, ue_class="pedestrian"),
+        UserEquipment(UE_ID=2, ue_class="car"),
+        UserEquipment(UE_ID=3, ue_class="indoor")
+    ]
+
+    # Генерация тестового трафика (пакеты в формате: [размер, время создания, приоритет])
+    test_packets = [
+        [1500, 0, 5],   # Пакет 1: 1500 байт, высокий приоритет
+        [3000, 100, 3], # Пакет 2: 3000 байт, средний приоритет
+        [5000, 200, 1]  # Пакет 3: 5000 байт, низкий приоритет
+    ]
+
+    print("=== Тест 1: Добавление пакетов в буфер ===")
+    for i, user in enumerate(users):
+        # Добавляем разные наборы пакетов для каждого пользователя
+        for j in range(i + 1):
+            packet = test_packets[j]
+            success = user.buffer.ADD_PACKET(
+                packet_size=packet[0],
+                creation_time=packet[1],
+                priority=packet[2]
+            )
+            print(f"UE {user.UE_ID}: Пакет {j+1} добавлен ({'успех' if success else 'переполнение'})")
+        print(f"Текущий размер буфера UE {user.UE_ID}: {user.buffer.current_size} байт\n")
+
+    print("\n=== Тест 2: Извлечение пакетов по FIFO ===")
+    for user in users:
+        # Пытаемся извлечь 6000 байт (3 пакета)
+        packets, total = user.buffer.GET_PACKETS(6000)
+        print(f"UE {user.UE_ID}:")
+        print(f"Извлечено пакетов: {len(packets)}, Общий размер: {total} байт")
+        print(f"Остаток в буфере: {user.buffer.current_size} байт")
+
+        # Показываем порядок извлечения
+        for i, p in enumerate(packets):
+            print(f"Пакет {i+1}: размер={p['size']}, приоритет={p['priority']}")
+        print()
+
+    print("\n=== Тест 3: Проверка переполнения ===")
+    test_user = UserEquipment(UE_ID=4, buffer_size=5000)
+    
+    # Попытка добавить 3 пакета (1500 + 3000 + 5000 = 9500 > 5000)
+    packets_to_add = [
+        [1500, 300, 5],
+        [3000, 400, 3],
+        [5000, 500, 1]
+    ]
+    
+    for p in packets_to_add:
+        success = test_user.buffer.ADD_PACKET(p[0], p[1], p[2])
+        status = test_user.buffer.GET_STATUS(current_time=600)
+        print(f"Добавлен пакет {p[0]} байт: {'успех' if success else 'переполнение'}")
+        print(f"Текущий размер: {status['size']} байт, Отброшено: {test_user.buffer.dropped_packets}")
+
+    print("\n=== Тест 4: Проверка статистики ===")
+    test_user = UserEquipment(UE_ID=5)
+    
+    # Добавляем пакеты с разным временем создания
+    test_user.buffer.ADD_PACKET(2000, 100, 5)
+    test_user.buffer.ADD_PACKET(3000, 200, 3)
+    
+    # Получаем статус в момент времени 500 мс
+    status = test_user.buffer.GET_STATUS(current_time=500)
+    print(f"Статус буфера:")
+    print(f"- Общий размер: {status['size']} байт")
+    print(f"- Количество пакетов: {status['packet_count']}")
+    print(f"- Максимальная задержка: {status['oldest_packet_delay']} мс")
+    print(f"- Средняя задержка: {status['average_delay']:.1f} мс")
+    print(f"- Заполненность: {status['utilization']:.1f}%")
+
+if __name__ == "__main__":
+    test_buffer_fifo()
