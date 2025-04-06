@@ -71,6 +71,144 @@ from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
 # from TRAFFIC_MODEL import TrafficModel, ConstantBitRate, VoipModel, WebBrowsingModel
 #upd
 
+
+class Packet:
+    """Класс для представления сетевого пакета"""
+    _id_counter = 0  # Счетчик для генерации уникальных ID
+    
+    def __init__(self, size: int, creation_time: int, priority: int = 0):
+        if size <= 0:
+            raise ValueError("Размер пакета должен быть > 0")
+        if not (0 <= priority <= 10):
+            raise ValueError("Приоритет должен быть 0-10")
+
+        Packet._id_counter += 1
+        self.id = Packet._id_counter  # Простой числовой идентификатор
+        self.size = size
+        self.creation_time = creation_time  # Время в мс (ожидается передача извне)
+        self.priority = priority # для реализации QoS буфера нужно будет уйти от FIFO
+        self.retry_count = 0 # Заготовка для HARQ
+
+    @property
+    def age(self, current_time: int) -> int:
+        """Возраст пакета в мс (требует явной передачи текущего времени)"""
+        return current_time - self.creation_time     
+
+class Buffer:
+    """
+    Класс для моделирования буфера пользовательского устройства. Пока функционирует по логике
+    FIFO. Есть костыль для приоритетов пакетов, но не раскрыт. Для реализации QoS буфера нужно будет уйти от FIFO
+    """
+    def __init__(self, max_size: int = 1048576):  # 1 MB по умолчанию
+        """
+        Инициализация буфера.
+        
+        Args:
+            max_size: Максимальный размер буфера в байтах
+        """
+        self.max_size = max_size
+        self.current_size = 0
+        self.queue = deque()  # Теперь очередь для хранения пакетов
+        self.dropped_packets = 0  # Счетчик отброшенных пакетов
+    
+    def ADD_PACKET(self, packet_size: int, creation_time: int, priority: int = 0) -> bool:
+        """
+        Добавить пакет в буфер. Пока я понятия не имею, по каким моделям мы
+        будем генерировать трафик и каким макаром, но сделал такую заглушку
+        
+        Args:
+            Наследуется у класса Packet
+            
+        Returns:
+            bool: True, если пакет добавлен, False если отброшен
+        """
+        if self.current_size + packet_size > self.max_size:
+            self.dropped_packets += 1
+            return False
+
+        self.queue.append({
+            'size': packet_size,
+            'creation_time': creation_time,
+            'priority': priority
+        })
+        self.current_size += packet_size
+        return True
+
+        #@sherokiddo: "Возможно, у пакета появится атрибут метки QoS или приоритет
+        # заглушку для него сделал. В дальнейшем реализовать функцию CHCK_PRIORITY или CHCK_PR
+        # а также реализовать логику переполнения буфера и отбрасывания пакетов
+        # а также, добавить возможность менять приоритет пакета через метод
+        # а напоследок, метод для получения пакетов определенного приоритета GET_PCKT_BY_PR"
+
+    def GET_PACKETS(self, max_bytes: int) -> Tuple[List[Dict], int]:
+        """
+        Получить пакеты из буфера для передачи.Ранее был реализован по методу
+        Priority Queue (очередь с приоритетами), теперь FIFO.
+        Возможно, для реализации QoS понадобится гибридный подход
+        @sherokiddo: "Можешь обратится ко мне, я сделаю гибридный буфер"
+
+        Args:
+            max_bytes: Максимальное количество байт для передачи
+
+        Returns:
+            Tuple[List[Dict], int]: (список пакетов, общий размер в байтах)
+        """
+        selected = []
+        total_size = 0
+        
+        while self.queue and total_size + self.queue[0]['size'] <= max_bytes:
+            packet = self.queue.popleft()
+            selected.append(packet)
+            total_size += packet['size']
+            self.current_size -= packet['size']
+            
+        return selected, total_size
+
+    def GET_STATUS(self, current_time: int) -> Dict:
+        """
+        Получить статистику состояния буфера.
+
+        Args:
+            current_time: Текущее время (в мс)
+
+        Returns:
+            Dict: Статистика буфера
+        """
+        if not self.queue:
+            return {
+                'size': 0,
+                'packet_count': 0,
+                'oldest_packet_delay': 0,
+                'average_delay': 0.0,
+                'utilization': 0.0
+            }
+
+        delays = [current_time - p['creation_time'] for p in self.queue]
+        return {
+            'size': self.current_size,
+            'packet_count': len(self.queue),
+            'oldest_packet_delay': max(delays),
+            'average_delay': sum(delays) / len(delays),
+            'utilization': (self.current_size / self.max_size) * 100
+        }
+
+    
+    def DESTROY_BUFFER(self):
+        """
+        Полностью очистить буфер.
+        
+        Удаляет все пакеты и сбрасывает текущий размер буфера. Вдруг пригодится
+        
+        Returns:
+            None
+        """
+        self.queue.clear()
+        self.current_size = 0
+        self.dropped_packets = 0
+    #@sherokiddo: "Возможно пригодится метод для удаления пакетов, у которых
+    # капнула уже большая задержка. типа REMOVE_OLD_PCKT
+
+
 class UserEquipment:
     """
     Класс, представляющий пользовательское устройство (UE) в сети LTE.
@@ -300,14 +438,18 @@ class UserEquipment:
         # сделай единый метод вызова для любой модели (желательно в MOBILITY_MODEL)
         # тут же столько оптимизировать можно...Подумай на досуге в общем"
     
-    def GEN_TRFFC(self, packet_size: int, current_time: int):
+    def GEN_TRFFC(self, current_time: int, packet_size: int = 1500):  # 
         """Пример генерации трафика с передачей времени"""
         packet = Packet(
-            size=packet_size,
+            size=packet_size,  # Теперь packet_size определён
             creation_time=current_time,
-            priority=5  # Пример приоритета
+            priority=5
         )
-        if not self.buffer.add_packet(packet):
+        if not self.buffer.ADD_PACKET(
+            packet_size=packet.size,
+            creation_time=packet.creation_time,
+            priority=packet.priority
+        ):
             print(f"UE {self.UE_ID}: Пакет отброшен")
     
     def UPD_THROUGHPUT(self, bits_transmitted: int, time_interval_ms: int):
@@ -483,144 +625,7 @@ class UserEquipment:
         # пусть живут в модели Гаусс-Маркова.
         # атрибут self.mean_direction = np.random.randint(0, 360) сделать глобальным, чего тут его дублировать
         # можно было сделать через словари, но так тоже лаконично. с точки зрения оптимизации еще вариантов не знаю"
-
-class Packet:
-    """Класс для представления сетевого пакета"""
-    _id_counter = 0  # Счетчик для генерации уникальных ID
-    
-    def __init__(self, size: int, creation_time: int, priority: int = 0):
-        if size <= 0:
-            raise ValueError("Размер пакета должен быть > 0")
-        if not (0 <= priority <= 10):
-            raise ValueError("Приоритет должен быть 0-10")
-
-        Packet._id_counter += 1
-        self.id = Packet._id_counter  # Простой числовой идентификатор
-        self.size = size
-        self.creation_time = creation_time  # Время в мс (ожидается передача извне)
-        self.priority = priority # для реализации QoS буфера нужно будет уйти от FIFO
-        self.retry_count = 0 # Заготовка для HARQ
-
-    @property
-    def age(self, current_time: int) -> int:
-        """Возраст пакета в мс (требует явной передачи текущего времени)"""
-        return current_time - self.creation_time
         
-class Buffer:
-    """
-    Класс для моделирования буфера пользовательского устройства. Пока функционирует по логике
-    FIFO. Есть костыль для приоритетов пакетов, но не раскрыт. Для реализации QoS буфера нужно будет уйти от FIFO
-    """
-    def __init__(self, max_size: int = 1048576):  # 1 MB по умолчанию
-        """
-        Инициализация буфера.
-        
-        Args:
-            max_size: Максимальный размер буфера в байтах
-        """
-        self.max_size = max_size
-        self.current_size = 0
-        self.queue = deque()  # Теперь очередь для хранения пакетов
-        self.dropped_packets = 0  # Счетчик отброшенных пакетов
-    
-    def ADD_PACKET(self, packet_size: int, creation_time: int, priority: int = 0) -> bool:
-        """
-        Добавить пакет в буфер. Пока я понятия не имею, по каким моделям мы
-        будем генерировать трафик и каким макаром, но сделал такую заглушку
-        
-        Args:
-            Наследуется у класса Packet
-            
-        Returns:
-            bool: True, если пакет добавлен, False если отброшен
-        """
-        if self.current_size + packet_size > self.max_size:
-            self.dropped_packets += 1
-            return False
-
-        self.queue.append({
-            'size': packet_size,
-            'creation_time': creation_time,
-            'priority': priority
-        })
-        self.current_size += packet_size
-        return True
-
-        #@sherokiddo: "Возможно, у пакета появится атрибут метки QoS или приоритет
-        # заглушку для него сделал. В дальнейшем реализовать функцию CHCK_PRIORITY или CHCK_PR
-        # а также реализовать логику переполнения буфера и отбрасывания пакетов
-        # а также, добавить возможность менять приоритет пакета через метод
-        # а напоследок, метод для получения пакетов определенного приоритета GET_PCKT_BY_PR"
-
-    def GET_PACKETS(self, max_bytes: int) -> Tuple[List[Dict], int]:
-        """
-        Получить пакеты из буфера для передачи.Ранее был реализован по методу
-        Priority Queue (очередь с приоритетами), теперь FIFO.
-        Возможно, для реализации QoS понадобится гибридный подход
-        @sherokiddo: "Можешь обратится ко мне, я сделаю гибридный буфер"
-
-        Args:
-            max_bytes: Максимальное количество байт для передачи
-
-        Returns:
-            Tuple[List[Dict], int]: (список пакетов, общий размер в байтах)
-        """
-        selected = []
-        total_size = 0
-        
-        while self.queue and total_size + self.queue[0]['size'] <= max_bytes:
-            packet = self.queue.popleft()
-            selected.append(packet)
-            total_size += packet['size']
-            self.current_size -= packet['size']
-            
-        return selected, total_size
-
-    def GET_STATUS(self, current_time: int) -> Dict:
-        """
-        Получить статистику состояния буфера.
-
-        Args:
-            current_time: Текущее время (в мс)
-
-        Returns:
-            Dict: Статистика буфера
-        """
-        if not self.queue:
-            return {
-                'size': 0,
-                'packet_count': 0,
-                'oldest_packet_delay': 0,
-                'average_delay': 0.0,
-                'utilization': 0.0
-            }
-
-        delays = [current_time - p['creation_time'] for p in self.queue]
-        return {
-            'size': self.current_size,
-            'packet_count': len(self.queue),
-            'oldest_packet_delay': max(delays),
-            'average_delay': sum(delays) / len(delays),
-            'utilization': (self.current_size / self.max_size) * 100
-        }
-
-    
-    def DESTROY_BUFFER(self):
-        """
-        Полностью очистить буфер.
-        
-        Удаляет все пакеты и сбрасывает текущий размер буфера. Вдруг пригодится
-        
-        Returns:
-            None
-        """
-        self.queue.clear()
-        self.current_size = 0
-        self.dropped_packets = 0
-    #@sherokiddo: "Возможно пригодится метод для удаления пакетов, у которых
-    # капнула уже большая задержка. типа REMOVE_OLD_PCKT
-
-
 class UECollection:
     """
     Класс для управления коллекцией пользовательских устройств.

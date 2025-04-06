@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, Union
 from UE_MODULE import UserEquipment, UECollection
 from RES_GRID import RES_GRID_LTE
 from SCHEDULER import RoundRobinScheduler
+from BS_MODULE import BaseStation
 # %matplotlib
 
 class SimulationEnvironment:
@@ -31,33 +32,38 @@ class SimulationEnvironment:
     Класс, представляющий среду симуляции для системы LTE.
     """
     
-    def __init__(self, bandwidth_mhz: float = 10, num_frames: int = 10, 
-                 bs_position: tuple = (500, 500)):
+    def __init__(self, bandwidth_mhz: float = 10, num_frames: int = 10):
+        
         """
         Инициализация среды симуляции.
         
         Args:
             bandwidth_mhz: Полоса частот в МГц (1.4, 3, 5, 10, 15, 20)
             num_frames: Количество кадров для симуляции
-            bs_position: Координаты базовой станции (x, y) в метрах
+
         """
         self.lte_grid = RES_GRID_LTE(bandwidth=bandwidth_mhz, num_frames=num_frames)
-        self.ue_collection = UECollection(bs_position=bs_position)
+        self.ue_collection = UECollection()  # Убрал bs_position отсюда
         self.scheduler = RoundRobinScheduler(self.lte_grid)
-        self.simulation_time = 0  # Текущее время симуляции в мс
+        self.simulation_time = 0
         self.results = {
             'throughput_by_ue': {},
             'allocated_rbs_by_tti': {},
             'total_allocated_rbs': 0
         }
-    
-    def add_user(self, ue: UserEquipment):
-        """
-        Добавить пользователя в симуляцию.
+
+        self.base_station = BaseStation(
+            x=500, 
+            y=500, 
+            height=35.0, 
+            bandwidth=bandwidth_mhz
+        )
         
-        Args:
-            ue: Объект пользовательского устройства
-        """
+    def add_user(self, ue: UserEquipment):
+        # Установка модели канала (пример для UMiModel)
+        from CHANNEL_MODEL import UMiModel
+        ue.SET_CH_MODEL(UMiModel(self.base_station))
+        
         self.ue_collection.ADD_USER(ue)
         self.results['throughput_by_ue'][ue.UE_ID] = []
     
@@ -69,6 +75,13 @@ class SimulationEnvironment:
             duration_ms: Длительность симуляции в миллисекундах
             time_step_ms: Шаг времени симуляции в миллисекундах
         """
+        while self.simulation_time < duration_ms:
+            # Обновляем пользователей, передавая параметры базовой станции
+            self.ue_collection.UPDATE_ALL_USERS(
+                time_ms=self.simulation_time,
+                bs_position=(self.base_station.position[0], self.base_station.position[1]),
+                bs_height=self.base_station.height
+            )
         self.simulation_time = 0
         
         # Предварительно проверяем, что у пользователей есть данные в буфере
