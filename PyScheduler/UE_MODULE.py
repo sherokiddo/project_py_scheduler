@@ -7,8 +7,8 @@
 # в сети LTE, включая их перемещение, генерацию трафика, управление буфером
 # и оценку качества канала.
 #
-# Версия: 1.0.3
-# Дата последнего изменения: 2025-03-30
+# Версия: 1.0.5
+# Дата последнего изменения: 2025-04-06
 # Автор: Брагин Кирилл, Норицин Иван
 # Версия Python Kernel: 3.12.9
 #
@@ -50,13 +50,16 @@
 #
 #   v1.0.4 - 2025-04-06
 #      - Общий рефакторинг и код-ревью  
-#      - Добавлены валидация для некоторых методов. Даны рекомендации по
+#      - Добавлена валидация для некоторых методов. Даны рекомендации по
 #        по реализации следующих валидаций   
 #      - Изменен буфер пользователя для подготовки интеграции с моделями
 #       генерации трафика. Теперь буфер FIFO, но приоритеты оставлены
 #       заглушкой для реализации гибридного буфера с учетом QoS
 #      - Подготовка к реализации адаптивной кодовой модуляции
 #
+#   v1.0.5 - 2025-04-06
+#      - Добавлен класс Packet. Логика буфера и тесты переписаны с учетом
+#       новых реалий
 #------------------------------------------------------------------------------
 """
 import numpy as np
@@ -297,17 +300,15 @@ class UserEquipment:
         # сделай единый метод вызова для любой модели (желательно в MOBILITY_MODEL)
         # тут же столько оптимизировать можно...Подумай на досуге в общем"
     
-    def GEN_TRFFC(self, time_ms: int):
-        """
-        Сгенерировать новый трафик согласно заданной модели.
-        
-        Args:
-            time_ms: Текущее время в миллисекундах
-        """
-        if self.traffic_model:
-            packets = self.traffic_model.generate(time_ms)
-            for packet_size, priority in packets:
-                self.buffer.ADD_PACKET(packet_size, time_ms, priority)
+    def GEN_TRFFC(self, packet_size: int, current_time: int):
+        """Пример генерации трафика с передачей времени"""
+        packet = Packet(
+            size=packet_size,
+            creation_time=current_time,
+            priority=5  # Пример приоритета
+        )
+        if not self.buffer.add_packet(packet):
+            print(f"UE {self.UE_ID}: Пакет отброшен")
     
     def UPD_THROUGHPUT(self, bits_transmitted: int, time_interval_ms: int):
         """
@@ -482,11 +483,33 @@ class UserEquipment:
         # пусть живут в модели Гаусс-Маркова.
         # атрибут self.mean_direction = np.random.randint(0, 360) сделать глобальным, чего тут его дублировать
         # можно было сделать через словари, но так тоже лаконично. с точки зрения оптимизации еще вариантов не знаю"
+
+class Packet:
+    """Класс для представления сетевого пакета"""
+    _id_counter = 0  # Счетчик для генерации уникальных ID
+    
+    def __init__(self, size: int, creation_time: int, priority: int = 0):
+        if size <= 0:
+            raise ValueError("Размер пакета должен быть > 0")
+        if not (0 <= priority <= 10):
+            raise ValueError("Приоритет должен быть 0-10")
+
+        Packet._id_counter += 1
+        self.id = Packet._id_counter  # Простой числовой идентификатор
+        self.size = size
+        self.creation_time = creation_time  # Время в мс (ожидается передача извне)
+        self.priority = priority # для реализации QoS буфера нужно будет уйти от FIFO
+        self.retry_count = 0 # Заготовка для HARQ
+
+    @property
+    def age(self, current_time: int) -> int:
+        """Возраст пакета в мс (требует явной передачи текущего времени)"""
+        return current_time - self.creation_time
         
 class Buffer:
     """
     Класс для моделирования буфера пользовательского устройства. Пока функционирует по логике
-    FIFO. Есть костыль для приоритетов пакетов, но не раскрыт.
+    FIFO. Есть костыль для приоритетов пакетов, но не раскрыт. Для реализации QoS буфера нужно будет уйти от FIFO
     """
     def __init__(self, max_size: int = 1048576):  # 1 MB по умолчанию
         """
@@ -506,9 +529,7 @@ class Buffer:
         будем генерировать трафик и каким макаром, но сделал такую заглушку
         
         Args:
-            packet_size: Размер пакета в байтах
-            creation_time: Время создания пакета (в мс)
-            priority: Приоритет пакета (0-10)
+            Наследуется у класса Packet
             
         Returns:
             bool: True, если пакет добавлен, False если отброшен
@@ -516,16 +537,15 @@ class Buffer:
         if self.current_size + packet_size > self.max_size:
             self.dropped_packets += 1
             return False
-        
-        packet = {
+
+        self.queue.append({
             'size': packet_size,
             'creation_time': creation_time,
-            'priority': priority #не используется для FIFO
-        }
-        
-        self.queue.append(packet)  # Добавляем пакет в конец очереди
+            'priority': priority
+        })
         self.current_size += packet_size
         return True
+
         #@sherokiddo: "Возможно, у пакета появится атрибут метки QoS или приоритет
         # заглушку для него сделал. В дальнейшем реализовать функцию CHCK_PRIORITY или CHCK_PR
         # а также реализовать логику переполнения буфера и отбрасывания пакетов
@@ -545,17 +565,17 @@ class Buffer:
         Returns:
             Tuple[List[Dict], int]: (список пакетов, общий размер в байтах)
         """
-        selected_packets = []
+        selected = []
         total_size = 0
-
+        
         while self.queue and total_size + self.queue[0]['size'] <= max_bytes:
-            packet = self.queue.popleft()  # Извлекаем из начала очереди
-            selected_packets.append(packet)
+            packet = self.queue.popleft()
+            selected.append(packet)
             total_size += packet['size']
             self.current_size -= packet['size']
+            
+        return selected, total_size
 
-        return selected_packets, total_size
-    
     def GET_STATUS(self, current_time: int) -> Dict:
         """
         Получить статистику состояния буфера.
@@ -571,11 +591,11 @@ class Buffer:
                 'size': 0,
                 'packet_count': 0,
                 'oldest_packet_delay': 0,
-                'average_delay': 0,
+                'average_delay': 0.0,
                 'utilization': 0.0
             }
 
-        delays = [current_time - packet['creation_time'] for packet in self.queue]
+        delays = [current_time - p['creation_time'] for p in self.queue]
         return {
             'size': self.current_size,
             'packet_count': len(self.queue),
@@ -583,6 +603,7 @@ class Buffer:
             'average_delay': sum(delays) / len(delays),
             'utilization': (self.current_size / self.max_size) * 100
         }
+
     
     def DESTROY_BUFFER(self):
         """
@@ -593,31 +614,12 @@ class Buffer:
         Returns:
             None
         """
-        self.packets.clear()
+        self.queue.clear()
         self.current_size = 0
+        self.dropped_packets = 0
     #@sherokiddo: "Возможно пригодится метод для удаления пакетов, у которых
     # капнула уже большая задержка. типа REMOVE_OLD_PCKT
 
-# Далее пример создания буфера, может пригодится для понимания логики
-# # Создание буфера с максимальным размером 1 MB
-# buffer = Buffer(max_size=1048576)
-
-# # Добавление нескольких пакетов
-# buffer.ADD_PACKET(packet_size=50000, creation_time=1000, priority=5)
-# buffer.ADD_PACKET(packet_size=30000, creation_time=2000, priority=3)
-# buffer.ADD_PACKET(packet_size=70000, creation_time=3000, priority=1)
-
-# # Получение пакетов на передачу (максимум 100000 байт)
-# selected_packets, total_bytes = buffer.GET_PACKETS(max_bytes=100000)
-# print(f"Переданные пакеты: {selected_packets}, общий размер: {total_bytes} байт")
-
-# # Проверка состояния буфера
-# status = buffer.GET_STATUS(current_time=4000)
-# print(f"Состояние буфера: {status}")
-
-# # Очистка буфера
-# buffer.DESTROY_BUFFER()
-# print("Буфер очищен.")
 
 class UECollection:
     """
@@ -751,84 +753,42 @@ def prepare_users_for_scheduler(ue_collection: UECollection, time_ms: int) -> Li
 # Можно удалить или закомментить после того, как будут сделаны генераторы трафика.
 def test_buffer_fifo():
     """
-    Тестирование работы буфера по принципу FIFO.
-    Сценарии:
-    1. Добавление пакетов в буфер
-    2. Извлечение пакетов в порядке поступления
-    3. Обработка переполнения буфера
-    4. Проверка статистики буфера
+    Расширенный тест работы буфера с проверкой задержек
     """
-    # Создаем пользователей с разными характеристиками
-    users = [
-        UserEquipment(UE_ID=1, ue_class="pedestrian"),
-        UserEquipment(UE_ID=2, ue_class="car"),
-        UserEquipment(UE_ID=3, ue_class="indoor")
-    ]
-
-    # Генерация тестового трафика (пакеты в формате: [размер, время создания, приоритет])
-    test_packets = [
-        [1500, 0, 5],   # Пакет 1: 1500 байт, высокий приоритет
-        [3000, 100, 3], # Пакет 2: 3000 байт, средний приоритет
-        [5000, 200, 1]  # Пакет 3: 5000 байт, низкий приоритет
-    ]
-
-    print("=== Тест 1: Добавление пакетов в буфер ===")
-    for i, user in enumerate(users):
-        # Добавляем разные наборы пакетов для каждого пользователя
-        for j in range(i + 1):
-            packet = test_packets[j]
-            success = user.buffer.ADD_PACKET(
-                packet_size=packet[0],
-                creation_time=packet[1],
-                priority=packet[2]
-            )
-            print(f"UE {user.UE_ID}: Пакет {j+1} добавлен ({'успех' if success else 'переполнение'})")
-        print(f"Текущий размер буфера UE {user.UE_ID}: {user.buffer.current_size} байт\n")
-
-    print("\n=== Тест 2: Извлечение пакетов по FIFO ===")
-    for user in users:
-        # Пытаемся извлечь 6000 байт (3 пакета)
-        packets, total = user.buffer.GET_PACKETS(6000)
-        print(f"UE {user.UE_ID}:")
-        print(f"Извлечено пакетов: {len(packets)}, Общий размер: {total} байт")
-        print(f"Остаток в буфере: {user.buffer.current_size} байт")
-
-        # Показываем порядок извлечения
-        for i, p in enumerate(packets):
-            print(f"Пакет {i+1}: размер={p['size']}, приоритет={p['priority']}")
-        print()
-
-    print("\n=== Тест 3: Проверка переполнения ===")
-    test_user = UserEquipment(UE_ID=4, buffer_size=5000)
+    print("\n=== Начало теста буфера ===")
     
-    # Попытка добавить 3 пакета (1500 + 3000 + 5000 = 9500 > 5000)
-    packets_to_add = [
-        [1500, 300, 5],
-        [3000, 400, 3],
-        [5000, 500, 1]
-    ]
+    # 1. Инициализация буфера
+    buffer = Buffer(max_size=10000)
+    current_time = 1000
     
-    for p in packets_to_add:
-        success = test_user.buffer.ADD_PACKET(p[0], p[1], p[2])
-        status = test_user.buffer.GET_STATUS(current_time=600)
-        print(f"Добавлен пакет {p[0]} байт: {'успех' if success else 'переполнение'}")
-        print(f"Текущий размер: {status['size']} байт, Отброшено: {test_user.buffer.dropped_packets}")
-
-    print("\n=== Тест 4: Проверка статистики ===")
-    test_user = UserEquipment(UE_ID=5)
+    # 2. Добавление пакетов с разным временем создания
+    buffer.ADD_PACKET(2000, current_time - 500, 5)  # Задержка 500 мс
+    buffer.ADD_PACKET(3000, current_time - 300, 3)  # Задержка 300 мс
+    buffer.ADD_PACKET(5000, current_time - 100, 1)  # Задержка 100 мс
     
-    # Добавляем пакеты с разным временем создания
-    test_user.buffer.ADD_PACKET(2000, 100, 5)
-    test_user.buffer.ADD_PACKET(3000, 200, 3)
+    # 3. Проверка статуса
+    status = buffer.GET_STATUS(current_time)
+    print(f"Статус после добавления: {status}")
     
-    # Получаем статус в момент времени 500 мс
-    status = test_user.buffer.GET_STATUS(current_time=500)
-    print(f"Статус буфера:")
-    print(f"- Общий размер: {status['size']} байт")
-    print(f"- Количество пакетов: {status['packet_count']}")
-    print(f"- Максимальная задержка: {status['oldest_packet_delay']} мс")
-    print(f"- Средняя задержка: {status['average_delay']:.1f} мс")
-    print(f"- Заполненность: {status['utilization']:.1f}%")
+    # 4. Извлечение пакетов
+    packets, total = buffer.GET_PACKETS(6000)
+    print(f"\nИзвлечено {len(packets)} пакетов ({total} байт):")
+    for i, p in enumerate(packets, 1):
+        print(f"Пакет {i}: размер={p['size']} задержка={current_time - p['creation_time']} мс")
+    
+    # 5. Проверка статуса после извлечения
+    status = buffer.GET_STATUS(current_time)
+    print(f"\nСтатус после извлечения: {status}")
+    
+    # 6. Проверка переполнения
+    print("\nПопытка переполнения буфера:")
+    for size in [4000, 3000, 5000]:
+        success = buffer.ADD_PACKET(size, current_time)
+        print(f"Пакет {size} байт: {'успех' if success else 'переполнение'}")
+    
+    # 7. Очистка буфера
+    buffer.DESTROY_BUFFER()
+    print(f"\nПосле очистки: размер={buffer.current_size}, пакетов={len(buffer.queue)}")
 
 if __name__ == "__main__":
     test_buffer_fifo()
