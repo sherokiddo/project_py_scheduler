@@ -67,6 +67,7 @@ from collections import deque
 from typing import Dict, List, Optional, Union, Tuple
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel
 from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
+from BS_MODULE import BaseStation
 # Импорты из других модулей (будут созданы позже)
 # from TRAFFIC_MODEL import TrafficModel, ConstantBitRate, VoipModel, WebBrowsingModel
 #upd
@@ -140,29 +141,52 @@ class Buffer:
         # а также, добавить возможность менять приоритет пакета через метод
         # а напоследок, метод для получения пакетов определенного приоритета GET_PCKT_BY_PR"
 
-    def GET_PACKETS(self, max_bytes: int) -> Tuple[List[Dict], int]:
+    def GET_PACKETS(self, max_bytes: int, bits_per_rb: int) -> Tuple[List[Dict], int]:
         """
-        Получить пакеты из буфера для передачи.Ранее был реализован по методу
-        Priority Queue (очередь с приоритетами), теперь FIFO.
-        Возможно, для реализации QoS понадобится гибридный подход
-        @sherokiddo: "Можешь обратится ко мне, я сделаю гибридный буфер"
-
+        Извлечение данных из буфера с фрагментацией.
+        
         Args:
-            max_bytes: Максимальное количество байт для передачи
-
+            max_bytes: Максимальный объём данных в байтах
+            bits_per_rb: Количество бит на ресурсный блок
+            
         Returns:
-            Tuple[List[Dict], int]: (список пакетов, общий размер в байтах)
+            Tuple[List[Dict], int]: (список пакетов/фрагментов, общий размер в байтах)
         """
         selected = []
-        total_size = 0
+        total_bits = 0
+        max_bits = max_bytes * 8  # Конвертация в биты
         
-        while self.queue and total_size + self.queue[0]['size'] <= max_bytes:
-            packet = self.queue.popleft()
-            selected.append(packet)
-            total_size += packet['size']
-            self.current_size -= packet['size']
+        while self.queue and total_bits < max_bits:
+            packet = self.queue[0]
+            packet_bits = packet['size'] * 8
             
-        return selected, total_size
+            # Доступное место в текущей итерации
+            remaining_bits = max_bits - total_bits
+            fragment_bits = min(packet_bits, remaining_bits)
+            fragment_size = fragment_bits // 8  # Размер фрагмента в байтах
+            
+            if fragment_size >= packet['size']:
+                # Весь пакет помещается
+                selected_packet = self.queue.popleft()
+                selected.append(selected_packet)
+                total_bits += packet_bits
+                self.current_size -= selected_packet['size']
+            else:
+                # Создание фрагмента
+                fragment = {
+                    'size': fragment_size,
+                    'creation_time': packet['creation_time'],
+                    'priority': packet['priority'],
+                    'parent_id': id(packet)
+                }
+                selected.append(fragment)
+                total_bits += fragment_bits
+                
+                # Обновление исходного пакета
+                self.queue[0]['size'] -= fragment_size
+                self.current_size -= fragment_size
+        
+        return selected, total_bits // 8
 
     def GET_STATUS(self, current_time: int) -> Dict:
         """
@@ -483,6 +507,17 @@ class UserEquipment:
             return float('inf')  # Если не было передачи, присваиваем высокий приоритет
         return self.current_throughput / self.average_throughput
     
+    def UPD_BUFFER(self, current_time: int):
+        """Обновление задержки пакетов в буфере"""
+        for packet in self.buffer.queue:
+            packet['age'] = current_time - packet['creation_time']
+        
+        # Удаление устаревших пакетов (пример: TTL = 1000 мс)
+        self.buffer.queue = deque([
+            p for p in self.buffer.queue
+            if p['age'] <= 1000
+        ])
+
     def GET_BUFFER_STATUS(self, current_time: int) -> Dict:
         """
         Получить текущий статус буфера.
@@ -775,8 +810,9 @@ def test_buffer_fifo():
     status = buffer.GET_STATUS(current_time)
     print(f"Статус после добавления: {status}")
     
-    # 4. Извлечение пакетов
-    packets, total = buffer.GET_PACKETS(6000)
+    # 4. Извлечение пакетов (добавлен параметр bits_per_rb)
+    bits_per_rb = 8000  # Пример: 1000 байт на RB
+    packets, total = buffer.GET_PACKETS(6000, bits_per_rb)
     print(f"\nИзвлечено {len(packets)} пакетов ({total} байт):")
     for i, p in enumerate(packets, 1):
         print(f"Пакет {i}: размер={p['size']} задержка={current_time - p['creation_time']} мс")

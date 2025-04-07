@@ -104,7 +104,7 @@ class Slot:
     Класс, представляющий слот в структуре LTE.
     Слот содержит набор ресурсных блоков по частоте.
     """
-    def __init__(self, slot_id: int, num_rb: int):
+    def __init__(self, slot_id: str, num_rb: int, start_freq: int = 0):
         """
         Инициализация слота.
         
@@ -113,12 +113,13 @@ class Slot:
             num_rb: Количество ресурсных блоков по частоте
         """
         self.id = slot_id
+        self.start_freq = start_freq  # Добавлено!
         self.resource_blocks = {}
         
-        # Создание ресурсных блоков для слота
-        for rb_idx in range(num_rb):
-            rb_id = f"RB_{slot_id}_{rb_idx}"
-            self.resource_blocks[rb_id] = RES_BLCK(rb_id, slot_id, rb_idx)
+        for rb_local_idx in range(num_rb):
+            rb_id = f"{slot_id}_{rb_local_idx}"
+            freq_idx = start_freq + rb_local_idx  # Учитываем смещение
+            self.resource_blocks[rb_id] = RES_BLCK(rb_id, slot_id, freq_idx)
     
     def GET_RES_BLCK(self, rb_idx: int) -> Optional[RES_BLCK]:
         """
@@ -166,10 +167,10 @@ class Subframe:
             num_rb: Количество ресурсных блоков по частоте
         """
         self.id = subframe_id
-        # Слот 0 и слот 1 в подкадре
+        rb_per_slot = num_rb // 2
         self.slots = [
-            Slot(f"{subframe_id}_0", num_rb // 2),  # Половина RB в первом слоте
-            Slot(f"{subframe_id}_1", num_rb // 2)   # Вторая половина во втором слоте
+            Slot(f"{subframe_id}_0", rb_per_slot, start_freq=0),       # Слот 0: 0-last0
+            Slot(f"{subframe_id}_1", rb_per_slot, start_freq=rb_per_slot)  # Слот 1: last-end
         ]
     
     def GET_SLOT(self, slot_idx: int) -> Optional[Slot]:
@@ -273,12 +274,12 @@ class RES_GRID_LTE:
     """
     # Словарь соответствия полосы частот и количества RB согласно стандарту LTE
     BANDWIDTH_TO_RB = {
-        1.4: 6,
-        3: 15,
-        5: 25,
-        10: 50,
-        15: 75,
-        20: 100
+        1.4: 6,    # 6 RB на слот → 12 RB на TTI
+        3: 15,     # 15 RB на слот → 30 RB на TTI
+        5: 25,     # 25 RB на слот → 50 RB на TTI
+        10: 50,    # 50 RB на слот → 100 RB на TTI
+        15: 75,    # 75 RB на слот → 150 RB на TTI
+        20: 100    # 100 RB на слот → 200 RB на TTI
     }
     
     def __init__(self, bandwidth: float = 10, num_frames: int = 10, cp_type: str = "normal"):
@@ -293,11 +294,11 @@ class RES_GRID_LTE:
         if bandwidth not in self.BANDWIDTH_TO_RB:
             raise ValueError(f"Недопустимая полоса частот. Допустимые значения: {list(self.BANDWIDTH_TO_RB.keys())}")
         
-        self.bandwidth = bandwidth
-        self.num_rb = self.BANDWIDTH_TO_RB[bandwidth]
+        self.rb_per_slot = self.BANDWIDTH_TO_RB[bandwidth]
+        self.num_rb = self.rb_per_slot * 2  # Всего RB на TTI
         self.num_frames = num_frames
-        self.cp_type = cp_type
-        self.total_tti = num_frames * 10  # Общее количество TTI (10 TTI на кадр)
+        self.total_tti = num_frames * 10
+        self.frames = [Frame(i, self.rb_per_slot) for i in range(num_frames)]
         
         # Создание кадров
         self.frames = [Frame(i, self.num_rb) for i in range(num_frames)]
@@ -426,14 +427,17 @@ class RES_GRID_LTE:
         Returns:
             List[RES_BLCK]: Список свободных ресурсных блоков
         """
+        """Получить все свободные RB для заданного TTI."""
         if tti >= self.total_tti:
             return []
-        
         frame_idx = tti // 10
         sf_idx = tti % 10
         frame = self.frames[frame_idx]
         subframe = frame.subframes[sf_idx]
-        return subframe.GET_FREE_RES_BLCK()
+        return (
+            subframe.slots[0].GET_FREE_RES_BLCK() +  # Слот 0
+            subframe.slots[1].GET_FREE_RES_BLCK()    # Слот 1
+        )
     
     def GET_TTI_STATUS(self, tti: int) -> Dict[int, Optional[int]]:
         """
