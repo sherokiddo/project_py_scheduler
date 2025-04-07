@@ -168,8 +168,8 @@ class Subframe:
         self.id = subframe_id
         # Слот 0 и слот 1 в подкадре
         self.slots = [
-            Slot(f"{subframe_id}_0", num_rb),
-            Slot(f"{subframe_id}_1", num_rb)
+            Slot(f"{subframe_id}_0", num_rb // 2),  # Половина RB в первом слоте
+            Slot(f"{subframe_id}_1", num_rb // 2)   # Вторая половина во втором слоте
         ]
     
     def GET_SLOT(self, slot_idx: int) -> Optional[Slot]:
