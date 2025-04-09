@@ -7,8 +7,8 @@
 # пользовательскими устройствами (UE) в сети LTE. Реализует алгоритм
 # планирования Round Robin.
 #
-# Версия: 1.0.6
-# Дата последнего изменения: 2025-04-07
+# Версия: 1.0.7
+# Дата последнего изменения: 2025-04-09
 # Версия Python Kernel: 3.12.9
 # Автор: Брагин Кирилл
 #
@@ -29,6 +29,16 @@
 # - Добавлены тесты планировщика
 # - По итогам тестов оказалось, что АМС не работает полноценно. Это печально.
 # - Для дальнейшей коррекции работы, необходимо ввести фрагментацию пакетов.
+#
+# Изменения v1.0.7:
+# - Доделан планировщик RR.Дебаг работы планировщика при работе со слотами и буфером
+# - Исправлено некорректное распределение блоков по времени.
+# - Расширены тесты планировщика, добавлены доп. валидации для проверки работы АМС.
+# - Отложить фрагментацию пакетов. Подумать над принципом работы с буфером, корректное
+# извлечение пакетов и его уменьшение. А затем перейти к формированию концепции
+# транспортных блоков.
+# - АМС - пофикшено, работает правильно, статистику считает правильно. Успех!
+# - На будущее: тесты выпилить в отдельный блок, чтобы больше тут не жили.
 #------------------------------------------------------------------------------
 """
 
@@ -120,9 +130,9 @@ class RoundRobinScheduler(SchedulerInterface):
             current_index = start_index
             for rb in slots[slot_id]:
                 user = active_users[current_index]
-                if self.lte_grid.ALLOCATE_RB(tti, rb.freq_idx, user['UE_ID']):
+                if self.lte_grid.ALLOCATE_RB(tti, rb.slot_id, rb.freq_idx, user['UE_ID']):
                     allocation[user['UE_ID']].append(rb.freq_idx)
-                current_index = (current_index + 1) % len(active_users)
+                    current_index = (current_index + 1) % len(active_users)
         
         # Обновление индекса последнего пользователя
         self.last_served_index = (start_index + len(free_rbs)) % len(active_users)
@@ -173,62 +183,6 @@ class RoundRobinScheduler(SchedulerInterface):
             stats['average_throughput'] = total_bits / len(users)
             
         return stats    
-    
-# def test_round_robin_scheduler():
-#     """
-#     Тестирование работы планировщика Round Robin.
-#     Проверяет:
-#     1. Корректность распределения RB между пользователями
-#     2. Учет CQI при расчете пропускной способности
-#     3. Работу с разным количеством пользователей и RB
-#     """
-#     print("\n=== Тестирование Round Robin Scheduler ===")
-    
-#     # 1. Инициализация ресурсной сетки (10 МГц, 1 кадр = 10 TTI)
-#     lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=1)
-#     scheduler = RoundRobinScheduler(lte_grid)
-    
-#     # 2. Создание тестовых пользователей
-#     users = [
-#         {"UE_ID": 1, "buffer_size": 5000, "cqi": 10},  # Высокий CQI
-#         {"UE_ID": 2, "buffer_size": 3000, "cqi": 5},   # Средний CQI
-#         {"UE_ID": 3, "buffer_size": 0, "cqi": 15}      # Пустой буфер (не должен получить RB)
-#     ]
-    
-#     # 3. Запуск симуляции для 3 TTI
-#     for tti in range(3):
-#         print(f"\nTTI {tti}:")
-#         result = scheduler.schedule(tti, users)
-        
-#         # Проверки
-#         free_rbs = len(lte_grid.GET_FREE_RB_FOR_TTI(tti))
-#         allocated_rbs = sum(len(rbs) for rbs in result['allocation'].values())
-
-#         print(f"Свободные RB: {free_rbs}")
-#         print(f"Выделенные RB: {allocated_rbs}")
-#         print(f"Ожидалось RB: {lte_grid.num_rb}")
-        
-#         assert allocated_rbs + free_rbs == 50, f"Ожидается 50 RB на TTI, получено {allocated_rbs + free_rbs}"
-        
-#         # Основные проверки
-#         expected_rbs = len(lte_grid.GET_FREE_RB_FOR_TTI(tti)) + allocated_rbs
-#         assert expected_rbs == lte_grid.num_rb, f"Ошибка: {allocated_rbs} + {free_rbs} ≠ {lte_grid.num_rb}"
-                
-#         # Вывод результатов
-#         print(f"Распределение RB: {result['allocation']}")
-#         print(f"Пропускная способность: {result['statistics']}")
-        
-#         # Проверка ротации пользователей
-#         if tti == 0:
-#             assert len(result['allocation'][1]) > 0, "Первый пользователь не получил RB"
-#         elif tti == 1:
-#             assert len(result['allocation'][2]) > 0, "Второй пользователь не получил RB"
-    
-#     print("\nТест пройден успешно!")
-
-# # Запуск теста при выполнении модуля
-# if __name__ == "__main__":
-#     test_round_robin_scheduler()
 
 def test_scheduler_with_buffer():
     """
@@ -252,7 +206,7 @@ def test_scheduler_with_buffer():
     #------------------------------------------------------------------
     # Шаг 3: Создание пользователей и базовой станции
     #------------------------------------------------------------------
-    bs = BaseStation(x=0, y=0, height=25.0, bandwidth=10)
+    bs = BaseStation(x=0, y=0, height=25.0, bandwidth=5)
     ue1 = UserEquipment(UE_ID=1, x=500, y=500, ue_class="pedestrian")
     ue2 = UserEquipment(UE_ID=2, x=1000, y=1000, ue_class="car")
     

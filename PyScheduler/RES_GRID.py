@@ -7,8 +7,8 @@
 #   сетки LTE. Позволяет создавать сетку с заданными параметрами, выделять
 #   и освобождать ресурсные блоки, а также визуализировать состояние сетки.
 #
-# Версия: 1.0.1
-# Дата последнего изменения: 2025-03-15
+# Версия: 1.0.2
+# Дата последнего изменения: 2025-04-09
 # Автор: Брагин Кирилл
 # Версия Python kernel 3.12.9
 №
@@ -31,29 +31,38 @@
 #     - allocate -> ASSIGN_RB
 #     - release -> RELEASE_RB
 #
+#   v1.0.2 - 2025-04-15:
+#     - Переписал весь код модуля ресурсной сетки. Теперь работает адекватно.
+#     Ранее работали неадекватно методы распределения ресурсов. Неправильно
+#     расчитывались слоты и не работали с планировщиком. Неправильно отрисовывалась сетка.
+#     Неправильно индексировались ресурсные блоки.
+#     - Добавлены тесты. Теперь будем знать, что работает не так.
+#     - Добавлена визуализация ресурсной сетки. Так много я еще не страдал.
+#     - На будущее. Убрать тесты в отдельный модуль.
 #------------------------------------------------------------------------------
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 from typing import Dict, List, Optional, Union
-#upd
+# %matplotlib
 
 class RES_BLCK:
     """
     Класс, представляющий ресурсный блок (RB) в сетке.
     """
-    def __init__(self, id: str, time_idx: int, freq_idx: int):
+    def __init__(self, id: str, slot_id: str, freq_idx: int):
         """
         Инициализация ресурсного блока.
         
         Args:
             id: Уникальный идентификатор блока
-            time_idx: Временной индекс (в рамках TTI)
+            slot_id: Временной индекс [0 или 1] (в рамках TTI)
             freq_idx: Частотный индекс
         """
         self.id = id
-        self.time_idx = time_idx
+        self.slot_id = slot_id
+        # self.tti_idx = tti_idx
         self.freq_idx = freq_idx
         self.UE_ID = None  # ID пользователя, которому назначен RB
         self.status = "free"  # Статус: "free" или "assigned"
@@ -94,9 +103,9 @@ class RES_BLCK:
         """
         return self.status == "free"
     
-    def __repr__(self) -> str:
-        """Строковое представление объекта"""
-        return f"RB(id={self.id}, time={self.time_idx}, freq={self.freq_idx}, status={self.status}, user={self.UE_ID})"
+    # def __repr__(self) -> str:
+    #     """Строковое представление объекта"""
+    #     return f"RB(id={self.id}, time={self.time_idx}, freq={self.freq_idx}, status={self.status}, user={self.UE_ID})"
 
 
 class Slot:
@@ -104,7 +113,7 @@ class Slot:
     Класс, представляющий слот в структуре LTE.
     Слот содержит набор ресурсных блоков по частоте.
     """
-    def __init__(self, slot_id: str, num_rb: int, start_freq: int = 0):
+    def __init__(self, slot_id: str, rb_per_slot: int):
         """
         Инициализация слота.
         
@@ -113,15 +122,13 @@ class Slot:
             num_rb: Количество ресурсных блоков по частоте
         """
         self.id = slot_id
-        self.start_freq = start_freq  # Добавлено!
-        self.resource_blocks = {}
+        self.resource_blocks: Dict[str, RES_BLCK] = {}
         
-        for rb_local_idx in range(num_rb):
-            rb_id = f"{slot_id}_{rb_local_idx}"
-            freq_idx = start_freq + rb_local_idx  # Учитываем смещение
-            self.resource_blocks[rb_id] = RES_BLCK(rb_id, slot_id, freq_idx)
+        for rb_idx in range(rb_per_slot):
+            rb_id = f"RB_{slot_id}_{rb_idx}"  # Унифицированный формат
+            self.resource_blocks[rb_id] = RES_BLCK(rb_id, slot_id, rb_idx)
     
-    def GET_RES_BLCK(self, rb_idx: int) -> Optional[RES_BLCK]:
+    def GET_RES_BLCK(self, freq_idx: int) -> Optional[RES_BLCK]:
         """
         Получить ресурсный блок по частотному индексу.
         
@@ -131,8 +138,11 @@ class Slot:
         Returns:
             RES_BLCK или None, если блок не найден
         """
-        rb_id = f"RB_{self.id}_{rb_idx}"
-        return self.resource_blocks.get(rb_id)
+       
+        for rb in self.resource_blocks.values():
+            if rb.freq_idx == freq_idx:
+                return rb
+        return None
     
     def GET_ALL_RES_BLCK(self) -> List[RES_BLCK]:
         """
@@ -158,19 +168,18 @@ class Subframe:
     Класс, представляющий подкадр (TTI) в структуре LTE.
     Подкадр состоит из 2 слотов.
     """
-    def __init__(self, subframe_id: int, num_rb: int):
+    def __init__(self, subframe_id: int, rb_per_slot: int):
         """
         Инициализация подкадра.
         
         Args:
             subframe_id: Идентификатор подкадра
-            num_rb: Количество ресурсных блоков по частоте
+            rb_per_slot: Количество ресурсных блоков в слоте
         """
-        self.id = subframe_id
-        rb_per_slot = num_rb // 2
+        self.id = subframe_id  
         self.slots = [
-            Slot(f"{subframe_id}_0", rb_per_slot, start_freq=0),       # Слот 0: 0-last0
-            Slot(f"{subframe_id}_1", rb_per_slot, start_freq=rb_per_slot)  # Слот 1: last-end
+            Slot(f"sub_{subframe_id}_slot_0", rb_per_slot),
+            Slot(f"sub_{subframe_id}_slot_1", rb_per_slot)
         ]
     
     def GET_SLOT(self, slot_idx: int) -> Optional[Slot]:
@@ -217,7 +226,7 @@ class Frame:
     Класс, представляющий кадр в структуре LTE.
     Кадр состоит из 10 подкадров.
     """
-    def __init__(self, frame_id: int, num_rb: int):
+    def __init__(self, frame_id: int, rb_per_slot: int):
         """
         Инициализация кадра.
         
@@ -226,8 +235,7 @@ class Frame:
             num_rb: Количество ресурсных блоков по частоте
         """
         self.id = frame_id
-        # 10 подкадров в кадре
-        self.subframes = [Subframe(f"{frame_id}_{i}", num_rb) for i in range(10)]
+        self.subframes = [Subframe(i, rb_per_slot) for i in range(10)]
     
     def GET_SUBFRAME(self, subframe_idx: int) -> Optional[Subframe]:
         """
@@ -291,20 +299,18 @@ class RES_GRID_LTE:
             num_frames: Количество кадров для симуляции
             cp_type: Тип циклического префикса ("normal" или "extended")
         """
+        self.bandwidth = bandwidth
         if bandwidth not in self.BANDWIDTH_TO_RB:
             raise ValueError(f"Недопустимая полоса частот. Допустимые значения: {list(self.BANDWIDTH_TO_RB.keys())}")
         
         self.rb_per_slot = self.BANDWIDTH_TO_RB[bandwidth]
-        self.num_rb = self.rb_per_slot * 2  # Всего RB на TTI
-        self.num_frames = num_frames
-        self.total_tti = num_frames * 10
+        self.num_rb = self.rb_per_slot * 2  # 2 слота на TTI
         self.frames = [Frame(i, self.rb_per_slot) for i in range(num_frames)]
-        
-        # Создание кадров
-        self.frames = [Frame(i, self.num_rb) for i in range(num_frames)]
+        self.total_tti = num_frames * 10
         
         # Словарь для быстрого доступа к RB по TTI и частотному индексу
-        self.rb_map = {}
+        self.rb_map: Dict[tuple, RES_BLCK] = {}
+        self._init_rb_map()
         
         # Текущий TTI (счетчик от 0 до num_frames * 10 - 1)
         self.current_tti = 0
@@ -314,23 +320,22 @@ class RES_GRID_LTE:
             "allocated_rbs": 0,
             "total_rbs": self.num_rb * self.total_tti,
             "allocation_by_user": {},
-            "allocation_by_tti": {}
+            "allocation_by_tti": {tti: 0 for tti in range(self.total_tti)}  # Инициализация всех TTI
         }
-        
         # Инициализация rb_map для быстрого доступа к ресурсным блокам
         self._init_rb_map()
     
     def _init_rb_map(self):
         """Инициализация карты ресурсных блоков для быстрого доступа"""
-        for frame_idx, frame in enumerate(self.frames):
-            for sf_idx, subframe in enumerate(frame.subframes):
-                tti = frame_idx * 10 + sf_idx
-                self.stats["allocation_by_tti"][tti] = 0
-                for rb in subframe.GET_ALL_RES_BLCK():
-                    key = (tti, rb.freq_idx)
-                    self.rb_map[key] = rb
+        for frame in self.frames:
+            for subframe in frame.subframes:
+                tti = frame.id * 10 + subframe.id
+                for slot in subframe.slots:
+                    for rb in slot.resource_blocks.values():
+                        key = (tti, slot.id, rb.freq_idx)
+                        self.rb_map[key] = rb
     
-    def GET_RB(self, tti: int, freq_idx: int) -> Optional[RES_BLCK]:
+    def GET_RB(self, tti: int, slot_id: str, freq_idx: int) -> Optional[RES_BLCK]:
         """
         Получить ресурсный блок по TTI и частотному индексу.
         
@@ -341,10 +346,9 @@ class RES_GRID_LTE:
         Returns:
             RES_BLCK или None, если блок не найден
         """
-        key = (tti, freq_idx)
-        return self.rb_map.get(key)
+        return self.rb_map.get((tti, slot_id, freq_idx))
     
-    def ALLOCATE_RB(self, tti: int, freq_idx: int, UE_ID: int) -> bool:
+    def ALLOCATE_RB(self, tti: int, slot_id: str, freq_idx: int, UE_ID: int) -> bool:
         """
         Назначить ресурсный блок пользователю.
         
@@ -352,37 +356,54 @@ class RES_GRID_LTE:
             tti: Индекс TTI
             freq_idx: Частотный индекс
             UE_ID: Идентификатор пользователя
-            
+            slot_idx: Индекс слота (0 или 1)
         Returns:
             bool: True, если блок успешно назначен, False в противном случае
         """
-        rb = self.GET_RB(tti, freq_idx)
+        if freq_idx >= self.rb_per_slot:
+            print(f"Предупреждение: индекс {freq_idx} выходит за границы допустимого диапазона (0-{self.rb_per_slot-1})")
+            return False
+        
+        rb = self.GET_RB(tti, slot_id, freq_idx)
         if rb and rb.CHCK_RB():
-            if rb.ASSIGN_RB(UE_ID):
-                # Обновление статистики
+            success = rb.ASSIGN_RB(UE_ID)
+            if success:
                 self.stats["allocated_rbs"] += 1
-                self.stats["allocation_by_tti"][tti] = self.stats["allocation_by_tti"].get(tti, 0) + 1
                 self.stats["allocation_by_user"][UE_ID] = self.stats["allocation_by_user"].get(UE_ID, 0) + 1
-                return True
+                self.stats["allocation_by_tti"][tti] += 1
+            return success
         return False
     
-    def ALLOCATE_RB_GROUP(self, tti: int, freq_indices: List[int], UE_ID: int) -> int:
-        """
-        Назначить группу ресурсных блоков пользователю.
-        
-        Args:
-            tti: Индекс TTI
-            freq_indices: Список частотных индексов
-            UE_ID: Идентификатор пользователя
-            
-        Returns:
-            int: Количество успешно назначенных блоков
-        """
-        allocated_count = 0
-        for freq_idx in freq_indices:
-            if self.ALLOCATE_RB(tti, freq_idx, UE_ID):
-                allocated_count += 1
-        return allocated_count
+    def ALLOCATE_RB_GROUP(self, tti: int, freq_idx: int, UE_ID: int) -> bool:
+        success = True
+        for slot in ["sub_{}_slot_0", "sub_{}_slot_1"]:
+            slot_id = slot.format(tti)
+            if not self.ALLOCATE_RB(tti, slot_id, freq_idx, UE_ID):
+                success = False
+                self.RELEASE_RB(tti, slot_id, freq_idx)
+        return success
+    
+    def RELEASE_RB(self, tti: int, slot_id: str, freq_idx: int) -> bool:
+        rb = self.GET_RB(tti, slot_id, freq_idx)
+        if rb and not rb.CHCK_RB():
+            UE_ID = rb.UE_ID
+            if rb.RELEASE_RB():
+                self.stats["allocated_rbs"] -= 1
+                
+                # Корректное уменьшение счетчика пользователя
+                current_user_count = self.stats["allocation_by_user"].get(UE_ID, 0)
+                current_user_count -= 1
+                if current_user_count <= 0:
+                    if UE_ID in self.stats["allocation_by_user"]:
+                        del self.stats["allocation_by_user"][UE_ID]
+                else:
+                    self.stats["allocation_by_user"][UE_ID] = current_user_count
+                
+                # Уменьшение счетчика TTI
+                if tti in self.stats["allocation_by_tti"]:
+                    self.stats["allocation_by_tti"][tti] -= 1
+                return True
+        return False
     
     def GET_FRAME(self, frame_idx: int) -> Optional[Frame]:
         """
@@ -502,94 +523,6 @@ class RES_GRID_LTE:
                         "UE_ID": rb.UE_ID
                     }
         return status
-    
-    # def visualize_grid(self, tti_start: int = 0, tti_end: Optional[int] = None, 
-    #                    show_UE_IDs: bool = True, save_path: Optional[str] = None):
-    #     """
-    #     Визуализация ресурсной сетки.Живет тут для примера и проверки кода.
-    #     Потом выпилить отсюда, и впилить в отдельный модуль.
-        
-    #     Args:
-    #         tti_start: Начальный TTI для визуализации
-    #         tti_end: Конечный TTI для визуализации (не включительно)
-    #         show_UE_IDs: Показывать ли ID пользователей на графике
-    #         save_path: Путь для сохранения изображения (если None, то изображение отображается)
-    #     """
-    #     if tti_end is None:
-    #         tti_end = min(tti_start + 10, self.total_tti)
-        
-    #     # Создаем матрицу для отображения статуса RB
-    #     # 0 для свободных, >0 для занятых блоков (значение = UE_ID)
-    #     grid = np.zeros((self.num_rb, tti_end - tti_start))
-        
-    #     for tti in range(tti_start, tti_end):
-    #         for freq_idx in range(self.num_rb):
-    #             rb = self.GET_RB(tti, freq_idx)
-    #             if rb:
-    #                 if rb.CHCK_RB():
-    #                     grid[freq_idx, tti - tti_start] = 0
-    #                 else:
-    #                     # Для визуализации используем UE_ID как цвет
-    #                     grid[freq_idx, tti - tti_start] = rb.UE_ID if rb.UE_ID is not None else 0
-        
-    #     plt.figure(figsize=(15, 10))
-        
-    #     # Создаем маску для свободных блоков
-    #     mask_free = (grid == 0)
-        
-    #     # Создаем кастомную цветовую карту
-    #     cmap = plt.cm.jet
-    #     cmap.set_bad('white', 1.0)  # Свободные блоки будут белыми
-        
-    #     # Создаем матрицу с NaN для свободных блоков
-    #     grid_masked = np.ma.array(grid, mask=mask_free)
-        
-    #     # Отображаем матрицу
-    #     plt.imshow(grid_masked, aspect='auto', cmap=cmap, interpolation='nearest')
-    #     plt.colorbar(label='User ID')
-        
-    #     # Отдельно отображаем свободные блоки
-    #     plt.imshow(mask_free, aspect='auto', cmap='binary', alpha=0.3, interpolation='nearest')
-        
-    #     plt.xlabel('TTI')
-    #     plt.ylabel('Frequency (RB index)')
-    #     plt.title(f'LTE Resource Grid (Bandwidth: {self.bandwidth} MHz, TTI: {tti_start}-{tti_end-1})')
-        
-    #     # Настройка осей
-    #     plt.yticks(np.arange(0, self.num_rb, 5))
-    #     plt.xticks(np.arange(0, tti_end - tti_start, 1), np.arange(tti_start, tti_end, 1))
-        
-    #     # Добавление линий для разделения кадров
-    #     for i in range(tti_start, tti_end, 10):
-    #         rel_i = i - tti_start
-    #         if 0 <= rel_i < (tti_end - tti_start):
-    #             plt.axvline(x=rel_i, color='red', linestyle='-', linewidth=1, label='Frame boundary' if i == tti_start else None)
-        
-    #     # Добавление линий для разделения подкадров
-    #     for i in range(tti_start, tti_end):
-    #         rel_i = i - tti_start
-    #         if 0 <= rel_i < (tti_end - tti_start):
-    #             plt.axvline(x=rel_i, color='gray', linestyle='--', linewidth=0.5)
-        
-    #     # Добавление текста с ID пользователей, если требуется
-    #     if show_UE_IDs:
-    #         for tti in range(tti_start, tti_end):
-    #             for freq_idx in range(self.num_rb):
-    #                 rb = self.GET_RB(tti, freq_idx)
-    #                 if rb and not rb.CHCK_RB():
-    #                     plt.text(tti - tti_start, freq_idx, str(rb.UE_ID), 
-    #                              ha='center', va='center', color='black', fontsize=8)
-        
-    #     plt.grid(True, color='black', linestyle='-', linewidth=0.2)
-    #     plt.tight_layout()
-        
-    #     if save_path:
-    #         plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    #         plt.close()
-    #     else:
-    #         plt.gca().invert_yaxis()
-    #         plt.show()
-
 
 class SchedulerInterface:
     """
@@ -618,32 +551,295 @@ class SchedulerInterface:
         """
         raise NotImplementedError("Этот метод должен быть переопределен в дочернем классе")
 
+def test_rb_allocation():
+    grid = RES_GRID_LTE(bandwidth=10)
+    
+    # Выделение RB в первом слоте
+    assert grid.ALLOCATE_RB(0, "sub_0_slot_0", 10, 100), "Ошибка выделения"
+    
+    # Попытка повторного выделения
+    assert not grid.ALLOCATE_RB(0, "sub_0_slot_0", 10, 200), "Ожидалась ошибка"
+    
+    # Выделение во втором слоте
+    assert grid.ALLOCATE_RB(0, "sub_0_slot_1", 10, 100), "Ошибка выделения"
+    # assert grid.stats["allocation_by_tti"][0] == 1, "Счетчик TTI не обновлен"
+    
+    # Проверка статуса
+    rb1 = grid.GET_RB(0, "sub_0_slot_0", 10)
+    rb2 = grid.GET_RB(0, "sub_0_slot_1", 10)
+    assert rb1.UE_ID == 100 and rb2.UE_ID == 100, "Некорректное назначение"
 
-# def example_usage():
-#     """Пример использования модели ресурсной сетки LTE"""
-#     # Создание ресурсной сетки с полосой 10 МГц (50 RB) и 1 кадром (10 TTI)
-#     lte_grid = RES_GRID_LTE(bandwidth=3, num_frames=1)
+def test_bandwidth_configuration():
+    for bw, expected_rb in [(1.4, 6), (3, 15), (5, 25), (10, 50), (15, 75), (20, 100)]:
+        grid = RES_GRID_LTE(bandwidth=bw)
+        assert grid.rb_per_slot == expected_rb, f"Ошибка: {bw} МГц → {expected_rb} RB/слот"
+        assert grid.num_rb == expected_rb * 2, "Некорректное число RB на TTI"
+
+def test_frame_structure():
+    grid = RES_GRID_LTE(num_frames=2)
     
-#     print(f"Создана LTE сетка с полосой {lte_grid.bandwidth} МГц")
-#     print(f"Количество ресурсных блоков: {lte_grid.num_rb}")
-#     print(f"Количество TTI: {lte_grid.total_tti}")
+    # Проверка количества кадров
+    assert len(grid.frames) == 2, "Ошибка количества кадров"
     
-#     # Визуализация пустой сетки
-#     print("Визуализация пустой ресурсной сетки рис1")
-#     lte_grid.visualize_grid()
+    # Проверка структуры подкадров
+    frame = grid.frames[0]
+    assert len(frame.subframes) == 10, "Ошибка: 10 подкадров/кадр"
     
-#     # Назначение нескольких ресурсных блоков для проверки визуализации
-#     lte_grid.ALLOCATE_RB(0, 0, 1)  # TTI 0, RB 0, User 1
-#     lte_grid.ALLOCATE_RB(0, 1, 1)  # TTI 0, RB 1, User 1
-#     lte_grid.ALLOCATE_RB(1, 5, 2)  # TTI 1, RB 5, User 2
-#     lte_grid.ALLOCATE_RB_GROUP(2, [10, 11, 12], 3)  # TTI 2, RBs 10-12, User 3
+    # Проверка структуры слотов
+    subframe = frame.subframes[0]
+    assert len(subframe.slots) == 2, "Ошибка: 2 слота/подкадр"
     
-#     # Визуализация сетки с назначенными ресурсами
-#     print("Визуализация сетки с назначенными ресурсами рис2")
-#     lte_grid.visualize_grid()
+    # Проверка длительности TTI
+    assert grid.total_tti == 20, "Ошибка: 2 кадра × 10 TTI = 20"
     
-#     return lte_grid
+def test_rb_allocation_semantics():
+    grid = RES_GRID_LTE(bandwidth=10)
+    
+    # Выделение RB в первом слоте
+    assert grid.ALLOCATE_RB(0, "sub_0_slot_0", 25, 100), "Ошибка выделения"
+    
+    # Проверка статуса RB
+    rb = grid.GET_RB(0, "sub_0_slot_0", 25)
+    assert rb.UE_ID == 100 and rb.status == "assigned", "Некорректное состояние"
+    
+    # Освобождение RB
+    rb.RELEASE_RB()
+    assert rb.CHCK_RB(), "Ошибка освобождения"
+
+def test_rb_group_allocation():
+    grid = RES_GRID_LTE(bandwidth=5)
+    freq_idx = 10
+    
+    # Выделение группы
+    assert grid.ALLOCATE_RB_GROUP(0, freq_idx, 200), "Ошибка группового выделения"
+    
+    # Проверка обоих слотов
+    slot0_rb = grid.GET_RB(0, "sub_0_slot_0", freq_idx)
+    slot1_rb = grid.GET_RB(0, "sub_0_slot_1", freq_idx)
+    assert slot0_rb.UE_ID == slot1_rb.UE_ID == 200, "Несоответствие группового выделения"
+
+def test_boundary_conditions():
+    grid = RES_GRID_LTE(bandwidth=20, num_frames=1)
+    
+    # Выделение ресурса
+    assert grid.ALLOCATE_RB(9, "sub_9_slot_1", 99, 400), "Ошибка выделения"
+    # Проверка, что счетчик TTI обновился
+    assert grid.stats["allocation_by_tti"][9] == 1, "Счетчик TTI не увеличен"
+    
+    # Освобождение ресурса
+    assert grid.RELEASE_RB(9, "sub_9_slot_1", 99), "Ошибка освобождения"
+    
+    # Проверка статистики
+    assert grid.stats["allocated_rbs"] == 0, "Счетчик RB не обнулился"
+    assert 400 not in grid.stats["allocation_by_user"], "UE_ID не удален из статистики"
+    assert grid.stats["allocation_by_tti"][9] == 0, "Счетчик TTI не уменьшен"
 
 
-# if __name__ == "__main__":
-#     example_usage()
+def test_3gpp_compliance():
+    # TS 36.211 Section 6.2.3
+    grid = RES_GRID_LTE(bandwidth=10, num_frames=1)
+    
+    # Проверка параметров слота
+    slot = grid.frames[0].subframes[0].slots[0]
+    assert len(slot.resource_blocks) == 50, "Ожидается 50 RB/слот для 10 МГц"
+    
+    # Проверка структуры RE (12 поднесущих × 7 символов)
+    rb = next(iter(slot.resource_blocks.values()))
+    assert rb.freq_idx >= 0 and rb.freq_idx < 50, "Некорректный частотный индекс"
+
+def test_resource_utilization_stats():
+    grid = RES_GRID_LTE()
+    
+    # Выделение 5 RB с разными UE_ID
+    for i in range(5):
+        grid.ALLOCATE_RB(0, f"sub_0_slot_{i%2}", i, 100 + i)
+    
+    # Проверка общей статистики
+    assert grid.stats["allocated_rbs"] == 5, f"Ожидается 5, получено {grid.stats['allocated_rbs']}"
+    
+    # Проверка подсчета по пользователям
+    for i in range(5):
+        assert grid.stats["allocation_by_user"].get(100 + i) == 1, f"Ошибка для UE_ID={100+i}"
+
+
+class LTEGridVisualizer:
+    def __init__(self, lte_grid):
+        self.lte_grid = lte_grid
+    
+    def visualize_timeline_grid(self, tti_start=0, tti_end=None):
+        """Визуализирует ресурсную сетку LTE с правильным расположением слотов по временной оси"""
+        if tti_end is None:
+            tti_end = min(tti_start + 5, self.lte_grid.total_tti)
+        
+        # Количество слотов = количество TTI × 2
+        num_slots = (tti_end - tti_start) * 2
+        
+        # Создаем фигуру
+        fig, ax = plt.subplots(figsize=(14, 10))
+        
+        # Настраиваем оси
+        rb_range = self.lte_grid.rb_per_slot
+        ax.set_xlim(-0.5, num_slots - 0.5)
+        ax.set_ylim(-0.5, rb_range - 0.5)
+        ax.set_title("LTE Resource Grid (Timeline View)")
+        ax.set_xlabel('Time (slot)')
+        ax.set_ylabel('Frequency (RB index)')
+        
+        # Добавляем сетку
+        ax.set_xticks(range(num_slots))
+        # Создаем метки для слотов (TTI.slot)
+        slot_labels = []
+        for tti in range(tti_start, tti_end):
+            slot_labels.extend([f"{tti}.0", f"{tti}.1"])
+        ax.set_xticklabels(slot_labels, rotation=45)
+        
+        ax.set_yticks(range(0, rb_range, 5))
+        ax.grid(True, which='both', linestyle='--', linewidth=0.5, color='gray')
+        
+        # Рисуем вертикальные линии, разделяющие TTI
+        for i in range(0, num_slots, 2):
+            if i > 0:  # Не рисуем линию в начале графика
+                ax.axvline(x=i - 0.5, color='red', linestyle='-', linewidth=1)
+        
+        # Создаем цветовую карту для UE_ID
+        colors = plt.cm.tab10(np.linspace(0, 1, 10))
+        
+        # Отображаем занятые ресурсные блоки
+        for tti in range(tti_start, tti_end):
+            # Вычисляем начальный индекс слота для данного TTI
+            slot_start_idx = (tti - tti_start) * 2
+            
+            # Обрабатываем оба слота
+            for slot_num in [0, 1]:
+                slot_id = f"sub_{tti}_slot_{slot_num}"
+                slot_idx = slot_start_idx + slot_num
+                
+                for freq_idx in range(rb_range):
+                    rb = self.lte_grid.GET_RB(tti, slot_id, freq_idx)
+                    if rb and not rb.CHCK_RB():
+                        ue_id = rb.UE_ID
+                        color_idx = ue_id % 10
+                        
+                        # Рисуем прямоугольник
+                        rect = plt.Rectangle(
+                            (slot_idx - 0.4, freq_idx - 0.4),
+                            0.8, 0.8,
+                            facecolor=colors[color_idx],
+                            alpha=0.8,
+                            edgecolor='black'
+                        )
+                        ax.add_patch(rect)
+                        
+                        # Добавляем метку UE_ID
+                        ax.text(
+                            slot_idx, freq_idx,
+                            str(ue_id),
+                            ha='center', va='center',
+                            fontsize=9, fontweight='bold',
+                            color='white'
+                        )
+        
+        # Добавляем поясняющие метки для TTI
+        for tti in range(tti_start, tti_end):
+            slot_start_idx = (tti - tti_start) * 2
+            ax.text(slot_start_idx + 0.5, -3, f"TTI {tti}", 
+                    ha='center', va='center', fontsize=10, fontweight='bold')
+            ax.plot([slot_start_idx - 0.5, slot_start_idx + 1.5], [-2, -2], 'k-', linewidth=2)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        return fig, ax
+
+    
+    def _plot_slot_data(self, ax, data, tti_start, tti_end, title):
+        """Отображение данных для конкретного слота"""
+        # Создаем пустую сетку
+        rb_range = self.lte_grid.rb_per_slot
+        tti_range = tti_end - tti_start
+        
+        # Настраиваем оси и заголовок
+        ax.set_xlim(-0.5, tti_range - 0.5)
+        ax.set_ylim(-0.5, rb_range - 0.5)
+        ax.set_title(title)
+        ax.set_xlabel('TTI')
+        ax.set_ylabel('Frequency (RB index)')
+        
+        # Добавляем линии сетки
+        ax.set_xticks(range(tti_range))
+        ax.set_xticklabels(range(tti_start, tti_end))
+        ax.set_yticks(range(0, rb_range, 5))
+        ax.grid(True, which='both', linestyle='--', linewidth=0.5, color='gray')
+        
+        # Создаем цветовую карту для UE_ID
+        colors = plt.cm.tab10(np.linspace(0, 1, 10))  # 10 различных цветов
+        
+        # Отображаем каждый занятый ресурсный блок
+        for item in data:
+            tti_rel = item['tti'] - tti_start
+            freq_idx = item['freq_idx']
+            ue_id = item['UE_ID']
+            
+            # Определяем цвет блока (по UE_ID)
+            color_idx = ue_id % 10
+            
+            # Рисуем прямоугольник для блока
+            rect = plt.Rectangle(
+                (tti_rel - 0.4, freq_idx - 0.4),
+                0.8, 0.8,
+                facecolor=colors[color_idx],
+                alpha=0.8,
+                edgecolor='black'
+            )
+            ax.add_patch(rect)
+            
+            # Добавляем текстовую метку с UE_ID
+            ax.text(
+                tti_rel, freq_idx,
+                str(ue_id),
+                ha='center', va='center',
+                fontsize=9, fontweight='bold',
+                color='white'
+            )
+
+def test_visualize_lte_timeline():
+    """Тестовая функция для проверки корректной визуализации слотов по временной оси"""
+    print("Создание ресурсной сетки LTE...")
+    lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=2)
+    
+    # Выделение различных ресурсных блоков
+    # TTI 0
+    lte_grid.ALLOCATE_RB(0, "sub_0_slot_0", 10, 1)
+    lte_grid.ALLOCATE_RB(0, "sub_0_slot_1", 20, 2)
+    lte_grid.ALLOCATE_RB(0, "sub_0_slot_1", 21, 2)
+    
+    # TTI 1
+    lte_grid.ALLOCATE_RB_GROUP(1, 30, 3)  # Выделяет RB с индексом 30 в обоих слотах TTI 1
+    
+    # TTI 2 - демонстрация разных пользователей в одном частотном индексе в разных слотах
+    lte_grid.ALLOCATE_RB(2, "sub_2_slot_0", 15, 4)
+    lte_grid.ALLOCATE_RB(2, "sub_2_slot_1", 15, 5)
+    
+    # TTI 3 - выделение нескольких последовательных RB одному пользователю
+    for rb_idx in range(40, 45):
+        lte_grid.ALLOCATE_RB(3, "sub_3_slot_0", rb_idx, 6)
+    
+    # Визуализация с корректным отображением слотов по временной оси
+    print("\nЗапуск визуализации по временной оси...")
+    visualizer = LTEGridVisualizer(lte_grid)
+    visualizer.visualize_timeline_grid(tti_start=0, tti_end=4)
+    
+    print("Визуализация завершена.")
+    return lte_grid
+    
+if __name__ == "__main__":
+    test_rb_allocation()
+    test_bandwidth_configuration()
+    test_frame_structure()
+    test_rb_allocation_semantics()
+    test_rb_group_allocation()
+    test_boundary_conditions()
+    test_3gpp_compliance()
+    test_resource_utilization_stats()
+    test_visualize_lte_timeline()
+    print("Все тесты успешно пройдены!")
