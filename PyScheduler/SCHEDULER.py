@@ -150,12 +150,14 @@ class RoundRobinScheduler(SchedulerInterface):
     
     def _calculate_throughput(self, allocation: Dict, users: List[Dict]) -> Dict:
         """
-        Рассчитать пропускную способность для каждого пользователя.
-        
+        Рассчитывает фактическую пропускную способность с учетом:
+        - Реальных данных из буфера
+        - Адаптивной модуляции и кодирования (AMC)
+    
         Args:
-            allocation: Распределение RB {UE_ID: [freq_indices]}
-            users: Список активных пользователей
-            
+            allocation: Словарь распределения RB {UE_ID: список freq_indices}
+            users: Список активных пользователей с параметрами CQI
+    
         Returns:
             Словарь с метриками производительности:
             - total_allocated_rbs: Общее количество выделенных RB
@@ -165,34 +167,44 @@ class RoundRobinScheduler(SchedulerInterface):
         """
         stats = {
             'total_allocated_rbs': 0,
-            'user_throughput': {u['UE_ID']: 0 for u in users},
+            'user_throughput': {u['UE_ID']: 0 for u in users},  # Инициализация для всех UE
             'average_throughput': 0.0,
             'total_effective_bits': 0
         }
         
         total_effective_bits = 0
+    
         for user in users:
             ue_id = user['UE_ID']
             rb_count = len(allocation.get(ue_id, []))
+            
             if rb_count == 0:
                 continue
-
+    
+            # 1. Реальные переданные биты из буфера
             real_bits = user['ue'].current_throughput * 1e-3  # бит/мс → бит/с
+    
+            # 2. Расчет максимальной ёмкости RB для данного CQI
             bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
 
-            max_bits = bits_per_rb * rb_count
+            # 3. Расчет эффективно использованных бит
+            max_bits = rb_count * bits_per_rb
             effective_bits = min(real_bits, max_bits)
+            
+            # 4. Обновление статистики
             stats['user_throughput'][ue_id] = effective_bits
             total_effective_bits += effective_bits
             stats['total_allocated_rbs'] += rb_count
-            
+    
+        # 5. Расчет средней пропускной способности
         active_users = [u for u in users if stats['user_throughput'][u['UE_ID']] > 0]
         
         if active_users:
             stats['average_throughput'] = total_effective_bits / len(active_users)
         
         stats['total_effective_bits'] = total_effective_bits
-        return stats 
+        return stats
+
 
 def test_scheduler_with_buffer():
     """
@@ -229,8 +241,8 @@ def test_scheduler_with_buffer():
     # Шаг 4: Добавление пакетов в буфер
     #------------------------------------------------------------------
     current_time = 0
-    ue1.buffer.ADD_PACKET(1500, current_time, 5)  # 1500 Б
-    ue2.buffer.ADD_PACKET(3000, current_time, 3)  # 3000 Б
+    ue1.buffer.ADD_PACKET(1500, creation_time=current_time, current_time=current_time)  # 1500 Б
+    ue2.buffer.ADD_PACKET(3000, creation_time=current_time, current_time=current_time)  # 3000 Б
     print("[OK] Пакеты добавлены в буферы")
 
     #------------------------------------------------------------------

@@ -114,7 +114,8 @@ class Buffer:
         self.expired_packets = 0  # Для TTL
         self.dropped_info = []    # Параметры отброшенных пакетов
     
-    def ADD_PACKET(self, packet_size: int, creation_time: int, priority: int = 0) -> bool:
+    def ADD_PACKET(self, packet_size: int, creation_time: int, current_time: int, 
+              priority: int = 0, ttl_ms: int = 1000) -> bool:
         """
         Добавить пакет в буфер. Пока я понятия не имею, по каким моделям мы
         будем генерировать трафик и каким макаром, но сделал такую заглушку
@@ -125,10 +126,27 @@ class Buffer:
         Returns:
             bool: True, если пакет добавлен, False если отброшен
         """
+        # Шаг 1: Удаление устаревших пакетов перед добавлением
+        self.queue = deque([
+            p for p in self.queue 
+            if current_time - p['creation_time'] <= ttl_ms
+        ])
+        
+        # Обновление current_size после очистки
+        self.current_size = sum(p['size'] for p in self.queue)
+        
+        # Шаг 2: Проверка на переполнение после очистки
         if self.current_size + packet_size > self.max_size:
             self.dropped_packets += 1
+            self.dropped_info.append({
+                'size': packet_size,
+                'creation_time': creation_time,
+                'priority': priority,
+                'reason': 'overflow'
+            })
             return False
-
+        
+        # Шаг 3: Добавление нового пакета
         self.queue.append({
             'size': packet_size,
             'creation_time': creation_time,
@@ -150,24 +168,27 @@ class Buffer:
         Args:
             max_bytes: Максимальный объём данных в байтах
             bits_per_rb: Количество бит на ресурсный блок
-            current_time: текущее время в мс
-            ttl_ms: время жизни пакета (1000 мс по умолчанию)
             
         Returns:
             Tuple[List[Dict], int]: (список пакетов/фрагментов, общий размер в байтах)
         """
         
-        expired = [p for p in self.queue if current_time - p['creation_time'] > ttl_ms]
+        # Объединенная фильтрация и сбор статистики
+        filtered = []
+        expired = []
+        
+        for p in self.queue:
+            if current_time - p['creation_time'] > ttl_ms:
+                expired.append(p)
+            else:
+                filtered.append(p)
+        
+        # Обновление статистики
         self.expired_packets += len(expired)
-        self.dropped_info.extend(expired)  # Сохраняем информацию        
+        self.dropped_info.extend(expired)
         
-        # Удаление старых пакетов перед извлечением
-        self.queue = deque([
-            p for p in self.queue 
-            if current_time - p['creation_time'] <= ttl_ms
-        ])
-        
-        # Обновление current_size
+        # Обновление очереди
+        self.queue = deque(filtered)
         self.current_size = sum(p['size'] for p in self.queue)
         
         selected = []
@@ -205,8 +226,6 @@ class Buffer:
                 self.current_size -= fragment_size
         
         return selected, total_bits // 8
-	
-	#@sherokiddo: "Нужно убедиться, что при вызове метода при пустом буфере, у нас планировщик не посчитает это полезной нагрузкой и не выделит RB"
 
     def GET_STATUS(self, current_time: int) -> Dict:
         """
@@ -482,19 +501,33 @@ class UserEquipment:
         # сделай единый метод вызова для любой модели (желательно в MOBILITY_MODEL)
         # тут же столько оптимизировать можно...Подумай на досуге в общем"
     
-    def GEN_TRFFC(self, current_time: int, packet_size: int = 1500):  # 
-        """Пример генерации трафика с передачей времени"""
-        packet = Packet(
-            size=packet_size,  # Теперь packet_size определён
-            creation_time=current_time,
-            priority=5
-        )
+    def GEN_TRFFC(self, current_time: int, packet_size: int = 1500, priority: int = 5) -> None:
+        """
+        Генерирует трафик и добавляет пакет в буфер с автоматической очисткой старых пакетов.
+        
+        Args:
+            current_time: Текущее время в мс (используется для TTL)
+            packet_size: Размер пакета в байтах (по умолчанию 1500)
+            priority: Приоритет пакета (0-10)
+        """
+        # Создание пакета с текущим временем
+        packet = {
+            'size': packet_size,
+            'creation_time': current_time,
+            'priority': priority
+        }
+    
+        # Попытка добавления пакета в буфер
         if not self.buffer.ADD_PACKET(
-            packet_size=packet.size,
-            creation_time=packet.creation_time,
-            priority=packet.priority
+            packet_size=packet['size'],
+            creation_time=packet['creation_time'],
+            current_time=current_time,
+            priority=packet['priority'],
+            ttl_ms=1000
         ):
-            print(f"UE {self.UE_ID}: Пакет отброшен")
+            self.total_dropped_packets += 1
+            print(f"UE {self.UE_ID}: Пакет {packet['size']}B отброшен (буфер полный)")
+
     
     def UPD_THROUGHPUT(self, bits_transmitted: int, time_interval_ms: int):
         """
@@ -822,9 +855,9 @@ def test_buffer_fifo():
     current_time = 1000
     
     # 2. Добавление пакетов с разным временем создания
-    buffer.ADD_PACKET(2000, current_time - 1500, 5)  # Задержка 500 мс
-    buffer.ADD_PACKET(3000, current_time - 500, 3)  # Задержка 300 мс
-    buffer.ADD_PACKET(5000, current_time - 100, 1)  # Задержка 100 мс
+    buffer.ADD_PACKET(2000, 1000, current_time - 1500)  # Задержка 1500 мс
+    buffer.ADD_PACKET(3000, 1000, current_time - 500)  # Задержка 500 мс
+    buffer.ADD_PACKET(5000, 1000, current_time - 100)  # Задержка 100 мс
     
     # 3. Проверка статуса
     status = buffer.GET_STATUS(current_time)
@@ -844,13 +877,12 @@ def test_buffer_fifo():
     # 6. Проверка переполнения
     print("\nПопытка переполнения буфера:")
     for size in [4000, 3000, 5000]:
-        success = buffer.ADD_PACKET(size, current_time)
+        success = buffer.ADD_PACKET(size, 1000, current_time)
         print(f"Пакет {size} байт: {'успех' if success else 'переполнение'}")
     
     # 7. Очистка буфера
     buffer.DESTROY_BUFFER()
     print(f"\nПосле очистки: размер={buffer.current_size}, пакетов={len(buffer.queue)}")
-
     print("\nОтброшенные пакеты:")
     for p in buffer.dropped_info:
         age = current_time - p['creation_time']
