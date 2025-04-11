@@ -110,7 +110,9 @@ class Buffer:
         self.max_size = max_size
         self.current_size = 0
         self.queue = deque()  # Теперь очередь для хранения пакетов
-        self.dropped_packets = 0  # Счетчик отброшенных пакетов
+        self.dropped_packets = 0  # Для переполнения
+        self.expired_packets = 0  # Для TTL
+        self.dropped_info = []    # Параметры отброшенных пакетов
     
     def ADD_PACKET(self, packet_size: int, creation_time: int, priority: int = 0) -> bool:
         """
@@ -141,17 +143,33 @@ class Buffer:
         # а также, добавить возможность менять приоритет пакета через метод
         # а напоследок, метод для получения пакетов определенного приоритета GET_PCKT_BY_PR"
 
-    def GET_PACKETS(self, max_bytes: int, bits_per_rb: int) -> Tuple[List[Dict], int]:
+    def GET_PACKETS(self, max_bytes: int, bits_per_rb: int, current_time: int, ttl_ms: int = 1000) -> Tuple[List[Dict], int]:
         """
         Извлечение данных из буфера с фрагментацией.
         
         Args:
             max_bytes: Максимальный объём данных в байтах
             bits_per_rb: Количество бит на ресурсный блок
+            current_time: текущее время в мс
+            ttl_ms: время жизни пакета (1000 мс по умолчанию)
             
         Returns:
             Tuple[List[Dict], int]: (список пакетов/фрагментов, общий размер в байтах)
         """
+        
+        expired = [p for p in self.queue if current_time - p['creation_time'] > ttl_ms]
+        self.expired_packets += len(expired)
+        self.dropped_info.extend(expired)  # Сохраняем информацию        
+        
+        # Удаление старых пакетов перед извлечением
+        self.queue = deque([
+            p for p in self.queue 
+            if current_time - p['creation_time'] <= ttl_ms
+        ])
+        
+        # Обновление current_size
+        self.current_size = sum(p['size'] for p in self.queue)
+        
         selected = []
         total_bits = 0
         max_bits = max_bytes * 8  # Конвертация в биты
@@ -187,6 +205,8 @@ class Buffer:
                 self.current_size -= fragment_size
         
         return selected, total_bits // 8
+	
+	#@sherokiddo: "Нужно убедиться, что при вызове метода при пустом буфере, у нас планировщик не посчитает это полезной нагрузкой и не выделит RB"
 
     def GET_STATUS(self, current_time: int) -> Dict:
         """
@@ -802,8 +822,8 @@ def test_buffer_fifo():
     current_time = 1000
     
     # 2. Добавление пакетов с разным временем создания
-    buffer.ADD_PACKET(2000, current_time - 500, 5)  # Задержка 500 мс
-    buffer.ADD_PACKET(3000, current_time - 300, 3)  # Задержка 300 мс
+    buffer.ADD_PACKET(2000, current_time - 1500, 5)  # Задержка 500 мс
+    buffer.ADD_PACKET(3000, current_time - 500, 3)  # Задержка 300 мс
     buffer.ADD_PACKET(5000, current_time - 100, 1)  # Задержка 100 мс
     
     # 3. Проверка статуса
@@ -812,7 +832,7 @@ def test_buffer_fifo():
     
     # 4. Извлечение пакетов (добавлен параметр bits_per_rb)
     bits_per_rb = 8000  # Пример: 1000 байт на RB
-    packets, total = buffer.GET_PACKETS(6000, bits_per_rb)
+    packets, total = buffer.GET_PACKETS(6000, bits_per_rb, current_time)
     print(f"\nИзвлечено {len(packets)} пакетов ({total} байт):")
     for i, p in enumerate(packets, 1):
         print(f"Пакет {i}: размер={p['size']} задержка={current_time - p['creation_time']} мс")
@@ -830,6 +850,11 @@ def test_buffer_fifo():
     # 7. Очистка буфера
     buffer.DESTROY_BUFFER()
     print(f"\nПосле очистки: размер={buffer.current_size}, пакетов={len(buffer.queue)}")
+
+    print("\nОтброшенные пакеты:")
+    for p in buffer.dropped_info:
+        age = current_time - p['creation_time']
+        print(f"Размер: {p['size']}B, Приоритет: {p['priority']}, Задержка: {age} мс")
 
 if __name__ == "__main__":
     test_buffer_fifo()

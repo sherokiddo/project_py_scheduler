@@ -77,13 +77,13 @@ class AdaptiveModulationAndCoding:
         """
         Рассчитать количество бит на ресурсный блок (RB) для заданного CQI.
         """
-        if cqi < 1 or cqi > 15:
+        if cqi not in self.CQI_TO_MCS:
             raise ValueError(f"Invalid CQI: {cqi}. Must be 1-15.")
         
         modulation, code_rate = self.CQI_TO_MCS[cqi]
         symbols_per_rb = 12 * 7  # 84 символа в RB
         return int(symbols_per_rb * modulation * code_rate)
-
+	#@sherokiddo: "Добавить зависимость от CP"
 
 class RoundRobinScheduler(SchedulerInterface):
     
@@ -142,7 +142,7 @@ class RoundRobinScheduler(SchedulerInterface):
             ue = user['ue']
             bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
             max_bytes = (len(allocation[user['UE_ID']]) * bits_per_rb) // 8
-            packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb)
+            packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti*1)
             ue.UPD_THROUGHPUT(total * 8, 1)
         
         stats = self._calculate_throughput(allocation, active_users)
@@ -157,32 +157,42 @@ class RoundRobinScheduler(SchedulerInterface):
             users: Список активных пользователей
             
         Returns:
-            Dict: Статистика пропускной способности
+            Словарь с метриками производительности:
+            - total_allocated_rbs: Общее количество выделенных RB
+            - user_throughput: Пропускная способность на пользователя (бит/с)
+            - average_throughput: Средняя пропускная способность (бит/с)
+            - total_effective_bits: Фактически переданные биты
         """
         stats = {
             'total_allocated_rbs': 0,
-            'user_throughput': {},
-            'average_throughput': 0.0
+            'user_throughput': {u['UE_ID']: 0 for u in users},
+            'average_throughput': 0.0,
+            'total_effective_bits': 0
         }
         
-        total_bits = 0
+        total_effective_bits = 0
         for user in users:
             ue_id = user['UE_ID']
             rb_count = len(allocation.get(ue_id, []))
             if rb_count == 0:
                 continue
-                
+
+            real_bits = user['ue'].current_throughput * 1e-3  # бит/мс → бит/с
             bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
-            user_bits = bits_per_rb * rb_count
-            
-            stats['user_throughput'][ue_id] = user_bits
-            total_bits += user_bits
+
+            max_bits = bits_per_rb * rb_count
+            effective_bits = min(real_bits, max_bits)
+            stats['user_throughput'][ue_id] = effective_bits
+            total_effective_bits += effective_bits
             stats['total_allocated_rbs'] += rb_count
             
-        if users:
-            stats['average_throughput'] = total_bits / len(users)
-            
-        return stats    
+        active_users = [u for u in users if stats['user_throughput'][u['UE_ID']] > 0]
+        
+        if active_users:
+            stats['average_throughput'] = total_effective_bits / len(active_users)
+        
+        stats['total_effective_bits'] = total_effective_bits
+        return stats 
 
 def test_scheduler_with_buffer():
     """
@@ -206,7 +216,7 @@ def test_scheduler_with_buffer():
     #------------------------------------------------------------------
     # Шаг 3: Создание пользователей и базовой станции
     #------------------------------------------------------------------
-    bs = BaseStation(x=0, y=0, height=25.0, bandwidth=5)
+    bs = BaseStation(x=0, y=0, height=25.0, bandwidth=10)
     ue1 = UserEquipment(UE_ID=1, x=500, y=500, ue_class="pedestrian")
     ue2 = UserEquipment(UE_ID=2, x=1000, y=1000, ue_class="car")
     
