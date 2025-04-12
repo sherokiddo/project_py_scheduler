@@ -67,11 +67,8 @@ from collections import deque
 from typing import Dict, List, Optional, Union, Tuple
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel
 from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
+from TRAFFIC_MODEL import PoissonModel
 from BS_MODULE import BaseStation
-# Импорты из других модулей (будут созданы позже)
-# from TRAFFIC_MODEL import TrafficModel, ConstantBitRate, VoipModel, WebBrowsingModel
-#upd
-
 
 class Packet:
     """Класс для представления сетевого пакета"""
@@ -501,32 +498,43 @@ class UserEquipment:
         # сделай единый метод вызова для любой модели (желательно в MOBILITY_MODEL)
         # тут же столько оптимизировать можно...Подумай на досуге в общем"
     
-    def GEN_TRFFC(self, current_time: int, packet_size: int = 1500, priority: int = 5) -> None:
+    def GEN_TRFFC(self, current_time: int, update_interval: int) -> None:
         """
         Генерирует трафик и добавляет пакет в буфер с автоматической очисткой старых пакетов.
         
         Args:
             current_time: Текущее время в мс (используется для TTL)
-            packet_size: Размер пакета в байтах (по умолчанию 1500)
-            priority: Приоритет пакета (0-10)
         """
-        # Создание пакета с текущим временем
-        packet = {
-            'size': packet_size,
-            'creation_time': current_time,
-            'priority': priority
-        }
-    
-        # Попытка добавления пакета в буфер
-        if not self.buffer.ADD_PACKET(
-            packet_size=packet['size'],
-            creation_time=packet['creation_time'],
-            current_time=current_time,
-            priority=packet['priority'],
-            ttl_ms=1000
-        ):
-            self.total_dropped_packets += 1
-            print(f"UE {self.UE_ID}: Пакет {packet['size']}B отброшен (буфер полный)")
+        
+        if not self.traffic_model:
+            raise ValueError("Ошибка! Модель генерации трафика не определена! {}".format(self.UE_ID))
+        
+        if isinstance(self.traffic_model, PoissonModel):
+            packets = self.traffic_model.generate_traffic(
+                current_time, update_interval
+                )
+        
+        # Скорость поступления пакетов в буфер
+        total_bytes = sum(p['size'] for p in packets)
+        total_bits = total_bytes * 8
+        interval_seconds = update_interval / 1000
+        bitrate = total_bits / interval_seconds if interval_seconds > 0 else 0    
+            
+        for packet in packets:
+            if not self.buffer.ADD_PACKET(
+                packet_size=packet['size'],
+                creation_time=packet['creation_time'],
+                current_time=current_time,
+                priority=packet['priority'],
+                ttl_ms=1000
+            ):
+                self.total_dropped_packets += 1
+                print(f"UE {self.UE_ID}: Пакет {packet['size']}B отброшен (буфер полный)")
+            
+        status = self.buffer.GET_STATUS(current_time)
+        print(f"\nИнтервал [{current_time-update_interval}-{current_time} ms]: Создано {len(packets)} пакетов")
+        print(f"Скорость поступления: {bitrate:.2f} бит/с")
+        print(f"Статус буфера: {status}")
 
     
     def UPD_THROUGHPUT(self, bits_transmitted: int, time_interval_ms: int):
@@ -780,7 +788,8 @@ class UECollection:
         """
         return list(self.users.values())
     
-    def UPDATE_ALL_USERS(self, time_ms: int, bs_position: Tuple[float, float], bs_height: float,
+    def UPDATE_ALL_USERS(self, time_ms: int, update_interval: int, 
+                         bs_position: Tuple[float, float], bs_height: float, 
                          indoor_boundaries: Tuple[float, float, float, float] = (0, 0, 0, 0)):
         """
         Обновить состояние всех пользователей.
@@ -790,13 +799,13 @@ class UECollection:
         """
         for ue in self.users.values():
             # Обновление позиции
-            ue.UPD_POSITION(time_ms, bs_position, bs_height, indoor_boundaries)
+            ue.UPD_POSITION(update_interval, bs_position, bs_height, indoor_boundaries)
             
             # Обновление качества канала
             ue.UPD_CH_QUALITY()
             
             # Генерация нового трафика
-            ue.GEN_TRFFC(time_ms)
+            ue.GEN_TRFFC(time_ms, update_interval)
     
     def GET_ACTIVE_USERS(self) -> List[UserEquipment]:
         """

@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 from UE_MODULE import UserEquipment, UECollection
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel
 from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
+from TRAFFIC_MODEL import PoissonModel
 from BS_MODULE import BaseStation
 
 def visualize_user_mobility(ue_collection: UECollection, bs: BaseStation,
@@ -71,7 +72,7 @@ def example_usage_modules():
     
     # Создание объектов пользовательских устройств
     ue1 = UserEquipment(UE_ID=1, x=2300, y=2300, ue_class="indoor")
-    ue2 = UserEquipment(UE_ID=2, x=2000, y=2000, ue_class="car")
+    #ue2 = UserEquipment(UE_ID=2, x=2000, y=2000, ue_class="car")
     
     # Границы симуляции
     x_min_global = -5000
@@ -92,28 +93,36 @@ def example_usage_modules():
                                                 y_min=y_min_h, y_max=y_max_h, 
                                                 pause_time=500)
   
-    # Создание объекта модели канала
-    umi_channel_model = UMiModel(bs)             
+    # Создание объекта модели канала  
+    umi_channel_model = UMiModel(bs)  
+
+    # Создание объекта модели генерации трафика
+    poisson_traffic_model = PoissonModel(packet_rate=500)         
     
     # Установка модели передвижения и модели канала для устройства
     ue1.SET_MOBILITY_MODEL(random_waypoint_model)
-    ue2.SET_MOBILITY_MODEL(gauss_markov_model)
+    #ue2.SET_MOBILITY_MODEL(gauss_markov_model)
+    
     ue1.SET_CH_MODEL(umi_channel_model)
-    ue2.SET_CH_MODEL(umi_channel_model)
+    #ue2.SET_CH_MODEL(umi_channel_model)
+    
+    ue1.SET_TRAFFIC_MODEL(poisson_traffic_model)
+    #ue2.SET_TRAFFIC_MODEL(poisson_traffic_model)
     
     # Добавление пользовательских устройств в коллекцию
     ue_collection.ADD_USER(ue1)
-    ue_collection.ADD_USER(ue2)
+    #ue_collection.ADD_USER(ue2)
     
     # Временные параметры симуляции
-    simulation_duration = 100000
+    simulation_duration = 50000
     update_interval = 250
     
     # Симуляция и визуализация результатов
-    for t in range(simulation_duration):
+    for t in range(1, simulation_duration + 1):
         if t % update_interval == 0:
-            ue_collection.UPDATE_ALL_USERS(time_ms=update_interval, bs_position=bs.position, 
-                                           bs_height=bs.height, indoor_boundaries=(x_min_h, y_min_h, x_min_h, x_max_h))
+            ue_collection.UPDATE_ALL_USERS(time_ms=t, update_interval=update_interval, 
+                                           bs_position=bs.position, bs_height=bs.height, 
+                                           indoor_boundaries=(x_min_h, y_min_h, x_min_h, x_max_h))
         
     visualize_user_mobility(ue_collection=ue_collection, bs=bs, 
                             x_min=1500, x_max=3500, y_min=1500, y_max=3500)

@@ -44,10 +44,10 @@ class RMaModel:
     def calculate_breakpoint_distance(self, UE_height: float) -> float:
         """
         Расчет дистанции излома (breakpoint distance).
-
+    
         Args:
             UE_height: Высота пользовательского оборудования в метрах
-
+    
         Returns:
             d_BP: Дистанция излома в метрах
         """
@@ -57,10 +57,10 @@ class RMaModel:
     def calculate_los_probability(self, d_2D: float) -> float:
         """
         Расчет вероятности прямой видимости (LOS).
-
+    
         Args:
             d_2D: 2D расстояние между БС и UE в метрах
-
+    
         Returns:
             los_probability: Вероятность LOS в диапазоне [0, 1]
         """
@@ -74,14 +74,14 @@ class RMaModel:
                             UE_height: float, ue_class: str) -> float:
         """
         Расчет затухания сигнала с учетом LOS/NLOS условий.
-
+    
         Args:
             d_2D: 2D расстояние между БС и UE в метрах
             d_2D_in: Внутреннее расстояние в здании в метрах
             d_3D: 3D расстояние между БС и UE в метрах
             UE_height: Высота пользовательского оборудования в метрах
             ue_class: Класс UE
-
+    
         Returns:
             PL: Затухание сигнала в дБ
         """
@@ -106,12 +106,12 @@ class RMaModel:
     def _calculate_los_path_loss(self, d_2D: float, d_3D: float, UE_height: float) -> float:
         """
         Расчет затухания сигнала для LOS условий.
-
+    
         Args:
             d_2D: 2D расстояние между БС и UE в метрах
             d_3D: 3D расстояние между БС и UE в метрах
             UE_height: Высота пользовательского оборудования в метрах
-
+    
         Returns:
             PL1: Затухание сигнала в дБ для LOS случая 1
             PL2: Затухание сигнала в дБ для LOS случая 2
@@ -126,7 +126,7 @@ class RMaModel:
             shadow_fading = np.random.normal(0, self.sigma_SF_LOS_1)
             PL1 = PL1 + shadow_fading
             return PL1
-
+    
         elif d_BP < d_2D <= 10000:
             PL1_at_dBP = (20 * np.log10(40 * np.pi * d_BP * self.bs.frequency_GHz / 3.0) + 
                    min(0.03 * self.h**1.72, 10) * np.log10(d_BP) - 
@@ -142,12 +142,12 @@ class RMaModel:
     def _calculate_nlos_path_loss(self, d_2D: float, d_3D: float, UE_height: float) -> float:
         """
         Расчет затухания сигнала для NLOS условий.
-
+    
         Args:
             d_2D: 2D расстояние между БС и UE в метрах
             d_3D: 3D расстояние между БС и UE в метрах
             UE_height: Высота пользовательского оборудования в метрах
-
+    
         Returns:
             PL: Затухание сигнала в дБ для NLOS случая
         """
@@ -173,14 +173,14 @@ class RMaModel:
                             UE_height: float, ue_class: str) -> float:
         """
         Расчет отношения сигнал-интерференция-шум (SINR).
-
+    
         Args:
             d_2D: 2D расстояние между БС и UE в метрах
             d_2D_in: Внутреннее расстояние в здании в метрах
             d_3D: 3D расстояние между БС и UE в метрах
             UE_height: Высота пользовательского оборудования в метрах
             ue_class: Класс UE
-
+    
         Returns:
             Значение SINR в дБ
         """
@@ -191,7 +191,7 @@ class RMaModel:
         P_signal = self.bs.tx_power + self.bs.antenna_gain - cable_loss - path_loss - interference_margin
             
         P_interference = -95
-        P_noise = -174 * 10 * np.log10(self.bs.frequency_Hz)
+        P_noise = -174 + 10 * np.log10(self.bs.bandwidth * 1e6)
         
         SINR = P_signal - 10 * np.log10(10 ** (P_interference / 10) + 10 ** (P_noise / 10))
         
@@ -222,11 +222,11 @@ class UMaModel:
     def calculate_breakpoint_distance(self, UE_height: float, d_2D: float) -> float:
         """
         Расчет дистанции излома (breakpoint distance).
-
+    
         Args:
             UE_height: Высота пользовательского оборудования в метрах
             d_2D: 2D расстояние между БС и UE в метрах
-
+    
         Returns:
             d_BP: Дистанция излома в метрах
         """
@@ -290,14 +290,14 @@ class UMaModel:
                             UE_height: float, ue_class: str) -> float:
         """
         Расчет затухания сигнала с учетом LOS/NLOS условий.
-
+    
         Args:
             d_2D: 2D расстояние между БС и UE в метрах
             d_2D_in: Внутреннее расстояние в здании в метрах
             d_3D: 3D расстояние между БС и UE в метрах
             UE_height: Высота пользовательского оборудования в метрах
             ue_class: Класс UE
-
+    
         Returns:
             PL: Затухание сигнала в дБ
         """
@@ -306,10 +306,10 @@ class UMaModel:
         
         if is_LOS:
             PL = self._calculate_los_path_loss(d_2D, d_3D, UE_height)
-
+    
         else:
             PL = self._calculate_nlos_path_loss(d_2D, d_3D, UE_height)
-
+    
         if ue_class == "indoor":
             o2i_penetration_loss = o2i_building_penetration_loss(self.o2i_model, d_2D_in, self.bs.frequency_GHz)
             PL = PL + o2i_penetration_loss
@@ -323,12 +323,12 @@ class UMaModel:
     def _calculate_los_path_loss(self, d_2D: float, d_3D: float, UE_height: float) -> float:
         """
         Расчет затухания сигнала для LOS условий.
-
+    
         Args:
             d_2D: 2D расстояние между БС и UE в метрах
             d_3D: 3D расстояние между БС и UE в метрах
             UE_height: Высота пользовательского оборудования в метрах
-
+    
         Returns:
             PL1: Затухание сигнала в дБ для LOS случая 1
             PL2: Затухание сигнала в дБ для LOS случая 2
@@ -341,7 +341,7 @@ class UMaModel:
             shadow_fading = np.random.normal(0, self.sigma_SF_LOS)
             PL1 = PL1 + shadow_fading
             return PL1
-
+    
         elif d_BP < d_2D <= 5000:
             PL2 = (28 + 40 * np.log10(d_3D) + 20 * np.log10(self.bs.frequency_GHz) -
                    9 * np.log10(d_BP**2 + (self.bs.height - UE_height)**2))
@@ -355,12 +355,12 @@ class UMaModel:
     def _calculate_nlos_path_loss(self, d_2D: float, d_3D: float, UE_height: float) -> float:
         """
         Расчет затухания сигнала для NLOS условий.
-
+    
         Args:
             d_2D: 2D расстояние между БС и UE в метрах
             d_3D: 3D расстояние между БС и UE в метрах
             UE_height: Высота пользовательского оборудования в метрах
-
+    
         Returns:
             PL: Затухание сигнала в дБ для NLOS случая
         """
@@ -382,14 +382,14 @@ class UMaModel:
                             UE_height: float, ue_class: str) -> float:
         """
         Расчет отношения сигнал-интерференция-шум (SINR).
-
+    
         Args:
             d_2D: 2D расстояние между БС и UE в метрах
             d_2D_in: Внутреннее расстояние в здании в метрах
             d_3D: 3D расстояние между БС и UE в метрах
             UE_height: Высота пользовательского оборудования в метрах
             ue_class: Класс UE
-
+    
         Returns:
             Значение SINR в дБ
         """
@@ -431,10 +431,10 @@ class UMiModel:
     def calculate_breakpoint_distance(self, UE_height: float) -> float:
         """
         Расчет дистанции излома (breakpoint distance).
-
+    
         Args:
             UE_height: Высота пользовательского оборудования в метрах
-
+    
         Returns:
             d_BP: Дистанция излома в метрах
         """
@@ -468,14 +468,14 @@ class UMiModel:
                             UE_height: float, ue_class: str) -> float:
         """
         Расчет затухания сигнала с учетом LOS/NLOS условий.
-
+    
         Args:
             d_2D: 2D расстояние между БС и UE в метрах
             d_2D_in: Внутреннее расстояние в здании в метрах
             d_3D: 3D расстояние между БС и UE в метрах
             UE_height: Высота пользовательского оборудования в метрах
             ue_class: Класс UE
-
+    
         Returns:
             PL: Затухание сигнала в дБ
         """
@@ -484,10 +484,10 @@ class UMiModel:
         
         if is_LOS:
             PL = self._calculate_los_path_loss(d_2D, d_3D, UE_height)
-
+    
         else:
             PL = self._calculate_nlos_path_loss(d_2D, d_3D, UE_height)
-
+    
         if ue_class == "indoor":
             o2i_penetration_loss = o2i_building_penetration_loss(self.o2i_model, d_2D_in, self.bs.frequency_GHz)
             PL = PL + o2i_penetration_loss
@@ -501,12 +501,12 @@ class UMiModel:
     def _calculate_los_path_loss(self, d_2D: float, d_3D: float, UE_height: float) -> float:
         """
         Расчет затухания сигнала для LOS условий.
-
+    
         Args:
             d_2D: 2D расстояние между БС и UE в метрах
             d_3D: 3D расстояние между БС и UE в метрах
             UE_height: Высота пользовательского оборудования в метрах
-
+    
         Returns:
             PL1: Затухание сигнала в дБ для LOS случая 1
             PL2: Затухание сигнала в дБ для LOS случая 2
@@ -519,7 +519,7 @@ class UMiModel:
             shadow_fading = np.random.normal(0, self.sigma_SF_LOS)
             PL1 = PL1 + shadow_fading
             return PL1
-
+    
         elif d_BP < d_2D <= 5000:
             PL2 = (32.4 + 40 * np.log10(d_3D) + 20 * np.log10(self.bs.frequency_GHz) -
                    9.5 * np.log10(d_BP**2 + (self.bs.height - UE_height)**2))
@@ -533,12 +533,12 @@ class UMiModel:
     def _calculate_nlos_path_loss(self, d_2D: float, d_3D: float, UE_height: float) -> float:
         """
         Расчет затухания сигнала для NLOS условий.
-
+    
         Args:
             d_2D: 2D расстояние между БС и UE в метрах
             d_3D: 3D расстояние между БС и UE в метрах
             UE_height: Высота пользовательского оборудования в метрах
-
+    
         Returns:
             PL: Затухание сигнала в дБ для NLOS случая
         """
@@ -579,6 +579,13 @@ class UMiModel:
         
         P_interference = -95
         P_noise = -174 + 10 * np.log10(self.bs.bandwidth * 1e6)
+        
+# =============================================================================
+#         RSRP = P_signal - 10 * np.log10(50 * 2)
+#         RSSI = RSSI = 10 * np.log10(10**(P_signal/10) + 10**(P_interference/10) + 10**(P_noise/10))
+#         RSRQ = 10 * np.log10(50) + RSRP - RSSI
+# =============================================================================
+        
         
         SINR = P_signal - 10 * np.log10(10 ** (P_interference / 10) + 10 ** (P_noise / 10))
         
