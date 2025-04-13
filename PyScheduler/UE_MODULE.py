@@ -67,7 +67,7 @@ from collections import deque
 from typing import Dict, List, Optional, Union, Tuple
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel
 from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
-from TRAFFIC_MODEL import PoissonModel
+from TRAFFIC_MODEL import PoissonModel, OnOffModel
 from BS_MODULE import BaseStation
 
 class Packet:
@@ -512,6 +512,11 @@ class UserEquipment:
         if isinstance(self.traffic_model, PoissonModel):
             packets = self.traffic_model.generate_traffic(
                 current_time, update_interval
+                )
+            
+        if isinstance(self.traffic_model, OnOffModel):
+            packets = self.traffic_model.generate_traffic(
+                self.UE_ID, current_time, update_interval
                 )
         
         # Скорость поступления пакетов в буфер
