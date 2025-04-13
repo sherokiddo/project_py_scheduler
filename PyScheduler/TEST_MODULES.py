@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from UE_MODULE import UserEquipment, UECollection
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel
 from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
-from TRAFFIC_MODEL import PoissonModel, OnOffModel
+from TRAFFIC_MODEL import PoissonModel, OnOffModel, MMPPModel
 from BS_MODULE import BaseStation
 
 def visualize_user_mobility(ue_collection: UECollection, bs: BaseStation,
@@ -98,7 +98,8 @@ def example_usage_modules():
 
     # Создание объекта модели генерации трафика
     #poisson_traffic_model = PoissonModel(packet_rate=500)    
-    onoff_traffic_model = OnOffModel(duration_on=2, duration_off=3, packet_rate=500)     
+    #onoff_traffic_model = OnOffModel(duration_on=2, duration_off=3, packet_rate=500)  
+    mmpp_traffic_model = MMPPModel(packet_rates=[50, 200, 500])
     
     # Установка модели передвижения и модели канала для устройства
     ue1.SET_MOBILITY_MODEL(random_waypoint_model)
@@ -107,7 +108,7 @@ def example_usage_modules():
     ue1.SET_CH_MODEL(umi_channel_model)
     #ue2.SET_CH_MODEL(umi_channel_model)
     
-    ue1.SET_TRAFFIC_MODEL(onoff_traffic_model)
+    ue1.SET_TRAFFIC_MODEL(mmpp_traffic_model)
     #ue2.SET_TRAFFIC_MODEL(poisson_traffic_model)
     
     # Добавление пользовательских устройств в коллекцию
@@ -115,7 +116,7 @@ def example_usage_modules():
     #ue_collection.ADD_USER(ue2)
     
     # Временные параметры симуляции
-    simulation_duration = 10000
+    simulation_duration = 30000
     update_interval = 250
     
     # Симуляция и визуализация результатов

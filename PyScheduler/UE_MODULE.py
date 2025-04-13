@@ -67,7 +67,7 @@ from collections import deque
 from typing import Dict, List, Optional, Union, Tuple
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel
 from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
-from TRAFFIC_MODEL import PoissonModel, OnOffModel
+from TRAFFIC_MODEL import PoissonModel, OnOffModel, MMPPModel
 from BS_MODULE import BaseStation
 
 class Packet:
@@ -514,7 +514,7 @@ class UserEquipment:
                 current_time, update_interval
                 )
             
-        if isinstance(self.traffic_model, OnOffModel):
+        if isinstance(self.traffic_model, OnOffModel) or isinstance(self.traffic_model, MMPPModel):
             packets = self.traffic_model.generate_traffic(
                 self.UE_ID, current_time, update_interval
                 )
