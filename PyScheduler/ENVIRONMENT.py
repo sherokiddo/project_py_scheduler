@@ -18,288 +18,327 @@
 #------------------------------------------------------------------------------
 """
 
-import numpy as np
-import matplotlib.pyplot as plt
+"""
+Модуль: ENVIRONMENT - Интеграционная среда для симуляции LTE-сети
+"""
+
+import time
 from typing import Dict, List, Optional, Union
-from UE_MODULE import UserEquipment, UECollection
+import numpy as np
+import matplotlib
+matplotlib.use('TkAgg')  # Или 'Qt5Agg' для GUI бэкенда
+import matplotlib.pyplot as plt
+from UE_MODULE import UECollection, UserEquipment
+from BS_MODULE import BaseStation
 from RES_GRID import RES_GRID_LTE
 from SCHEDULER import RoundRobinScheduler
-from BS_MODULE import BaseStation
-# %matplotlib
+from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel
+from TRAFFIC_MODEL import PoissonModel
+from CHANNEL_MODEL import UMiModel
 
-class SimulationEnvironment:
-    """
-    Класс, представляющий среду симуляции для системы LTE.
-    """
+
+class LTEGridVisualizer:
+    def __init__(self, lte_grid):
+        self.lte_grid = lte_grid
     
-    def __init__(self, bandwidth_mhz: float = 10, num_frames: int = 10):
-        
-        """
-        Инициализация среды симуляции.
-        
-        Args:
-            bandwidth_mhz: Полоса частот в МГц (1.4, 3, 5, 10, 15, 20)
-            num_frames: Количество кадров для симуляции
-
-        """
-        self.lte_grid = RES_GRID_LTE(bandwidth=bandwidth_mhz, num_frames=num_frames)
-        self.ue_collection = UECollection()  # Убрал bs_position отсюда
-        self.scheduler = RoundRobinScheduler(self.lte_grid)
-        self.simulation_time = 0
-        self.results = {
-            'throughput_by_ue': {},
-            'allocated_rbs_by_tti': {},
-            'total_allocated_rbs': 0
-        }
-
-        self.base_station = BaseStation(
-            x=500, 
-            y=500, 
-            height=35.0, 
-            bandwidth=bandwidth_mhz
-        )
-        
-    def add_user(self, ue: UserEquipment):
-        # Установка модели канала (пример для UMiModel)
-        from CHANNEL_MODEL import UMiModel
-        ue.SET_CH_MODEL(UMiModel(self.base_station))
-        
-        self.ue_collection.ADD_USER(ue)
-        self.results['throughput_by_ue'][ue.UE_ID] = []
-    
-    def run_simulation(self, duration_ms: int, time_step_ms: int = 1):
-        """
-        Запустить симуляцию на заданную длительность.
-        
-        Args:
-            duration_ms: Длительность симуляции в миллисекундах
-            time_step_ms: Шаг времени симуляции в миллисекундах
-        """
-        while self.simulation_time < duration_ms:
-            # Обновляем пользователей, передавая параметры базовой станции
-            self.ue_collection.UPDATE_ALL_USERS(
-                time_ms=self.simulation_time,
-                bs_position=(self.base_station.position[0], self.base_station.position[1]),
-                bs_height=self.base_station.height
-            )
-        self.simulation_time = 0
-        
-        # Предварительно проверяем, что у пользователей есть данные в буфере
-        for ue in self.ue_collection.GET_ALL_USERS():
-            if ue.buffer.GET_STATUS(0)['size'] == 0:
-                # Если буфер пуст, добавляем в него данные
-                ue.buffer.ADD_PACKET(10000, 0, 5)  # Добавляем пакет размером 10000 байт
-        
-        while self.simulation_time < duration_ms:
-            # Определяем текущий TTI
-            current_tti = self.simulation_time % (10 * self.lte_grid.num_frames)
-            
-            # Обновляем состояние пользователей
-            self.ue_collection.UPDATE_ALL_USERS(self.simulation_time)
-            
-            # Получаем данные о пользователях для планировщика
-            users_data = []
-            for ue in self.ue_collection.GET_ACTIVE_USERS():
-                buffer_status = ue.GET_BUFFER_STATUS(self.simulation_time)
-                channel_quality = ue.GET_CH_QUALITY()
-                
-                users_data.append({
-                    'UE_ID': ue.UE_ID,
-                    'buffer_size': buffer_status['size'],
-                    'packet_count': buffer_status['packet_count'],
-                    'cqi': channel_quality['cqi'],
-                    'SINR': channel_quality['SINR']
-                })
-            
-            # Вызываем планировщик для распределения ресурсов
-            result = self.scheduler.schedule(current_tti, users_data)
-            
-            # После назначения ресурсных блоков в методе run_simulation
-            for ue_id, rb_indices in result['allocation'].items():
-                ue = self.ue_collection.GET_USER(ue_id)
-                if ue and rb_indices:
-                    # Используем метод из планировщика для расчёта количества бит
-                    bits_transmitted = self.scheduler._calculate_bits_transmitted(ue.cqi, len(rb_indices))
-                    
-                    # Обновляем статистику пропускной способности пользователя
-                    ue.UPD_THROUGHPUT(bits_transmitted, time_step_ms)
-                        
-                        # Сохраняем результаты
-            self.results['allocated_rbs_by_tti'][self.simulation_time] = result['statistics']['allocated_rbs']
-            self.results['total_allocated_rbs'] += result['statistics']['allocated_rbs']
-            
-            for ue in self.ue_collection.GET_ALL_USERS():
-                self.results['throughput_by_ue'][ue.UE_ID].append(ue.current_throughput)
-            
-            # Увеличиваем время
-            self.simulation_time += time_step_ms
-            
-    
-    def visualize_resource_grid(self, tti_start: int = 0, tti_end: Optional[int] = None,
-                              show_UE_IDs: bool = True, save_path: Optional[str] = None):
-        """
-        Визуализировать ресурсную сетку LTE.
-        
-        Args:
-            tti_start: Начальный TTI для визуализации
-            tti_end: Конечный TTI для визуализации (не включительно)
-            show_UE_IDs: Показывать ли ID пользователей на графике
-            save_path: Путь для сохранения изображения (если None, то изображение отображается)
-        """
-        num_rb = self.lte_grid.num_rb  # Количество RB
-        total_tti = self.lte_grid.total_tti  # Общее количество TTI
-
+    def visualize_timeline_grid(self, tti_start=0, tti_end=None):
+        """Визуализирует ресурсную сетку LTE с правильным расположением слотов по временной оси"""
         if tti_end is None:
-            tti_end = total_tti
-
-        if tti_end > total_tti:
-            tti_end = total_tti
-
-        # Создаем матрицу для визуализации
-        grid_matrix = np.zeros((num_rb, tti_end - tti_start), dtype=int)
-
-        # Заполняем матрицу данными о пользователях
-        for tti in range(tti_start, tti_end):
-            for freq_idx in range(num_rb):
-                rb = self.lte_grid.GET_RB(tti, freq_idx)
-                if rb and rb.UE_ID is not None:
-                    grid_matrix[freq_idx, tti - tti_start] = rb.UE_ID
-                else:
-                    grid_matrix[freq_idx, tti - tti_start] = -1  # Используем -1 для пустых RB
-
-        # Создаем Figure и Axes
-        fig, ax = plt.subplots(figsize=(15, 7))
-
-        # Подготовка данных для pcolormesh
-        x = np.arange(0, tti_end - tti_start + 1)
-        y = np.arange(0, num_rb + 1)
+            tti_end = min(tti_start + 5, self.lte_grid.total_tti)
         
-        # Используем pcolormesh для визуализации сетки
-        cmap = plt.cm.get_cmap('viridis', len(self.ue_collection.GET_ALL_USERS()) + 1)
-        cmap.set_under('lightgray')  # Цвет для пустых ячеек
+        # Количество слотов = количество TTI × 2
+        num_slots = (tti_end - tti_start) * 2
         
-        mesh = ax.pcolormesh(x, y, grid_matrix, cmap=cmap, vmin=0)
-
+        # Создаем фигуру
+        fig, ax = plt.subplots(figsize=(14, 10))
+        
         # Настраиваем оси
+        rb_range = self.lte_grid.rb_per_slot
+        ax.set_xlim(-0.5, num_slots - 0.5)
+        ax.set_ylim(-0.5, rb_range - 0.5)
+        ax.set_title("LTE Resource Grid (Timeline View)")
+        ax.set_xlabel('Time (slot)')
+        ax.set_ylabel('Frequency (RB index)')
+        
+        # Добавляем сетку
+        ax.set_xticks(range(num_slots))
+        # Создаем метки для слотов (TTI.slot)
+        slot_labels = []
+        for tti in range(tti_start, tti_end):
+            slot_labels.extend([f"{tti}.0", f"{tti}.1"])
+        ax.set_xticklabels(slot_labels, rotation=45)
+        
+        ax.set_yticks(range(0, rb_range, 5))
+        ax.grid(True, which='both', linestyle='--', linewidth=0.5, color='gray')
+        
+        # Рисуем вертикальные линии, разделяющие TTI
+        for i in range(0, num_slots, 2):
+            if i > 0:  # Не рисуем линию в начале графика
+                ax.axvline(x=i - 0.5, color='red', linestyle='-', linewidth=1)
+        
+        # Создаем цветовую карту для UE_ID
+        colors = plt.cm.tab10(np.linspace(0, 1, 10))
+        
+        # Отображаем занятые ресурсные блоки
+        for tti in range(tti_start, tti_end):
+            # Вычисляем начальный индекс слота для данного TTI
+            slot_start_idx = (tti - tti_start) * 2
+            
+            # Обрабатываем оба слота
+            for slot_num in [0, 1]:
+                slot_id = f"sub_{tti}_slot_{slot_num}"
+                slot_idx = slot_start_idx + slot_num
+                
+                for freq_idx in range(rb_range):
+                    rb = self.lte_grid.GET_RB(tti, slot_id, freq_idx)
+                    if rb and not rb.CHCK_RB():
+                        ue_id = rb.UE_ID
+                        color_idx = ue_id % 10
+                        
+                        # Рисуем прямоугольник
+                        rect = plt.Rectangle(
+                            (slot_idx - 0.4, freq_idx - 0.4),
+                            0.8, 0.8,
+                            facecolor=colors[color_idx],
+                            alpha=0.8,
+                            edgecolor='black'
+                        )
+                        ax.add_patch(rect)
+                        
+                        # Добавляем метку UE_ID
+                        ax.text(
+                            slot_idx, freq_idx,
+                            str(ue_id),
+                            ha='center', va='center',
+                            fontsize=9, fontweight='bold',
+                            color='white'
+                        )
+        
+        # Добавляем поясняющие метки для TTI
+        for tti in range(tti_start, tti_end):
+            slot_start_idx = (tti - tti_start) * 2
+            ax.text(slot_start_idx + 0.5, -3, f"TTI {tti}", 
+                    ha='center', va='center', fontsize=10, fontweight='bold')
+            ax.plot([slot_start_idx - 0.5, slot_start_idx + 1.5], [-2, -2], 'k-', linewidth=2)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        return fig, ax
+
+    
+    def _plot_slot_data(self, ax, data, tti_start, tti_end, title):
+        """Отображение данных для конкретного слота"""
+        # Создаем пустую сетку
+        rb_range = self.lte_grid.rb_per_slot
+        tti_range = tti_end - tti_start
+        
+        # Настраиваем оси и заголовок
+        ax.set_xlim(-0.5, tti_range - 0.5)
+        ax.set_ylim(-0.5, rb_range - 0.5)
+        ax.set_title(title)
         ax.set_xlabel('TTI')
-        ax.set_ylabel('Resource Block Index')
-        ax.set_xticks(np.arange(0.5, tti_end - tti_start + 0.5))
-        ax.set_yticks(np.arange(0.5, num_rb + 0.5))
-        ax.set_xticklabels(np.arange(tti_start, tti_end))
-        ax.set_yticklabels(np.arange(0, num_rb))
+        ax.set_ylabel('Frequency (RB index)')
         
-        # Добавляем colorbar
-        cbar = plt.colorbar(mesh, ax=ax)
-        cbar.set_label('UE ID')
+        # Добавляем линии сетки
+        ax.set_xticks(range(tti_range))
+        ax.set_xticklabels(range(tti_start, tti_end))
+        ax.set_yticks(range(0, rb_range, 5))
+        ax.grid(True, which='both', linestyle='--', linewidth=0.5, color='gray')
+        
+        # Создаем цветовую карту для UE_ID
+        colors = plt.cm.tab10(np.linspace(0, 1, 10))  # 10 различных цветов
+        
+        # Отображаем каждый занятый ресурсный блок
+        for item in data:
+            tti_rel = item['tti'] - tti_start
+            freq_idx = item['freq_idx']
+            ue_id = item['UE_ID']
+            
+            # Определяем цвет блока (по UE_ID)
+            color_idx = ue_id % 10
+            
+            # Рисуем прямоугольник для блока
+            rect = plt.Rectangle(
+                (tti_rel - 0.4, freq_idx - 0.4),
+                0.8, 0.8,
+                facecolor=colors[color_idx],
+                alpha=0.8,
+                edgecolor='black'
+            )
+            ax.add_patch(rect)
+            
+            # Добавляем текстовую метку с UE_ID
+            ax.text(
+                tti_rel, freq_idx,
+                str(ue_id),
+                ha='center', va='center',
+                fontsize=9, fontweight='bold',
+                color='white'
+            )
 
-        # Добавляем аннотации с ID пользователей
-        if show_UE_IDs:
-            for tti_idx in range(tti_end - tti_start):
-                for rb_idx in range(num_rb):
-                    ue_id = grid_matrix[rb_idx, tti_idx]
-                    if ue_id != -1:  # Если RB не пустой
-                        ax.text(tti_idx + 0.5, rb_idx + 0.5, str(ue_id),
-                               ha='center', va='center', color='white', fontweight='bold')
+def test_visualize_lte_timeline():
+    """Тестовая функция для проверки корректной визуализации слотов по временной оси"""
+    print("Создание ресурсной сетки LTE...")
+    lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=2)
+    
+    # Выделение различных ресурсных блоков
+    # TTI 0
+    lte_grid.ALLOCATE_RB(0, "sub_0_slot_0", 10, 1)
+    lte_grid.ALLOCATE_RB(0, "sub_0_slot_1", 20, 2)
+    lte_grid.ALLOCATE_RB(0, "sub_0_slot_1", 21, 2)
+    
+    # TTI 1
+    lte_grid.ALLOCATE_RB_GROUP(1, 30, 3)  # Выделяет RB с индексом 30 в обоих слотах TTI 1
+    
+    # TTI 2 - демонстрация разных пользователей в одном частотном индексе в разных слотах
+    lte_grid.ALLOCATE_RB(2, "sub_2_slot_0", 15, 4)
+    lte_grid.ALLOCATE_RB(2, "sub_2_slot_1", 15, 5)
+    
+    # TTI 3 - выделение нескольких последовательных RB одному пользователю
+    for rb_idx in range(40, 45):
+        lte_grid.ALLOCATE_RB(3, "sub_3_slot_0", rb_idx, 6)
+    
+    # Визуализация с корректным отображением слотов по временной оси
+    print("\nЗапуск визуализации по временной оси...")
+    visualizer = LTEGridVisualizer(lte_grid)
+    visualizer.visualize_timeline_grid(tti_start=0, tti_end=4)
+    
+    print("Визуализация завершена.")
+    return lte_grid
 
-        # Добавляем заголовок
-        ax.set_title('Resource Grid Allocation')
-
-        # Сохраняем изображение или отображаем его
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            plt.close()
-        else:
-            plt.show()
-    
-    def visualize_throughput(self, save_path: Optional[str] = None):
-        """
-        Визуализировать пропускную способность пользователей.
-        
-        Args:
-            save_path: Путь для сохранения изображения (если None, то изображение отображается)
-        """
-        plt.figure(figsize=(12, 8))
-        
-        for ue_id, throughput_values in self.results['throughput_by_ue'].items():
-            plt.plot(range(len(throughput_values)), throughput_values, label=f'UE {ue_id}')
-        
-        plt.xlabel('Время (мс)')
-        plt.ylabel('Пропускная способность (бит/с)')
-        plt.title('Пропускная способность пользователей')
-        plt.grid(True)
-        plt.legend()
-        
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            plt.close()
-        else:
-            plt.show()
-    
-    def visualize_resource_allocation(self, save_path: Optional[str] = None):
-        """
-        Визуализировать распределение ресурсных блоков по времени.
-        
-        Args:
-            save_path: Путь для сохранения изображения (если None, то изображение отображается)
-        """
-        plt.figure(figsize=(12, 8))
-        
-        times = list(self.results['allocated_rbs_by_tti'].keys())
-        values = list(self.results['allocated_rbs_by_tti'].values())
-        
-        plt.bar(times, values, width=1.0)
-        
-        plt.xlabel('Время (мс)')
-        plt.ylabel('Количество распределенных RB')
-        plt.title('Распределение ресурсных блоков')
-        plt.grid(True)
-        
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            plt.close()
-        else:
-            plt.show()
-    
-    def print_statistics(self):
-        """
-        Вывести статистику симуляции.
-        """
-        print(f"=== Статистика симуляции ===")
-        print(f"Длительность симуляции: {self.simulation_time} мс")
-        print(f"Количество пользователей: {len(self.ue_collection.GET_ALL_USERS())}")
-        print(f"Всего распределено RB: {self.results['total_allocated_rbs']}")
-        
-        print("\nСредняя пропускная способность пользователей:")
-        for ue_id, throughput_values in self.results['throughput_by_ue'].items():
-            avg_throughput = sum(throughput_values) / len(throughput_values) if throughput_values else 0
-            print(f"UE {ue_id}: {avg_throughput:.2f} бит/с")
-    
-def test_round_robin():
+def test_scheduler_with_buffer():
     """
-    Тестирование алгоритма Round Robin.
+    Расширенный тест работы планировщика Round Robin с буфером пользователей.
+    Теперь выводит требования RB и фактические выделения без фиксированных проверок.
     """
-    # Создаем среду симуляции
-    env = SimulationEnvironment(bandwidth_mhz=15, num_frames=1)
+    print("\n=== Расширенный тест планировщика с буфером ===")
+
+    #------------------------------------------------------------------
+    # Шаг 1: Инициализация ресурсной сетки (10 МГц, 1 кадр = 10 TTI)
+    #------------------------------------------------------------------
+    lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=1)
+    print("[OK] Ресурсная сеть инициализирована")
+
+    #------------------------------------------------------------------
+    # Шаг 2: Создание планировщика
+    #------------------------------------------------------------------
+    scheduler = RoundRobinScheduler(lte_grid)
+    print("[OK] Планировщик Round Robin создан")
+
+    #------------------------------------------------------------------
+    # Шаг 3: Создание пользователей и базовой станции
+    #------------------------------------------------------------------
+    bs = BaseStation(x=0, y=0, height=25.0, bandwidth=10)
+    ue1 = UserEquipment(UE_ID=1, x=500, y=500, ue_class="pedestrian")
+    ue2 = UserEquipment(UE_ID=2, x=1000, y=1000, ue_class="car")
     
-    # Добавляем пользователей
-    for i in range(1, 10):
-        x = np.random.randint(400, 600)
-        y = np.random.randint(400, 600)
-        ue = UserEquipment(UE_ID=i, x=x, y=y)
+    # Установка моделей канала
+    ue1.SET_CH_MODEL(UMiModel(bs))
+    ue2.SET_CH_MODEL(UMiModel(bs))
+    print("[OK] Пользователи созданы")
+
+    #------------------------------------------------------------------
+    # Шаг 4: Добавление пакетов в буфер
+    #------------------------------------------------------------------
+    current_time = 0
+    ue1.buffer.ADD_PACKET(1500, creation_time=current_time, current_time=current_time)  # 1500 Б
+    ue2.buffer.ADD_PACKET(3000, creation_time=current_time, current_time=current_time)  # 3000 Б
+    print("[OK] Пакеты добавлены в буферы")
+
+    #------------------------------------------------------------------
+    # Шаг 5: Обновление позиций и качества канала
+    #------------------------------------------------------------------
+    ue1.UPD_POSITION(current_time, bs.position, bs.height)
+    ue2.UPD_POSITION(current_time, bs.position, bs.height)
+    ue1.UPD_CH_QUALITY()
+    ue2.UPD_CH_QUALITY()
+    print(f"[OK] CQI рассчитан: UE1={ue1.cqi}, UE2={ue2.cqi}")
+
+    #------------------------------------------------------------------
+    # Шаг 6: Подготовка данных для планировщика
+    #------------------------------------------------------------------
+    users = [
+        {'UE_ID': 1, 'buffer_size': 1500, 'cqi': ue1.cqi, 'ue': ue1},
+        {'UE_ID': 2, 'buffer_size': 3000, 'cqi': ue2.cqi, 'ue': ue2}
+    ]
+
+    #------------------------------------------------------------------
+    # Шаг 7: Запуск планировщика для TTI=0
+    #------------------------------------------------------------------
+    result = scheduler.schedule(0, users)
+    allocation = result['allocation']
+    stats = result['statistics']
+
+    #------------------------------------------------------------------
+    # Шаг 8: Анализ распределения RB по слотам
+    #------------------------------------------------------------------
+    print("\nДетализация распределения RB:")
+    
+    # Получение подкадра (TTI=0)
+    subframe = lte_grid.GET_SUBFRAME(0)
+    
+    # Анализ слота 0
+    slot0 = subframe.slots[0]
+    slot0_rbs = {rb.freq_idx: rb.UE_ID for rb in slot0.GET_ALL_RES_BLCK()}
+    
+    # Анализ слота 1
+    slot1 = subframe.slots[1]
+    slot1_rbs = {rb.freq_idx: rb.UE_ID for rb in slot1.GET_ALL_RES_BLCK()}
+
+    print("\nСлот 0:")
+    print("RB Индекс | Пользователь")
+    print("-----------------------")
+    for freq_idx in sorted(slot0_rbs.keys()):
+        print(f"{freq_idx:8} | {slot0_rbs[freq_idx] or 'Свободен'}")
+
+    print("\nСлот 1:")
+    print("RB Индекс | Пользователь")
+    print("-----------------------")
+    for freq_idx in sorted(slot1_rbs.keys()):
+        print(f"{freq_idx:8} | {slot1_rbs[freq_idx] or 'Свободен'}")
+
+    #------------------------------------------------------------------
+    # Шаг 9: Вывод параметров MCS для каждого пользователя
+    #------------------------------------------------------------------
+    print("\nПараметры MCS:")
+    for user in users:
+        cqi = user['cqi']
+        mcs_params = scheduler.amc.CQI_TO_MCS.get(cqi, (0, 0))
+        bits_per_rb = scheduler.amc.GET_BITS_PER_RB(cqi)
         
-        # Важно: инициализируем буфер пользователя
-        ue.buffer.ADD_PACKET(10000, 0, 5)  # Добавляем большой пакет, чтобы пользователь был активен
+        print(f"\nUE {user['UE_ID']} (CQI={cqi}):")
+        print(f"- Modulation: {'QPSK' if mcs_params[0] == 2 else '16QAM' if mcs_params[0] == 4 else '64QAM'}")
+        print(f"- Code Rate: {mcs_params[1]:.3f}")
+        print(f"- Биты/RB: {bits_per_rb}")
+
+    #------------------------------------------------------------------
+    # Шаг 10: Общая статистика
+    #------------------------------------------------------------------
+    print("\nИтоговая статистика:")
+    total_throughput = 0
+    
+    for user in users:
+        ue_id = user['UE_ID']
+        rb_count = len(allocation.get(ue_id, []))
+        bits_per_rb = scheduler.amc.GET_BITS_PER_RB(user['cqi'])
+        throughput = rb_count * bits_per_rb  # Бит/мс = кбит/с
         
-        env.add_user(ue)
+        print(f"\nUE {ue_id}:")
+        print(f"  RB выделено: {rb_count}")
+        print(f"  Пропускная способность: {throughput * 1000:.2f} бит/с")
+        total_throughput += throughput
+
+    # Средняя пропускная способность на TTI
+    num_users = len([u for u in users if len(allocation.get(u['UE_ID'], [])) > 0])
+    avg_throughput = (total_throughput / num_users) * 1000 if num_users > 0 else 0
     
-    # Запускаем симуляцию
-    env.run_simulation(duration_ms=10)
-    
-    # Визуализируем результаты
-    env.visualize_resource_grid(tti_start=0, tti_end=20)
-    env.visualize_throughput()
-    env.visualize_resource_allocation()
-    env.print_statistics()
+    print(f"\nСредняя пропускная способность в TTI: {avg_throughput:.2f} бит/с")
+    print(f"Всего выделено RB: {stats['total_allocated_rbs']}/100")
+    print("[OK] Тест пройден успешно!")
 
 if __name__ == "__main__":
-    test_round_robin()
+    test_scheduler_with_buffer()
+    test_visualize_lte_timeline()
+    print("Все тесты успешно пройдены!")
+

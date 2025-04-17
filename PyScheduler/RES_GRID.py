@@ -42,8 +42,6 @@
 #------------------------------------------------------------------------------
 """
 
-import numpy as np
-import matplotlib.pyplot as plt
 from typing import Dict, List, Optional, Union
 # %matplotlib
 
@@ -538,7 +536,10 @@ class SchedulerInterface:
         """
         self.lte_grid = lte_grid
     
-    def schedule(self, tti: int, users: List[Dict]):
+    def schedule(self, tti: int, 
+            users: List[Dict], 
+            buffer_status: Dict[int, int], 
+            channel_quality: Dict[int, float]):
         """
         Метод планирования ресурсов для заданного TTI.
         
@@ -549,6 +550,9 @@ class SchedulerInterface:
         Returns:
             Dict: Результаты планирования
         """
+        if tti < 0 or tti >= self.lte_grid.total_tti:
+            raise ValueError(f"Invalid TTI: {tti}")
+        
         raise NotImplementedError("Этот метод должен быть переопределен в дочернем классе")
 
 def test_rb_allocation():
@@ -661,176 +665,6 @@ def test_resource_utilization_stats():
     for i in range(5):
         assert grid.stats["allocation_by_user"].get(100 + i) == 1, f"Ошибка для UE_ID={100+i}"
 
-
-class LTEGridVisualizer:
-    def __init__(self, lte_grid):
-        self.lte_grid = lte_grid
-    
-    def visualize_timeline_grid(self, tti_start=0, tti_end=None):
-        """Визуализирует ресурсную сетку LTE с правильным расположением слотов по временной оси"""
-        if tti_end is None:
-            tti_end = min(tti_start + 5, self.lte_grid.total_tti)
-        
-        # Количество слотов = количество TTI × 2
-        num_slots = (tti_end - tti_start) * 2
-        
-        # Создаем фигуру
-        fig, ax = plt.subplots(figsize=(14, 10))
-        
-        # Настраиваем оси
-        rb_range = self.lte_grid.rb_per_slot
-        ax.set_xlim(-0.5, num_slots - 0.5)
-        ax.set_ylim(-0.5, rb_range - 0.5)
-        ax.set_title("LTE Resource Grid (Timeline View)")
-        ax.set_xlabel('Time (slot)')
-        ax.set_ylabel('Frequency (RB index)')
-        
-        # Добавляем сетку
-        ax.set_xticks(range(num_slots))
-        # Создаем метки для слотов (TTI.slot)
-        slot_labels = []
-        for tti in range(tti_start, tti_end):
-            slot_labels.extend([f"{tti}.0", f"{tti}.1"])
-        ax.set_xticklabels(slot_labels, rotation=45)
-        
-        ax.set_yticks(range(0, rb_range, 5))
-        ax.grid(True, which='both', linestyle='--', linewidth=0.5, color='gray')
-        
-        # Рисуем вертикальные линии, разделяющие TTI
-        for i in range(0, num_slots, 2):
-            if i > 0:  # Не рисуем линию в начале графика
-                ax.axvline(x=i - 0.5, color='red', linestyle='-', linewidth=1)
-        
-        # Создаем цветовую карту для UE_ID
-        colors = plt.cm.tab10(np.linspace(0, 1, 10))
-        
-        # Отображаем занятые ресурсные блоки
-        for tti in range(tti_start, tti_end):
-            # Вычисляем начальный индекс слота для данного TTI
-            slot_start_idx = (tti - tti_start) * 2
-            
-            # Обрабатываем оба слота
-            for slot_num in [0, 1]:
-                slot_id = f"sub_{tti}_slot_{slot_num}"
-                slot_idx = slot_start_idx + slot_num
-                
-                for freq_idx in range(rb_range):
-                    rb = self.lte_grid.GET_RB(tti, slot_id, freq_idx)
-                    if rb and not rb.CHCK_RB():
-                        ue_id = rb.UE_ID
-                        color_idx = ue_id % 10
-                        
-                        # Рисуем прямоугольник
-                        rect = plt.Rectangle(
-                            (slot_idx - 0.4, freq_idx - 0.4),
-                            0.8, 0.8,
-                            facecolor=colors[color_idx],
-                            alpha=0.8,
-                            edgecolor='black'
-                        )
-                        ax.add_patch(rect)
-                        
-                        # Добавляем метку UE_ID
-                        ax.text(
-                            slot_idx, freq_idx,
-                            str(ue_id),
-                            ha='center', va='center',
-                            fontsize=9, fontweight='bold',
-                            color='white'
-                        )
-        
-        # Добавляем поясняющие метки для TTI
-        for tti in range(tti_start, tti_end):
-            slot_start_idx = (tti - tti_start) * 2
-            ax.text(slot_start_idx + 0.5, -3, f"TTI {tti}", 
-                    ha='center', va='center', fontsize=10, fontweight='bold')
-            ax.plot([slot_start_idx - 0.5, slot_start_idx + 1.5], [-2, -2], 'k-', linewidth=2)
-        
-        plt.tight_layout()
-        plt.show()
-        
-        return fig, ax
-
-    
-    def _plot_slot_data(self, ax, data, tti_start, tti_end, title):
-        """Отображение данных для конкретного слота"""
-        # Создаем пустую сетку
-        rb_range = self.lte_grid.rb_per_slot
-        tti_range = tti_end - tti_start
-        
-        # Настраиваем оси и заголовок
-        ax.set_xlim(-0.5, tti_range - 0.5)
-        ax.set_ylim(-0.5, rb_range - 0.5)
-        ax.set_title(title)
-        ax.set_xlabel('TTI')
-        ax.set_ylabel('Frequency (RB index)')
-        
-        # Добавляем линии сетки
-        ax.set_xticks(range(tti_range))
-        ax.set_xticklabels(range(tti_start, tti_end))
-        ax.set_yticks(range(0, rb_range, 5))
-        ax.grid(True, which='both', linestyle='--', linewidth=0.5, color='gray')
-        
-        # Создаем цветовую карту для UE_ID
-        colors = plt.cm.tab10(np.linspace(0, 1, 10))  # 10 различных цветов
-        
-        # Отображаем каждый занятый ресурсный блок
-        for item in data:
-            tti_rel = item['tti'] - tti_start
-            freq_idx = item['freq_idx']
-            ue_id = item['UE_ID']
-            
-            # Определяем цвет блока (по UE_ID)
-            color_idx = ue_id % 10
-            
-            # Рисуем прямоугольник для блока
-            rect = plt.Rectangle(
-                (tti_rel - 0.4, freq_idx - 0.4),
-                0.8, 0.8,
-                facecolor=colors[color_idx],
-                alpha=0.8,
-                edgecolor='black'
-            )
-            ax.add_patch(rect)
-            
-            # Добавляем текстовую метку с UE_ID
-            ax.text(
-                tti_rel, freq_idx,
-                str(ue_id),
-                ha='center', va='center',
-                fontsize=9, fontweight='bold',
-                color='white'
-            )
-
-def test_visualize_lte_timeline():
-    """Тестовая функция для проверки корректной визуализации слотов по временной оси"""
-    print("Создание ресурсной сетки LTE...")
-    lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=2)
-    
-    # Выделение различных ресурсных блоков
-    # TTI 0
-    lte_grid.ALLOCATE_RB(0, "sub_0_slot_0", 10, 1)
-    lte_grid.ALLOCATE_RB(0, "sub_0_slot_1", 20, 2)
-    lte_grid.ALLOCATE_RB(0, "sub_0_slot_1", 21, 2)
-    
-    # TTI 1
-    lte_grid.ALLOCATE_RB_GROUP(1, 30, 3)  # Выделяет RB с индексом 30 в обоих слотах TTI 1
-    
-    # TTI 2 - демонстрация разных пользователей в одном частотном индексе в разных слотах
-    lte_grid.ALLOCATE_RB(2, "sub_2_slot_0", 15, 4)
-    lte_grid.ALLOCATE_RB(2, "sub_2_slot_1", 15, 5)
-    
-    # TTI 3 - выделение нескольких последовательных RB одному пользователю
-    for rb_idx in range(40, 45):
-        lte_grid.ALLOCATE_RB(3, "sub_3_slot_0", rb_idx, 6)
-    
-    # Визуализация с корректным отображением слотов по временной оси
-    print("\nЗапуск визуализации по временной оси...")
-    visualizer = LTEGridVisualizer(lte_grid)
-    visualizer.visualize_timeline_grid(tti_start=0, tti_end=4)
-    
-    print("Визуализация завершена.")
-    return lte_grid
     
 if __name__ == "__main__":
     test_rb_allocation()
@@ -841,5 +675,4 @@ if __name__ == "__main__":
     test_boundary_conditions()
     test_3gpp_compliance()
     test_resource_utilization_stats()
-    test_visualize_lte_timeline()
     print("Все тесты успешно пройдены!")
