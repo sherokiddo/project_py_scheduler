@@ -26,8 +26,9 @@ import time
 from typing import Dict, List, Optional, Union
 import numpy as np
 import matplotlib
-matplotlib.use('TkAgg')  # Или 'Qt5Agg' для GUI бэкенда
+#matplotlib.use('TkAgg')  # Или 'Qt5Agg' для GUI бэкенда
 import matplotlib.pyplot as plt
+%matplotlib
 from matplotlib.lines import Line2D
 from UE_MODULE import UECollection, UserEquipment
 from BS_MODULE import BaseStation
@@ -41,11 +42,15 @@ class LTEGridVisualizer:
     def __init__(self, lte_grid):
         self.lte_grid = lte_grid
     
-    def visualize_timeline_grid(self, tti_start=0, tti_end=None):
+    def visualize_timeline_grid(self, tti_start=0, tti_end=None, ue_colors=None):
         """Визуализирует ресурсную сетку LTE с правильным расположением слотов по временной оси"""
         if tti_end is None:
             tti_end = min(tti_start + 5, self.lte_grid.total_tti)
         
+        # Если цвета не заданы, создаем их по умолчанию
+        if ue_colors is None:
+            ue_colors = {}
+                
         # Количество слотов = количество TTI × 2
         num_slots = (tti_end - tti_start) * 2
         
@@ -77,29 +82,45 @@ class LTEGridVisualizer:
                 ax.axvline(x=i - 0.5, color='red', linestyle='-', linewidth=1)
         
         # Создаем цветовую карту для UE_ID
-        colors = plt.cm.tab10(np.linspace(0, 1, 10))
+        default_colors = plt.cm.tab10(np.linspace(0, 1, 10))
+
+        # Сохраняем UE_ID для легенды
+        unique_ue_ids = set()
         
         # Отображаем занятые ресурсные блоки
         for tti in range(tti_start, tti_end):
+            # Вычисляем индексы кадра и подкадра
+            frame_idx = tti // 10
+            subframe_idx = tti % 10
+            
             # Вычисляем начальный индекс слота для данного TTI
             slot_start_idx = (tti - tti_start) * 2
             
             # Обрабатываем оба слота
             for slot_num in [0, 1]:
-                slot_id = f"sub_{tti}_slot_{slot_num}"
+                slot_id = f"sub_{subframe_idx}_slot_{slot_num}"  # Используем subframe_idx вместо tti
                 slot_idx = slot_start_idx + slot_num
                 
                 for freq_idx in range(rb_range):
                     rb = self.lte_grid.GET_RB(tti, slot_id, freq_idx)
                     if rb and not rb.CHCK_RB():
+                        # Отрисовка блока
                         ue_id = rb.UE_ID
-                        color_idx = ue_id % 10
+                        unique_ue_ids.add(ue_id)
+                        
+                        # Используем цвет из словаря или берем стандартный
+                        if ue_id in ue_colors:
+                            color = ue_colors[ue_id]
+                        else:
+                            # Автоматически назначаем цвет и сохраняем для будущего использования
+                            color = default_colors[ue_id % 10]
+                            ue_colors[ue_id] = color
                         
                         # Рисуем прямоугольник
                         rect = plt.Rectangle(
                             (slot_idx - 0.4, freq_idx - 0.4),
                             0.8, 0.8,
-                            facecolor=colors[color_idx],
+                            facecolor=color,
                             alpha=0.8,
                             edgecolor='black'
                         )
@@ -124,7 +145,7 @@ class LTEGridVisualizer:
         plt.tight_layout()
         plt.show()
         
-        return fig, ax
+        return fig, ax, ue_colors
 
     
     def _plot_slot_data(self, ax, data, tti_start, tti_end, title):
@@ -342,7 +363,7 @@ def test_round_robin_grid():
     print("\n=== Тест Round Robin (полный фрейм) ===")
     
     # Шаг 1: Инициализация компонентов
-    lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=1)  # 1 фрейм = 10 TTI
+    lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=2)  # 1 фрейм = 10 TTI
     visualizer = LTEGridVisualizer(lte_grid)
     scheduler = RoundRobinScheduler(lte_grid)
 
@@ -359,33 +380,42 @@ def test_round_robin_grid():
     
     # Настройка моделей
     ue1.SET_MOBILITY_MODEL(RandomWaypointModel(x_min=0, x_max=1000, y_min=0, y_max=1000, pause_time=10))
-    ue1.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=5))
+    ue1.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=1000))
     ue1.SET_CH_MODEL(UMiModel(bs))
     
     ue2.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=1000, y_min=0, y_max=1000))
-    ue2.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=3))
+    ue2.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=100))
     ue2.SET_CH_MODEL(UMiModel(bs))
     
     ue3.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=1000, y_min=0, y_max=1000))
-    ue3.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=3))
+    ue3.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=100))
     ue3.SET_CH_MODEL(UMiModel(bs))
+    
+    sim_duration = 20
+    prev_time = 0
 
     # Шаг 3: Основной цикл симуляции
     for tti in range(20):  # 0-9 TTI (полный фрейм)
         current_time = tti
+        interval = current_time - prev_time
+        interval = max(0,interval)
         
         # Генерация трафика
-        ue1.GEN_TRFFC(current_time, update_interval=10)
-        ue2.GEN_TRFFC(current_time,update_interval=10)
-        ue3.GEN_TRFFC(current_time,update_interval=10)
+        ue1.GEN_TRFFC(current_time, interval)
+        ue2.GEN_TRFFC(current_time, interval)
+        ue3.GEN_TRFFC(current_time, interval)
         
         # Обновление состояния
-        ue1.UPD_POSITION(5, bs.position, bs.height)
-        ue2.UPD_POSITION(5, bs.position, bs.height)
-        ue3.UPD_POSITION(5, bs.position, bs.height)
+        ue1.UPD_POSITION(interval, bs.position, bs.height)
+        ue2.UPD_POSITION(interval, bs.position, bs.height)
+        ue3.UPD_POSITION(interval, bs.position, bs.height)
         ue1.UPD_CH_QUALITY()
         ue2.UPD_CH_QUALITY()
         ue3.UPD_CH_QUALITY()
+        
+        prev_time = current_time
+        
+        print(f"TTI {tti}: UE1={ue1.buffer.current_size}B, UE2={ue2.buffer.current_size}B, UE3={ue3.buffer.current_size}B")
         
         # Подготовка данных для планировщика
         users = [
@@ -414,7 +444,7 @@ def test_round_robin_grid():
 
     # Шаг 4: Визуализация всего фрейма
     print("\nВизуализация распределения ресурсов:")
-    fig, ax = visualizer.visualize_timeline_grid(tti_start=0, tti_end=20)
+    fig, ax, ue_colors = visualizer.visualize_timeline_grid(tti_start=0, tti_end=sim_duration)
     
     # Дополнительные аннотации
     ax.set_title(
@@ -426,10 +456,10 @@ def test_round_robin_grid():
     
     # Легенда
     legend_elements = [
-        Line2D([0], [0], color='tab:green', lw=4, label='UE1'),
-        Line2D([0], [0], color='tab:orange', lw=4, label='UE2'),
-        Line2D([0], [0], color='tab:red', lw=4, label='UE3')
+        Line2D([0], [0], color=ue_colors[ue_id], lw=4, label=f'UE{ue_id}')
+        for ue_id in sorted(ue_colors.keys())
     ]
+    
     ax.legend(handles=legend_elements, loc='lower right')
     
     plt.tight_layout()
