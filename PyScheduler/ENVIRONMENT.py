@@ -28,6 +28,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('TkAgg')  # Или 'Qt5Agg' для GUI бэкенда
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from UE_MODULE import UECollection, UserEquipment
 from BS_MODULE import BaseStation
 from RES_GRID import RES_GRID_LTE
@@ -35,7 +36,6 @@ from SCHEDULER import RoundRobinScheduler
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel
 from TRAFFIC_MODEL import PoissonModel
 from CHANNEL_MODEL import UMiModel
-
 
 class LTEGridVisualizer:
     def __init__(self, lte_grid):
@@ -336,9 +336,110 @@ def test_scheduler_with_buffer():
     print(f"\nСредняя пропускная способность в TTI: {avg_throughput:.2f} бит/с")
     print(f"Всего выделено RB: {stats['total_allocated_rbs']}/100")
     print("[OK] Тест пройден успешно!")
+    
+def test_round_robin_grid():
+    """Тест работы Round Robin планировщика с визуализацией полного фрейма"""
+    print("\n=== Тест Round Robin (полный фрейм) ===")
+    
+    # Шаг 1: Инициализация компонентов
+    lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=1)  # 1 фрейм = 10 TTI
+    visualizer = LTEGridVisualizer(lte_grid)
+    scheduler = RoundRobinScheduler(lte_grid)
+
+    # Шаг 2: Создание пользователей
+    bs = BaseStation(x=500, y=500, height=25.0, bandwidth=10)
+    ue1 = UserEquipment(UE_ID=1, x=300, y=300, ue_class="pedestrian")
+    ue2 = UserEquipment(UE_ID=2, x=700, y=700, ue_class="car")
+    ue3 = UserEquipment(UE_ID=3, x=100, y=200, ue_class="car")
+    ue1.buffer.ADD_PACKET(10000, creation_time=0, current_time=0,ttl_ms=10000)
+    ue2.buffer.ADD_PACKET(10000, creation_time=0, current_time=0,ttl_ms=10000)
+    ue1.buffer.ADD_PACKET(2000, creation_time=0, current_time=0,ttl_ms=10000)
+    ue2.buffer.ADD_PACKET(3000, creation_time=0, current_time=0,ttl_ms=10000)
+    ue3.buffer.ADD_PACKET(30000, creation_time=0, current_time=0,ttl_ms=10000)
+    
+    # Настройка моделей
+    ue1.SET_MOBILITY_MODEL(RandomWaypointModel(x_min=0, x_max=1000, y_min=0, y_max=1000, pause_time=10))
+    ue1.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=5))
+    ue1.SET_CH_MODEL(UMiModel(bs))
+    
+    ue2.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=1000, y_min=0, y_max=1000))
+    ue2.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=3))
+    ue2.SET_CH_MODEL(UMiModel(bs))
+    
+    ue3.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=1000, y_min=0, y_max=1000))
+    ue3.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=3))
+    ue3.SET_CH_MODEL(UMiModel(bs))
+
+    # Шаг 3: Основной цикл симуляции
+    for tti in range(20):  # 0-9 TTI (полный фрейм)
+        current_time = tti
+        
+        # Генерация трафика
+        ue1.GEN_TRFFC(current_time, update_interval=10)
+        ue2.GEN_TRFFC(current_time,update_interval=10)
+        ue3.GEN_TRFFC(current_time,update_interval=10)
+        
+        # Обновление состояния
+        ue1.UPD_POSITION(5, bs.position, bs.height)
+        ue2.UPD_POSITION(5, bs.position, bs.height)
+        ue3.UPD_POSITION(5, bs.position, bs.height)
+        ue1.UPD_CH_QUALITY()
+        ue2.UPD_CH_QUALITY()
+        ue3.UPD_CH_QUALITY()
+        
+        # Подготовка данных для планировщика
+        users = [
+            {
+                'UE_ID': 1,
+                'buffer_size': ue1.buffer.current_size,
+                'cqi': ue1.cqi,
+                'ue': ue1
+            },
+            {
+                'UE_ID': 2,
+                'buffer_size': ue2.buffer.current_size,
+                'cqi': ue2.cqi,
+                'ue': ue2
+            },
+            {
+                'UE_ID': 3,
+                'buffer_size': ue3.buffer.current_size,
+                'cqi': ue3.cqi,
+                'ue': ue3
+            }
+        ]
+        
+        # Запуск планировщика
+        scheduler.schedule(tti, users)
+
+    # Шаг 4: Визуализация всего фрейма
+    print("\nВизуализация распределения ресурсов:")
+    fig, ax = visualizer.visualize_timeline_grid(tti_start=0, tti_end=20)
+    
+    # Дополнительные аннотации
+    ax.set_title(
+        "Round Robin планировщик (полный фрейм)\n"
+        f"UE1: Средний CQI={np.mean(ue1.CQI_values):.1f}\n"
+        f"UE2: Средний CQI={np.mean(ue2.CQI_values):.1f}"
+        f"UE3: Средний CQI={np.mean(ue3.CQI_values):.1f}"
+    )
+    
+    # Легенда
+    legend_elements = [
+        Line2D([0], [0], color='tab:green', lw=4, label='UE1'),
+        Line2D([0], [0], color='tab:orange', lw=4, label='UE2'),
+        Line2D([0], [0], color='tab:red', lw=4, label='UE3')
+    ]
+    ax.legend(handles=legend_elements, loc='lower right')
+    
+    plt.tight_layout()
+    plt.show()
+    print("[OK] Тест завершен с визуализацией")
+
 
 if __name__ == "__main__":
-    test_scheduler_with_buffer()
-    test_visualize_lte_timeline()
+    #test_scheduler_with_buffer()
+    #test_visualize_lte_timeline()
+    test_round_robin_grid()
     print("Все тесты успешно пройдены!")
 

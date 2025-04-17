@@ -144,6 +144,10 @@ class RoundRobinScheduler(SchedulerInterface):
         stats = self._calculate_throughput(allocation, active_users)
         return {'allocation': allocation, 'statistics': stats}
     
+    #@sherokiddo в рамках оптимизации можно разбить весь планировщик на несколько методов
+    #для удобного логирования и подсчета времени. Например - подготовка данных один метод
+    #затем идет непосредственно все планирование, и метод формирования статистики
+    
     def _calculate_throughput(self, allocation: Dict, users: List[Dict]) -> Dict:
         """
         Рассчитывает фактическую пропускную способность с учетом:
