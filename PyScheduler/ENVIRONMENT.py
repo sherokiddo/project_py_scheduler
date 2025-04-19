@@ -33,7 +33,7 @@ from matplotlib.lines import Line2D
 from UE_MODULE import UECollection, UserEquipment
 from BS_MODULE import BaseStation
 from RES_GRID import RES_GRID_LTE
-from SCHEDULER import RoundRobinScheduler
+from SCHEDULER import RoundRobinScheduler, BestCQIScheduler
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel
 from TRAFFIC_MODEL import PoissonModel
 from CHANNEL_MODEL import UMiModel
@@ -42,8 +42,11 @@ class LTEGridVisualizer:
     def __init__(self, lte_grid):
         self.lte_grid = lte_grid
     
-    def visualize_timeline_grid(self, tti_start=0, tti_end=None, ue_colors=None):
+    def visualize_timeline_grid(self, tti_start=0, tti_end=None, scheduler_name: str = "Round Robin", ue_colors=None):
         """Визуализирует ресурсную сетку LTE с правильным расположением слотов по временной оси"""
+        
+        title = f"{scheduler_name} планировщик (TTI {tti_start}-{tti_end-1})\n"
+        
         if tti_end is None:
             tti_end = min(tti_start + 5, self.lte_grid.total_tti)
         
@@ -145,6 +148,7 @@ class LTEGridVisualizer:
         plt.tight_layout()
         plt.show()
         
+        ax.set_title(title)
         return fig, ax, ue_colors
 
     
@@ -244,8 +248,8 @@ def test_scheduler_with_buffer():
     #------------------------------------------------------------------
     # Шаг 2: Создание планировщика
     #------------------------------------------------------------------
-    scheduler = RoundRobinScheduler(lte_grid)
-    print("[OK] Планировщик Round Robin создан")
+    scheduler = BestCQIScheduler(lte_grid)
+    print(f"[OK] Планировщик {scheduler.__class__.__name__} инициализирован")
 
     #------------------------------------------------------------------
     # Шаг 3: Создание пользователей и базовой станции
@@ -358,14 +362,14 @@ def test_scheduler_with_buffer():
     print(f"Всего выделено RB: {stats['total_allocated_rbs']}/100")
     print("[OK] Тест пройден успешно!")
     
-def test_round_robin_grid():
+def test_scheduler_grid():
     """Тест работы Round Robin планировщика с визуализацией полного фрейма"""
     print("\n=== Тест Round Robin (полный фрейм) ===")
     
     # Шаг 1: Инициализация компонентов
     lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=2)  # 1 фрейм = 10 TTI
     visualizer = LTEGridVisualizer(lte_grid)
-    scheduler = RoundRobinScheduler(lte_grid)
+    scheduler = BestCQIScheduler(lte_grid)
 
     # Шаг 2: Создание пользователей
     bs = BaseStation(x=500, y=500, height=25.0, bandwidth=10)
@@ -394,6 +398,12 @@ def test_round_robin_grid():
     sim_duration = 20
     prev_time = 0
 
+    cqi_history = {
+        1: [],
+        2: [],
+        3: []
+    }    
+
     # Шаг 3: Основной цикл симуляции
     for tti in range(20):  # 0-9 TTI (полный фрейм)
         current_time = tti
@@ -415,6 +425,12 @@ def test_round_robin_grid():
         
         prev_time = current_time
         
+        # Логирование CQI
+        cqi_history[1].append(ue1.cqi)
+        cqi_history[2].append(ue2.cqi)
+        cqi_history[3].append(ue3.cqi)
+        
+        print(f"[TTI {tti}] CQI: UE1={ue1.cqi}, UE2={ue2.cqi}, UE3={ue3.cqi}")
         print(f"TTI {tti}: UE1={ue1.buffer.current_size}B, UE2={ue2.buffer.current_size}B, UE3={ue3.buffer.current_size}B")
         
         # Подготовка данных для планировщика
@@ -444,11 +460,15 @@ def test_round_robin_grid():
 
     # Шаг 4: Визуализация всего фрейма
     print("\nВизуализация распределения ресурсов:")
-    fig, ax, ue_colors = visualizer.visualize_timeline_grid(tti_start=0, tti_end=sim_duration)
+    fig, ax, ue_colors = visualizer.visualize_timeline_grid(
+        tti_start=0, 
+        tti_end=sim_duration,
+        scheduler_name= {scheduler.__class__.__name__} # <-- Добавлен параметр
+    )
     
     # Дополнительные аннотации
     ax.set_title(
-        "Round Robin планировщик (полный фрейм)\n"
+        f"{scheduler.__class__.__name__} планировщик (полный фрейм)\n"
         f"UE1: Средний CQI={np.mean(ue1.CQI_values):.1f}\n"
         f"UE2: Средний CQI={np.mean(ue2.CQI_values):.1f}"
         f"UE3: Средний CQI={np.mean(ue3.CQI_values):.1f}"
@@ -470,6 +490,6 @@ def test_round_robin_grid():
 if __name__ == "__main__":
     #test_scheduler_with_buffer()
     #test_visualize_lte_timeline()
-    test_round_robin_grid()
+    test_scheduler_grid()
     print("Все тесты успешно пройдены!")
 

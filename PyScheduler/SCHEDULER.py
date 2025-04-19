@@ -204,3 +204,129 @@ class RoundRobinScheduler(SchedulerInterface):
         
         stats['total_effective_bits'] = total_effective_bits
         return stats
+
+class BestCQIScheduler(SchedulerInterface):
+    
+    def __init__(self, lte_grid: RES_GRID_LTE):
+        super().__init__(lte_grid)
+        self.last_served_index = -1
+        self.amc = AdaptiveModulationAndCoding()  
+    
+    def schedule(self, tti: int, users: List[Dict]) -> Dict:
+        """
+        Планирование ресурсов с учётом данных в буфере и CQI.
+        
+        Args:
+            tti: Индекс TTI
+            users: Список пользователей с параметрами:
+                - 'UE_ID': Идентификатор
+                - 'buffer_size': Размер буфера в байтах
+                - 'cqi': Индекс качества канала
+                - 'ue': Объект UserEquipment
+        
+        Returns:
+            Dict: Результаты распределения ресурсов
+        """
+        # Фильтрация активных пользователей
+        active_users = [user for user in users if user['buffer_size'] > 0 and 1 <= user['cqi'] <= 15]
+        if not active_users:
+            return {'allocation': {}, 'statistics': {}}
+        
+        # Сортировка по CQI
+        active_users.sort(key=lambda u: u['cqi'], reverse=True)
+        max_cqi = active_users[0]['cqi']
+        bcqi_users = [u for u in active_users if u['cqi'] == max_cqi]
+        
+        # Получение всех свободных RB и разделение по слотам
+        free_rbs = self.lte_grid.GET_FREE_RB_FOR_TTI(tti)
+        slots = {
+            0: [rb for rb in free_rbs if rb.freq_idx < self.lte_grid.rb_per_slot],
+            1: [rb for rb in free_rbs if rb.freq_idx >= self.lte_grid.rb_per_slot]
+        }
+        
+        allocation = {user['UE_ID']: [] for user in active_users}
+        start_index = (self.last_served_index + 1) % len(bcqi_users)
+        
+        # Распределение RB для каждого слота
+        for slot_id in [0, 1]:
+            current_index = start_index
+            for rb in slots[slot_id]:
+                user = bcqi_users[current_index % len(bcqi_users)]
+                if self.lte_grid.ALLOCATE_RB(tti, rb.slot_id, rb.freq_idx, user['UE_ID']):
+                    allocation[user['UE_ID']].append(rb.freq_idx)
+                    current_index += 1
+        
+        # Обновление индекса последнего пользователя
+        self.last_served_index = (start_index + len(free_rbs)) % len(bcqi_users)
+        
+        # Обработка буфера и статистики
+        for user in active_users:
+            ue = user['ue']
+            bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
+            max_bytes = (len(allocation[user['UE_ID']]) * bits_per_rb) // 8
+            packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti*1)
+            ue.UPD_THROUGHPUT(total * 8, 1)
+        
+        stats = self._calculate_throughput(allocation, active_users)
+        return {'allocation': allocation, 'statistics': stats}
+    
+    #@sherokiddo в рамках оптимизации можно разбить весь планировщик на несколько методов
+    #для удобного логирования и подсчета времени. Например - подготовка данных один метод
+    #затем идет непосредственно все планирование, и метод формирования статистики
+    
+    def _calculate_throughput(self, allocation: Dict, users: List[Dict]) -> Dict:
+        """
+        Рассчитывает фактическую пропускную способность с учетом:
+        - Реальных данных из буфера
+        - Адаптивной модуляции и кодирования (AMC)
+    
+        Args:
+            allocation: Словарь распределения RB {UE_ID: список freq_indices}
+            users: Список активных пользователей с параметрами CQI
+    
+        Returns:
+            Словарь с метриками производительности:
+            - total_allocated_rbs: Общее количество выделенных RB
+            - user_throughput: Пропускная способность на пользователя (бит/с)
+            - average_throughput: Средняя пропускная способность (бит/с)
+            - total_effective_bits: Фактически переданные биты
+        """
+        stats = {
+            'total_allocated_rbs': 0,
+            'user_throughput': {u['UE_ID']: 0 for u in users},  # Инициализация для всех UE
+            'average_throughput': 0.0,
+            'total_effective_bits': 0
+        }
+        
+        total_effective_bits = 0
+    
+        for user in users:
+            ue_id = user['UE_ID']
+            rb_count = len(allocation.get(ue_id, []))
+            
+            if rb_count == 0:
+                continue
+    
+            # 1. Реальные переданные биты из буфера
+            real_bits = user['ue'].current_throughput * 1e-3  # бит/мс → бит/с
+    
+            # 2. Расчет максимальной ёмкости RB для данного CQI
+            bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
+
+            # 3. Расчет эффективно использованных бит
+            max_bits = rb_count * bits_per_rb
+            effective_bits = min(real_bits, max_bits)
+            
+            # 4. Обновление статистики
+            stats['user_throughput'][ue_id] = effective_bits
+            total_effective_bits += effective_bits
+            stats['total_allocated_rbs'] += rb_count
+    
+        # 5. Расчет средней пропускной способности
+        active_users = [u for u in users if stats['user_throughput'][u['UE_ID']] > 0]
+        
+        if active_users:
+            stats['average_throughput'] = total_effective_bits / len(active_users)
+        
+        stats['total_effective_bits'] = total_effective_bits
+        return stats
