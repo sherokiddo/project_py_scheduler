@@ -307,11 +307,9 @@ class UserEquipment:
         self.is_paused = True # Флаг, который обозначает стоит ли устройство на паузе
         self.pause_timer = 0.0 # Таймер паузы устройства
         self.is_first_move = True # Флаг первого движения устройства
-
-        
+  
         self.x_coordinates = [self.position[0]] # Координаты X для карты передвижения
         self.y_coordinates = [self.position[1]] # Координаты Y для карты передвижения
-        
         
         # Буфер данных
         self.buffer = Buffer(buffer_size)
@@ -335,8 +333,7 @@ class UserEquipment:
         
         # Параметры для алгоритмов планирования
         self.current_throughput = 0.0  # Текущая пропускная способность (бит/с)
-        self.average_throughput = 0.0  # Средняя пропускная способность (бит/с)
-        self.alpha = 0.1  # Коэффициент сглаживания для средней пропускной способности
+        self.average_throughput = 0.0  # Средняя пропускная способность (бит/с) 
 
         self.assigned_rbs = []  # Список выделенных ресурсных блоков
         self.mcs_index = 0  # Индекс MCS (0-28)
@@ -553,25 +550,8 @@ class UserEquipment:
         # Текущая пропускная способность в бит/с
         self.current_throughput = (bits_transmitted * 1000) / time_interval_ms if time_interval_ms > 0 else 0
         
-        # Обновление экспоненциально сглаженного среднего
-        if self.average_throughput == 0:
-            self.average_throughput = self.current_throughput
-        else:
-            self.average_throughput = (1 - self.alpha) * self.average_throughput + self.alpha * self.current_throughput
-        
         # Обновление общей статистики
         self.total_transmitted_bits += bits_transmitted
-    
-    def CALC_PF_METRIC(self) -> float:
-        """
-        Рассчитать метрику Proportional Fair (PF).
-        
-        Returns:
-            float: Значение метрики PF
-        """
-        if self.average_throughput <= 0:
-            return float('inf')  # Если не было передачи, присваиваем высокий приоритет
-        return self.current_throughput / self.average_throughput
     
     def UPD_BUFFER(self, current_time: int):
         """Обновление задержки пакетов в буфере"""

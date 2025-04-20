@@ -33,7 +33,7 @@ from matplotlib.lines import Line2D
 from UE_MODULE import UECollection, UserEquipment
 from BS_MODULE import BaseStation
 from RES_GRID import RES_GRID_LTE
-from SCHEDULER import RoundRobinScheduler, BestCQIScheduler
+from SCHEDULER import RoundRobinScheduler, BestCQIScheduler, ProportionalFairScheduler
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel
 from TRAFFIC_MODEL import PoissonModel
 from CHANNEL_MODEL import UMiModel
@@ -364,12 +364,12 @@ def test_scheduler_with_buffer():
     
 def test_scheduler_grid():
     """Тест работы Round Robin планировщика с визуализацией полного фрейма"""
-    print("\n=== Тест Round Robin (полный фрейм) ===")
+    print("\n=== Тест Proportional Fair (полный фрейм) ===")
     
     # Шаг 1: Инициализация компонентов
     lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=2)  # 1 фрейм = 10 TTI
     visualizer = LTEGridVisualizer(lte_grid)
-    scheduler = BestCQIScheduler(lte_grid)
+    scheduler = ProportionalFairScheduler(lte_grid)
 
     # Шаг 2: Создание пользователей
     bs = BaseStation(x=500, y=500, height=25.0, bandwidth=10)
@@ -402,7 +402,7 @@ def test_scheduler_grid():
         1: [],
         2: [],
         3: []
-    }    
+    } 
 
     # Шаг 3: Основной цикл симуляции
     for tti in range(20):  # 0-9 TTI (полный фрейм)
@@ -431,7 +431,7 @@ def test_scheduler_grid():
         cqi_history[3].append(ue3.cqi)
         
         print(f"[TTI {tti}] CQI: UE1={ue1.cqi}, UE2={ue2.cqi}, UE3={ue3.cqi}")
-        print(f"TTI {tti}: UE1={ue1.buffer.current_size}B, UE2={ue2.buffer.current_size}B, UE3={ue3.buffer.current_size}B")
+        print(f"[TTI {tti}] UE1={ue1.buffer.current_size}B, UE2={ue2.buffer.current_size}B, UE3={ue3.buffer.current_size}B")
         
         # Подготовка данных для планировщика
         users = [
