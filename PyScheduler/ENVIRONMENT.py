@@ -28,7 +28,7 @@ import numpy as np
 import matplotlib
 #matplotlib.use('TkAgg')  # Или 'Qt5Agg' для GUI бэкенда
 import matplotlib.pyplot as plt
-%matplotlib
+#%matplotlib
 from matplotlib.lines import Line2D
 from UE_MODULE import UECollection, UserEquipment
 from BS_MODULE import BaseStation
@@ -395,8 +395,8 @@ def test_scheduler_grid():
     ue3.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=100))
     ue3.SET_CH_MODEL(UMiModel(bs))
     
-    sim_duration = 20
-    prev_time = 0
+    sim_duration = 20 # Время симуляции (в мс)
+    update_interval = 1 # Интервал обновления параметров пользователя (в мс)
 
     cqi_history = {
         1: [],
@@ -404,59 +404,60 @@ def test_scheduler_grid():
         3: []
     } 
 
-    # Шаг 3: Основной цикл симуляции
-    for tti in range(20):  # 0-9 TTI (полный фрейм)
-        current_time = tti
-        interval = current_time - prev_time
-        interval = max(0,interval)
-        
+    # Шаг 3: Основной цикл симуляции 
+    for current_time in range(update_interval, sim_duration + 1, update_interval):  # 0-9 TTI (полный фрейм)
+    
         # Генерация трафика
-        ue1.GEN_TRFFC(current_time, interval)
-        ue2.GEN_TRFFC(current_time, interval)
-        ue3.GEN_TRFFC(current_time, interval)
+        print("\n======== ГЕНЕРАЦИЯ ТРАФИКА ========")
+        ue1.GEN_TRFFC(current_time, update_interval)
+        ue2.GEN_TRFFC(current_time, update_interval)
+        ue3.GEN_TRFFC(current_time, update_interval)
+        print("===================================")
         
         # Обновление состояния
-        ue1.UPD_POSITION(interval, bs.position, bs.height)
-        ue2.UPD_POSITION(interval, bs.position, bs.height)
-        ue3.UPD_POSITION(interval, bs.position, bs.height)
+        ue1.UPD_POSITION(update_interval, bs.position, bs.height)
+        ue2.UPD_POSITION(update_interval, bs.position, bs.height)
+        ue3.UPD_POSITION(update_interval, bs.position, bs.height)
         ue1.UPD_CH_QUALITY()
         ue2.UPD_CH_QUALITY()
         ue3.UPD_CH_QUALITY()
-        
-        prev_time = current_time
         
         # Логирование CQI
         cqi_history[1].append(ue1.cqi)
         cqi_history[2].append(ue2.cqi)
         cqi_history[3].append(ue3.cqi)
         
-        print(f"[TTI {tti}] CQI: UE1={ue1.cqi}, UE2={ue2.cqi}, UE3={ue3.cqi}")
-        print(f"[TTI {tti}] UE1={ue1.buffer.current_size}B, UE2={ue2.buffer.current_size}B, UE3={ue3.buffer.current_size}B")
-        
-        # Подготовка данных для планировщика
-        users = [
-            {
-                'UE_ID': 1,
-                'buffer_size': ue1.buffer.current_size,
-                'cqi': ue1.cqi,
-                'ue': ue1
-            },
-            {
-                'UE_ID': 2,
-                'buffer_size': ue2.buffer.current_size,
-                'cqi': ue2.cqi,
-                'ue': ue2
-            },
-            {
-                'UE_ID': 3,
-                'buffer_size': ue3.buffer.current_size,
-                'cqi': ue3.cqi,
-                'ue': ue3
-            }
-        ]
-        
-        # Запуск планировщика
-        scheduler.schedule(tti, users)
+        # Цикл по каждому TTI
+        for tti in range(current_time - update_interval, current_time):
+            # Подготовка данных для планировщика
+            users = [
+                {
+                    'UE_ID': 1,
+                    'buffer_size': ue1.buffer.current_size,
+                    'cqi': ue1.cqi,
+                    'ue': ue1
+                },
+                {
+                    'UE_ID': 2,
+                    'buffer_size': ue2.buffer.current_size,
+                    'cqi': ue2.cqi,
+                    'ue': ue2
+                },
+                {
+                    'UE_ID': 3,
+                    'buffer_size': ue3.buffer.current_size,
+                    'cqi': ue3.cqi,
+                    'ue': ue3
+                }
+            ]
+            
+            # Вывод параметров для каждого TTI
+            print(f"\n[TTI {tti}]")
+            print(f"CQI: UE1={ue1.cqi}, UE2={ue2.cqi}, UE3={ue3.cqi}")
+            print(f"Buffer Size: UE1={ue1.buffer.current_size}B, UE2={ue2.buffer.current_size}B, UE3={ue3.buffer.current_size}B")
+            
+            # Запуск планировщика
+            scheduler.schedule(tti, users)
 
     # Шаг 4: Визуализация всего фрейма
     print("\nВизуализация распределения ресурсов:")

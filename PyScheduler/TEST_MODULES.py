@@ -120,7 +120,7 @@ def example_usage_modules():
     update_interval = 250
     
     # Симуляция и визуализация результатов
-    for t in range(1, simulation_duration + 1):
+    for t in range(update_interval, simulation_duration + 1, update_interval):
         if t % update_interval == 0:
             ue_collection.UPDATE_ALL_USERS(time_ms=t, update_interval=update_interval, 
                                            bs_position=bs.position, bs_height=bs.height, 

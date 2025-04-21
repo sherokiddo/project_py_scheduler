@@ -534,10 +534,9 @@ class UserEquipment:
                 print(f"UE {self.UE_ID}: Пакет {packet['size']}B отброшен (буфер полный)")
             
         status = self.buffer.GET_STATUS(current_time)
-        print(f"\nИнтервал [{current_time-update_interval}-{current_time} ms]: Создано {len(packets)} пакетов")
+        print(f"Интервал [{current_time-update_interval}-{current_time} ms]: Создано {len(packets)} пакетов")
         print(f"Скорость поступления: {bitrate:.2f} бит/с")
         print(f"Статус буфера: {status}")
-
     
     def UPD_THROUGHPUT(self, bits_transmitted: int, time_interval_ms: int):
         """
