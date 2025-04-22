@@ -80,6 +80,63 @@ class AdaptiveModulationAndCoding:
         symbols_per_rb = 12 * 7  # 84 символа в RB
         return int(symbols_per_rb * modulation * code_rate)
 	#@sherokiddo: "Добавить зависимость от CP"
+    
+    def calculate_throughput(self, allocation: Dict, users: List[Dict]) -> Dict:
+        """
+        Рассчитывает фактическую пропускную способность с учетом:
+        - Реальных данных из буфера
+        - Адаптивной модуляции и кодирования (AMC)
+    
+        Args:
+            allocation: Словарь распределения RB {UE_ID: список freq_indices}
+            users: Список активных пользователей с параметрами CQI
+    
+        Returns:
+            Словарь с метриками производительности:
+            - total_allocated_rbs: Общее количество выделенных RB
+            - user_throughput: Пропускная способность на пользователя (бит/с)
+            - average_throughput: Средняя пропускная способность (бит/с)
+            - total_effective_bits: Фактически переданные биты
+        """
+        stats = {
+            'total_allocated_rbs': 0,
+            'user_throughput': {u['UE_ID']: 0 for u in users},  # Инициализация для всех UE
+            'average_throughput': 0.0,
+            'total_effective_bits': 0
+        }
+        
+        total_effective_bits = 0
+    
+        for user in users:
+            ue_id = user['UE_ID']
+            rb_count = len(allocation.get(ue_id, []))
+            
+            if rb_count == 0:
+                continue
+    
+            # 1. Реальные переданные биты из буфера
+            real_bits = user['ue'].current_throughput * 1e-3  # бит/мс → бит/с
+    
+            # 2. Расчет максимальной ёмкости RB для данного CQI
+            bits_per_rb = self.GET_BITS_PER_RB(user['cqi'])
+
+            # 3. Расчет эффективно использованных бит
+            max_bits = rb_count * bits_per_rb
+            effective_bits = min(real_bits, max_bits)
+            
+            # 4. Обновление статистики
+            stats['user_throughput'][ue_id] = effective_bits
+            total_effective_bits += effective_bits
+            stats['total_allocated_rbs'] += rb_count
+    
+        # 5. Расчет средней пропускной способности
+        active_users = [u for u in users if stats['user_throughput'][u['UE_ID']] > 0]
+        
+        if active_users:
+            stats['average_throughput'] = total_effective_bits / len(active_users)
+        
+        stats['total_effective_bits'] = total_effective_bits
+        return stats
 
 class RoundRobinScheduler(SchedulerInterface):
     
@@ -141,69 +198,12 @@ class RoundRobinScheduler(SchedulerInterface):
             packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti*1)
             ue.UPD_THROUGHPUT(total * 8, 1)
         
-        stats = self._calculate_throughput(allocation, active_users)
+        stats = self.amc.calculate_throughput(allocation, active_users)
         return {'allocation': allocation, 'statistics': stats}
     
     #@sherokiddo в рамках оптимизации можно разбить весь планировщик на несколько методов
     #для удобного логирования и подсчета времени. Например - подготовка данных один метод
     #затем идет непосредственно все планирование, и метод формирования статистики
-    
-    def _calculate_throughput(self, allocation: Dict, users: List[Dict]) -> Dict:
-        """
-        Рассчитывает фактическую пропускную способность с учетом:
-        - Реальных данных из буфера
-        - Адаптивной модуляции и кодирования (AMC)
-    
-        Args:
-            allocation: Словарь распределения RB {UE_ID: список freq_indices}
-            users: Список активных пользователей с параметрами CQI
-    
-        Returns:
-            Словарь с метриками производительности:
-            - total_allocated_rbs: Общее количество выделенных RB
-            - user_throughput: Пропускная способность на пользователя (бит/с)
-            - average_throughput: Средняя пропускная способность (бит/с)
-            - total_effective_bits: Фактически переданные биты
-        """
-        stats = {
-            'total_allocated_rbs': 0,
-            'user_throughput': {u['UE_ID']: 0 for u in users},  # Инициализация для всех UE
-            'average_throughput': 0.0,
-            'total_effective_bits': 0
-        }
-        
-        total_effective_bits = 0
-    
-        for user in users:
-            ue_id = user['UE_ID']
-            rb_count = len(allocation.get(ue_id, []))
-            
-            if rb_count == 0:
-                continue
-    
-            # 1. Реальные переданные биты из буфера
-            real_bits = user['ue'].current_throughput * 1e-3  # бит/мс → бит/с
-    
-            # 2. Расчет максимальной ёмкости RB для данного CQI
-            bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
-
-            # 3. Расчет эффективно использованных бит
-            max_bits = rb_count * bits_per_rb
-            effective_bits = min(real_bits, max_bits)
-            
-            # 4. Обновление статистики
-            stats['user_throughput'][ue_id] = effective_bits
-            total_effective_bits += effective_bits
-            stats['total_allocated_rbs'] += rb_count
-    
-        # 5. Расчет средней пропускной способности
-        active_users = [u for u in users if stats['user_throughput'][u['UE_ID']] > 0]
-        
-        if active_users:
-            stats['average_throughput'] = total_effective_bits / len(active_users)
-        
-        stats['total_effective_bits'] = total_effective_bits
-        return stats
 
 class BestCQIScheduler(SchedulerInterface):
     
@@ -267,69 +267,13 @@ class BestCQIScheduler(SchedulerInterface):
             packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti*1)
             ue.UPD_THROUGHPUT(total * 8, 1)
         
-        stats = self._calculate_throughput(allocation, active_users)
+        stats = self.amc.calculate_throughput(allocation, active_users)
         return {'allocation': allocation, 'statistics': stats}
     
     #@sherokiddo в рамках оптимизации можно разбить весь планировщик на несколько методов
     #для удобного логирования и подсчета времени. Например - подготовка данных один метод
     #затем идет непосредственно все планирование, и метод формирования статистики
     
-    def _calculate_throughput(self, allocation: Dict, users: List[Dict]) -> Dict:
-        """
-        Рассчитывает фактическую пропускную способность с учетом:
-        - Реальных данных из буфера
-        - Адаптивной модуляции и кодирования (AMC)
-    
-        Args:
-            allocation: Словарь распределения RB {UE_ID: список freq_indices}
-            users: Список активных пользователей с параметрами CQI
-    
-        Returns:
-            Словарь с метриками производительности:
-            - total_allocated_rbs: Общее количество выделенных RB
-            - user_throughput: Пропускная способность на пользователя (бит/с)
-            - average_throughput: Средняя пропускная способность (бит/с)
-            - total_effective_bits: Фактически переданные биты
-        """
-        stats = {
-            'total_allocated_rbs': 0,
-            'user_throughput': {u['UE_ID']: 0 for u in users},  # Инициализация для всех UE
-            'average_throughput': 0.0,
-            'total_effective_bits': 0
-        }
-        
-        total_effective_bits = 0
-    
-        for user in users:
-            ue_id = user['UE_ID']
-            rb_count = len(allocation.get(ue_id, []))
-            
-            if rb_count == 0:
-                continue
-    
-            # 1. Реальные переданные биты из буфера
-            real_bits = user['ue'].current_throughput * 1e-3  # бит/мс → бит/с
-    
-            # 2. Расчет максимальной ёмкости RB для данного CQI
-            bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
-
-            # 3. Расчет эффективно использованных бит
-            max_bits = rb_count * bits_per_rb
-            effective_bits = min(real_bits, max_bits)
-            
-            # 4. Обновление статистики
-            stats['user_throughput'][ue_id] = effective_bits
-            total_effective_bits += effective_bits
-            stats['total_allocated_rbs'] += rb_count
-    
-        # 5. Расчет средней пропускной способности
-        active_users = [u for u in users if stats['user_throughput'][u['UE_ID']] > 0]
-        
-        if active_users:
-            stats['average_throughput'] = total_effective_bits / len(active_users)
-        
-        stats['total_effective_bits'] = total_effective_bits
-        return stats
     
 class ProportionalFairScheduler(SchedulerInterface):
     
@@ -432,63 +376,6 @@ class ProportionalFairScheduler(SchedulerInterface):
                 average_throughput_past = ue.average_throughput
                 ue.average_throughput = (1 - 0.2) * average_throughput_past
         
-        stats = self._calculate_throughput(allocation, active_users)
+        stats = self.amc.calculate_throughput(allocation, active_users)
         return {'allocation': allocation, 'statistics': stats}
-    
-    def _calculate_throughput(self, allocation: Dict, users: List[Dict]) -> Dict:
-        """
-        Рассчитывает фактическую пропускную способность с учетом:
-        - Реальных данных из буфера
-        - Адаптивной модуляции и кодирования (AMC)
-    
-        Args:
-            allocation: Словарь распределения RB {UE_ID: список freq_indices}
-            users: Список активных пользователей с параметрами CQI
-    
-        Returns:
-            Словарь с метриками производительности:
-            - total_allocated_rbs: Общее количество выделенных RB
-            - user_throughput: Пропускная способность на пользователя (бит/с)
-            - average_throughput: Средняя пропускная способность (бит/с)
-            - total_effective_bits: Фактически переданные биты
-        """
-        stats = {
-            'total_allocated_rbs': 0,
-            'user_throughput': {u['UE_ID']: 0 for u in users},  # Инициализация для всех UE
-            'average_throughput': 0.0,
-            'total_effective_bits': 0
-        }
-        
-        total_effective_bits = 0
-    
-        for user in users:
-            ue_id = user['UE_ID']
-            rb_count = len(allocation.get(ue_id, []))
-            
-            if rb_count == 0:
-                continue
-    
-            # 1. Реальные переданные биты из буфера
-            real_bits = user['ue'].current_throughput * 1e-3  # бит/мс → бит/с
-    
-            # 2. Расчет максимальной ёмкости RB для данного CQI
-            bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
-
-            # 3. Расчет эффективно использованных бит
-            max_bits = rb_count * bits_per_rb
-            effective_bits = min(real_bits, max_bits)
-            
-            # 4. Обновление статистики
-            stats['user_throughput'][ue_id] = effective_bits
-            total_effective_bits += effective_bits
-            stats['total_allocated_rbs'] += rb_count
-    
-        # 5. Расчет средней пропускной способности
-        active_users = [u for u in users if stats['user_throughput'][u['UE_ID']] > 0]
-        
-        if active_users:
-            stats['average_throughput'] = total_effective_bits / len(active_users)
-        
-        stats['total_effective_bits'] = total_effective_bits
-        return stats
             

@@ -369,7 +369,7 @@ def test_scheduler_grid():
     # Шаг 1: Инициализация компонентов
     lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=2)  # 1 фрейм = 10 TTI
     visualizer = LTEGridVisualizer(lte_grid)
-    scheduler = ProportionalFairScheduler(lte_grid)
+    scheduler = BestCQIScheduler(lte_grid)
 
     # Шаг 2: Создание пользователей
     bs = BaseStation(x=500, y=500, height=25.0, bandwidth=10)
@@ -392,7 +392,7 @@ def test_scheduler_grid():
     ue2.SET_CH_MODEL(UMiModel(bs))
     
     ue3.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=1000, y_min=0, y_max=1000))
-    ue3.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=100))
+    ue3.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=1000))
     ue3.SET_CH_MODEL(UMiModel(bs))
     
     sim_duration = 20 # Время симуляции (в мс)
