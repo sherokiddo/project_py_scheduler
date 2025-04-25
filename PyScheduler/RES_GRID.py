@@ -372,10 +372,11 @@ class RES_GRID_LTE:
             return success
         return False
     
-    def ALLOCATE_RB_GROUP(self, tti: int, freq_idx: int, UE_ID: int) -> bool:
+    def ALLOCATE_RB_PAIR(self, tti: int, freq_idx: int, UE_ID: int) -> bool:
+        subframe = tti % 10
         success = True
-        for slot in ["sub_{}_slot_0", "sub_{}_slot_1"]:
-            slot_id = slot.format(tti)
+        for slot in [0, 1]:
+            slot_id = f"sub_{subframe}_slot_{slot}"
             if not self.ALLOCATE_RB(tti, slot_id, freq_idx, UE_ID):
                 success = False
                 self.RELEASE_RB(tti, slot_id, freq_idx)
@@ -615,7 +616,7 @@ def test_rb_group_allocation():
     freq_idx = 10
     
     # Выделение группы
-    assert grid.ALLOCATE_RB_GROUP(0, freq_idx, 200), "Ошибка группового выделения"
+    assert grid.ALLOCATE_RB_PAIR(0, freq_idx, 200), "Ошибка группового выделения"
     
     # Проверка обоих слотов
     slot0_rb = grid.GET_RB(0, "sub_0_slot_0", freq_idx)

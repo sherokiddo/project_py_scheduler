@@ -28,7 +28,7 @@ import numpy as np
 import matplotlib
 #matplotlib.use('TkAgg')  # Или 'Qt5Agg' для GUI бэкенда
 import matplotlib.pyplot as plt
-#%matplotlib
+%matplotlib
 from matplotlib.lines import Line2D
 from UE_MODULE import UECollection, UserEquipment
 from BS_MODULE import BaseStation
@@ -214,7 +214,7 @@ def test_visualize_lte_timeline():
     lte_grid.ALLOCATE_RB(0, "sub_0_slot_1", 21, 2)
     
     # TTI 1
-    lte_grid.ALLOCATE_RB_GROUP(1, 30, 3)  # Выделяет RB с индексом 30 в обоих слотах TTI 1
+    lte_grid.ALLOCATE_RB_PAIR(1, 30, 3)  # Выделяет RB с индексом 30 в обоих слотах TTI 1
     
     # TTI 2 - демонстрация разных пользователей в одном частотном индексе в разных слотах
     lte_grid.ALLOCATE_RB(2, "sub_2_slot_0", 15, 4)
@@ -369,7 +369,7 @@ def test_scheduler_grid():
     # Шаг 1: Инициализация компонентов
     lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=2)  # 1 фрейм = 10 TTI
     visualizer = LTEGridVisualizer(lte_grid)
-    scheduler = BestCQIScheduler(lte_grid)
+    scheduler = ProportionalFairScheduler(lte_grid)
 
     # Шаг 2: Создание пользователей
     bs = BaseStation(x=500, y=500, height=25.0, bandwidth=10)

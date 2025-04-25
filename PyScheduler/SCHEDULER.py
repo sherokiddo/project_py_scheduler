@@ -161,45 +161,45 @@ class RoundRobinScheduler(SchedulerInterface):
             Dict: Результаты распределения ресурсов
         """
         # Фильтрация активных пользователей
-        active_users = [user for user in users if user['buffer_size'] > 0 and 1 <= user['cqi'] <= 15]
+        active_users = [
+            user for user in users 
+            if user['buffer_size'] > 0 and 1 <= user['cqi'] <= 15
+        ]
         if not active_users:
             return {'allocation': {}, 'statistics': {}}
-        
-        # Сортировка по UE_ID
-        active_users.sort(key=lambda u: u['UE_ID'])
-        
-        # Получение всех свободных RB и разделение по слотам
+
+        # 2. Получение уникальных частотных индексов для TTI
         free_rbs = self.lte_grid.GET_FREE_RB_FOR_TTI(tti)
-        slots = {
-            0: [rb for rb in free_rbs if rb.freq_idx < self.lte_grid.rb_per_slot],
-            1: [rb for rb in free_rbs if rb.freq_idx >= self.lte_grid.rb_per_slot]
-        }
-        
+        freq_indices = list({rb.freq_idx for rb in free_rbs})
+
+        # 3. Инициализация структур данных
         allocation = {user['UE_ID']: [] for user in active_users}
-        start_index = (self.last_served_index + 1) % len(active_users)
-        
-        # Распределение RB для каждого слота
-        for slot_id in [0, 1]:
-            current_index = start_index
-            for rb in slots[slot_id]:
-                user = active_users[current_index]
-                if self.lte_grid.ALLOCATE_RB(tti, rb.slot_id, rb.freq_idx, user['UE_ID']):
-                    allocation[user['UE_ID']].append(rb.freq_idx)
-                    current_index = (current_index + 1) % len(active_users)
-        
-        # Обновление индекса последнего пользователя
-        self.last_served_index = (start_index + len(free_rbs)) % len(active_users)
-        
-        # Обработка буфера и статистики
+        current_idx = (self.last_served_index + 1) % len(active_users)
+
+        # 4. Основной цикл распределения
+        for freq_idx in freq_indices:
+            user = active_users[current_idx]
+            
+            # Попытка выделить оба слота
+            if self.lte_grid.ALLOCATE_RB_PAIR(tti, freq_idx, user['UE_ID']):
+                allocation[user['UE_ID']].extend([freq_idx]*2)
+                current_idx = (current_idx + 1) % len(active_users)
+
+        # 5. Обновление состояния
+        self.last_served_index = current_idx
+
+        # 6. Обработка буфера и статистики
         for user in active_users:
             ue = user['ue']
             bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
             max_bytes = (len(allocation[user['UE_ID']]) * bits_per_rb) // 8
-            packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti*1)
+            packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti)
             ue.UPD_THROUGHPUT(total * 8, 1)
-        
-        stats = self.amc.calculate_throughput(allocation, active_users)
-        return {'allocation': allocation, 'statistics': stats}
+
+        return {
+            'allocation': allocation,
+            'statistics': self.amc.calculate_throughput(allocation, active_users)
+        }
     
     #@sherokiddo в рамках оптимизации можно разбить весь планировщик на несколько методов
     #для удобного логирования и подсчета времени. Например - подготовка данных один метод
@@ -228,53 +228,57 @@ class BestCQIScheduler(SchedulerInterface):
             Dict: Результаты распределения ресурсов
         """
         # Фильтрация активных пользователей
-        active_users = [user for user in users if user['buffer_size'] > 0 and 1 <= user['cqi'] <= 15]
+        active_users = [
+            user for user in users 
+            if user['buffer_size'] > 0 and 1 <= user['cqi'] <= 15
+        ]
         if not active_users:
             return {'allocation': {}, 'statistics': {}}
-        
-        # Сортировка по CQI
+
+        # 2. Сортировка по CQI (по убыванию)
         active_users.sort(key=lambda u: u['cqi'], reverse=True)
         max_cqi = active_users[0]['cqi']
         bcqi_users = [u for u in active_users if u['cqi'] == max_cqi]
-        
-        # Получение всех свободных RB и разделение по слотам
+
+        # 3. Получение уникальных свободных частотных индексов
         free_rbs = self.lte_grid.GET_FREE_RB_FOR_TTI(tti)
-        slots = {
-            0: [rb for rb in free_rbs if rb.freq_idx < self.lte_grid.rb_per_slot],
-            1: [rb for rb in free_rbs if rb.freq_idx >= self.lte_grid.rb_per_slot]
-        }
-        
+        freq_indices = list({rb.freq_idx for rb in free_rbs})
+
+        # 4. Инициализация структур данных
         allocation = {user['UE_ID']: [] for user in active_users}
-        start_index = (self.last_served_index + 1) % len(bcqi_users)
-        
-        # Распределение RB для каждого слота
-        for slot_id in [0, 1]:
-            current_index = start_index
-            for rb in slots[slot_id]:
-                user = bcqi_users[current_index % len(bcqi_users)]
-                if self.lte_grid.ALLOCATE_RB(tti, rb.slot_id, rb.freq_idx, user['UE_ID']):
-                    allocation[user['UE_ID']].append(rb.freq_idx)
-                    current_index += 1
-        
-        # Обновление индекса последнего пользователя
-        self.last_served_index = (start_index + len(free_rbs)) % len(bcqi_users)
-        
-        # Обработка буфера и статистики
+        current_idx = (self.last_served_index + 1) % len(bcqi_users)
+
+        # 5. Основной цикл распределения
+        for freq_idx in freq_indices:
+            user = bcqi_users[current_idx % len(bcqi_users)]
+            
+            # Попытка выделить группу RB
+            if self.lte_grid.ALLOCATE_RB_PAIR(tti, freq_idx, user['UE_ID']):
+                allocation[user['UE_ID']].append(freq_idx)
+                current_idx += 1
+
+        # 6. Обновление индекса последнего пользователя
+        self.last_served_index = current_idx % len(bcqi_users)
+
+        # 7. Обработка буфера и статистики
         for user in active_users:
             ue = user['ue']
+            allocated_pairs = len(allocation[user['UE_ID']])
+            total_rb = allocated_pairs * 2  # 2 RB на пару
+            
             bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
-            max_bytes = (len(allocation[user['UE_ID']]) * bits_per_rb) // 8
-            packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti*1)
+            max_bytes = (total_rb * bits_per_rb) // 8
+            
+            packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti)
             ue.UPD_THROUGHPUT(total * 8, 1)
-        
+
         stats = self.amc.calculate_throughput(allocation, active_users)
         return {'allocation': allocation, 'statistics': stats}
     
     #@sherokiddo в рамках оптимизации можно разбить весь планировщик на несколько методов
     #для удобного логирования и подсчета времени. Например - подготовка данных один метод
     #затем идет непосредственно все планирование, и метод формирования статистики
-    
-    
+
 class ProportionalFairScheduler(SchedulerInterface):
     
     def __init__(self, lte_grid: RES_GRID_LTE):
@@ -378,4 +382,123 @@ class ProportionalFairScheduler(SchedulerInterface):
         
         stats = self.amc.calculate_throughput(allocation, active_users)
         return {'allocation': allocation, 'statistics': stats}
+    
+class ProportionalFairScheduler_v2(SchedulerInterface):
+    
+    def __init__(self, lte_grid: RES_GRID_LTE):
+        super().__init__(lte_grid)
+        self.amc = AdaptiveModulationAndCoding()
+        self.history = {}  # Словарь для хранения истории throughput пользователей
+        self.alpha = 0.1   # Коэффициент сглаживания для EMA
+
+    def update_history(self, UE_ID: int, throughput: float):
+        """Обновление истории пропускной способности пользователя"""
+        if UE_ID not in self.history:
+            self.history[UE_ID] = throughput
+        else:
+            self.history[UE_ID] = (1 - self.alpha) * self.history[UE_ID] + self.alpha * throughput
+
+    def get_average_throughput(self, UE_ID: int) -> float:
+        """Получение средней пропускной способности пользователя"""
+        return self.history.get(UE_ID, 1e-6)  # Защита от деления на ноль
+        
+    def calculate_pf_metric(self, user: Dict) -> float:
+        """Расчет PF-метрики с обработкой исключений"""
+        try:
+            UE_ID = user['UE_ID']
+            cqi = user['cqi']
             
+            bits_per_rb = self.amc.GET_BITS_PER_RB(cqi)
+            instant_throughput = 2 * bits_per_rb * 1000  # бит/с (с учетом двух слотов)
+            
+            avg_throughput = self.get_average_throughput(UE_ID)
+            if avg_throughput <= 0:
+                avg_throughput = 1e-6  # Защита от деления на ноль
+                
+            return instant_throughput / avg_throughput
+        except (KeyError, ValueError) as e:
+            # Объединенная обработка ошибок
+            print(f"Ошибка расчета метрики для UE {user.get('UE_ID', 'неизвестен')}: {e}")
+            return 0  # Возвращаем 0 вместо генерации исключения
+    
+    def schedule(self, tti: int, users: List[Dict]) -> Dict:
+        """
+        Планирование ресурсов с учётом данных в буфере и CQI.
+        
+        Args:
+            tti: Индекс TTI
+            users: Список пользователей с параметрами:
+                - 'UE_ID': Идентификатор
+                - 'buffer_size': Размер буфера в байтах
+                - 'cqi': Индекс качества канала
+                - 'ue': Объект UserEquipment
+        
+        Returns:
+            Dict: Результаты распределения ресурсов
+        """
+        # Фильтрация активных пользователей
+        active_users = []
+        for user in users:
+            try:
+                if (user['buffer_size'] > 0 
+                    and 1 <= user['cqi'] <= 15 
+                    and 'UE_ID' in user 
+                    and 'ue' in user):
+                    active_users.append(user)
+            except KeyError as e:
+                print(f"Некорректные данные пользователя: отсутствует ключ {e}")
+                continue
+    
+        if not active_users:
+            return {'allocation': {}, 'statistics': {}}
+    
+        # Расчет PF-метрик с обработкой ошибок
+        pf_metrics = {}
+        for user in active_users:
+            UE_ID = user['UE_ID']
+            try:
+                metric = self.calculate_pf_metric(user)
+                pf_metrics[UE_ID] = metric
+            except (KeyError, ValueError) as e:
+                print(f"Ошибка расчета метрики для UE {UE_ID}: {e}")
+                pf_metrics[UE_ID] = 0  # Значение по умолчанию
+
+        # Получение уникальных частотных индексов
+        free_rbs = self.lte_grid.GET_FREE_RB_FOR_TTI(tti)
+        freq_indices = list({rb.freq_idx for rb in free_rbs})  # <-- Добавлено
+    
+        # Сортировка с гарантией числовых значений
+        sorted_users = sorted(
+            active_users,
+            key=lambda u: pf_metrics.get(u['UE_ID'], 0),
+            reverse=True
+        )
+        # Инициализация распределения
+        allocation = {u['UE_ID']: [] for u in active_users}
+        current_idx = 0
+
+        # Распределение ресурсов
+        for freq_idx in freq_indices:
+            if current_idx >= len(sorted_users):
+                current_idx = 0
+            
+            user = sorted_users[current_idx]
+            if self.lte_grid.ALLOCATE_RB_PAIR(tti, freq_idx, user['UE_ID']):
+                allocation[user['UE_ID']].append(freq_idx)
+                current_idx += 1
+
+        # Обработка буфера и обновление статистики
+        for user in active_users:
+            ue = user['ue']
+            allocated_pairs = len(allocation[user['UE_ID']])
+            
+            bits_per_pair = 2 * self.amc.GET_BITS_PER_RB(user['cqi'])
+            max_bytes = (allocated_pairs * bits_per_pair) // 8
+            
+            packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_pair, current_time=tti)
+            ue.UPD_THROUGHPUT(total * 8, 1)
+            self.update_history(user['UE_ID'], total * 8)
+
+        # Расчет итоговой статистики
+        stats = self.amc.calculate_throughput(allocation, active_users)
+        return {'allocation': allocation, 'statistics': stats}
