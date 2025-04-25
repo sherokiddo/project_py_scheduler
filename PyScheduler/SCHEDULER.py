@@ -189,12 +189,15 @@ class RoundRobinScheduler(SchedulerInterface):
         self.last_served_index = current_idx
 
         # 6. Обработка буфера и статистики
-        for user in active_users:
+        for user in users:
             ue = user['ue']
-            bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
-            max_bytes = (len(allocation[user['UE_ID']]) * bits_per_rb) // 8
-            packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti)
-            ue.UPD_THROUGHPUT(total * 8, 1)
+            if user in active_users:
+                bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
+                max_bytes = (len(allocation[user['UE_ID']]) * bits_per_rb) // 8
+                packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti)
+                ue.UPD_THROUGHPUT(total * 8, 1)
+            else:
+                ue.UPD_THROUGHPUT(0, 1)
 
         return {
             'allocation': allocation,
@@ -261,16 +264,19 @@ class BestCQIScheduler(SchedulerInterface):
         self.last_served_index = current_idx % len(bcqi_users)
 
         # 7. Обработка буфера и статистики
-        for user in active_users:
+        for user in users:
             ue = user['ue']
-            allocated_pairs = len(allocation[user['UE_ID']])
-            total_rb = allocated_pairs * 2  # 2 RB на пару
-            
-            bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
-            max_bytes = (total_rb * bits_per_rb) // 8
-            
-            packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti)
-            ue.UPD_THROUGHPUT(total * 8, 1)
+            if user in active_users:
+                allocated_pairs = len(allocation[user['UE_ID']])
+                total_rb = allocated_pairs * 2  # 2 RB на пару
+                
+                bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
+                max_bytes = (total_rb * bits_per_rb) // 8
+                
+                packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti)
+                ue.UPD_THROUGHPUT(total * 8, 1)
+            else:
+                ue.UPD_THROUGHPUT(0, 1)
 
         stats = self.amc.calculate_throughput(allocation, active_users)
         return {'allocation': allocation, 'statistics': stats}
@@ -365,12 +371,15 @@ class ProportionalFairScheduler(SchedulerInterface):
         self.last_served_index = (start_index + len(free_rbs)) % len(pf_users)
         
         # Обработка буфера и статистики
-        for user in active_users:
+        for user in users:
             ue = user['ue']
-            bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
-            max_bytes = (len(allocation[user['UE_ID']]) * bits_per_rb) // 8
-            packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti*1)
-            ue.UPD_THROUGHPUT(total * 8, 1)
+            if user in active_users:
+                bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
+                max_bytes = (len(allocation[user['UE_ID']]) * bits_per_rb) // 8
+                packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti*1)
+                ue.UPD_THROUGHPUT(total * 8, 1)
+            else:
+                ue.UPD_THROUGHPUT(0, 1)
             
             # Обновление средней пропускной способности пользователей
             if user in pf_users:

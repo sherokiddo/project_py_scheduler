@@ -28,12 +28,12 @@ import numpy as np
 import matplotlib
 #matplotlib.use('TkAgg')  # Или 'Qt5Agg' для GUI бэкенда
 import matplotlib.pyplot as plt
-%matplotlib
+#%matplotlib
 from matplotlib.lines import Line2D
 from UE_MODULE import UECollection, UserEquipment
 from BS_MODULE import BaseStation
 from RES_GRID import RES_GRID_LTE
-from SCHEDULER import RoundRobinScheduler, BestCQIScheduler, ProportionalFairScheduler
+from SCHEDULER import RoundRobinScheduler, BestCQIScheduler, ProportionalFairScheduler, ProportionalFairScheduler_v2
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel
 from TRAFFIC_MODEL import PoissonModel
 from CHANNEL_MODEL import UMiModel
@@ -487,10 +487,175 @@ def test_scheduler_grid():
     plt.show()
     print("[OK] Тест завершен с визуализацией")
 
+def test_scheduler_with_metrics():
+    
+    sim_duration = 5000 # Время симуляции (в мс)
+    update_interval = 5 # Интервал обновления параметров пользователя (в мс)
+    num_frames = int(np.ceil(sim_duration / 10))
+    bandwidth = 10
+
+    bs = BaseStation(x=500, y=500, height=25.0, bandwidth=bandwidth)
+    ue1 = UserEquipment(UE_ID=1, x=300, y=300, ue_class="pedestrian")
+    ue2 = UserEquipment(UE_ID=2, x=700, y=700, ue_class="car")
+    ue3 = UserEquipment(UE_ID=3, x=100, y=200, ue_class="car")   
+    
+    ue1.SET_MOBILITY_MODEL(RandomWaypointModel(x_min=0, x_max=1000, y_min=0, y_max=1000, pause_time=10))
+    ue1.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=1500))
+    ue1.SET_CH_MODEL(UMiModel(bs))
+    
+    ue2.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=1000, y_min=0, y_max=1000))
+    ue2.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=1500))
+    ue2.SET_CH_MODEL(UMiModel(bs))
+    
+    ue3.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=1000, y_min=0, y_max=1000))
+    ue3.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=1500))
+    ue3.SET_CH_MODEL(UMiModel(bs))
+    
+    ue_collection = UECollection()
+    ue_collection.ADD_USER(ue1)
+    ue_collection.ADD_USER(ue2)
+    ue_collection.ADD_USER(ue3)
+    
+    lte_grid = RES_GRID_LTE(bandwidth=bandwidth, num_frames=num_frames)
+    scheduler = BestCQIScheduler(lte_grid)
+    
+    avg_throughput_tti = []
+    
+    users_throughput = {
+        1: [],
+        2: [],
+        3: []
+    }
+    
+    for current_time in range(update_interval, sim_duration + 1, update_interval):
+        
+        ue_collection.UPDATE_ALL_USERS(time_ms=current_time, 
+                                       update_interval=update_interval, 
+                                       bs_position=bs.position, 
+                                       bs_height=bs.height)
+        
+        for tti in range(current_time - update_interval, current_time):
+            # Подготовка данных для планировщика
+            users = [
+                {
+                    'UE_ID': 1,
+                    'buffer_size': ue1.buffer.current_size,
+                    'cqi': ue1.cqi,
+                    'ue': ue1
+                },
+                {
+                    'UE_ID': 2,
+                    'buffer_size': ue2.buffer.current_size,
+                    'cqi': ue2.cqi,
+                    'ue': ue2
+                },
+                {
+                    'UE_ID': 3,
+                    'buffer_size': ue3.buffer.current_size,
+                    'cqi': ue3.cqi,
+                    'ue': ue3
+                }
+            ]
+            
+            # Вывод параметров для каждого TTI
+            print(f"\n[TTI {tti}]")
+            print(f"CQI: UE1={ue1.cqi}, UE2={ue2.cqi}, UE3={ue3.cqi}")
+            print(f"Buffer Size: UE1={ue1.buffer.current_size}B, UE2={ue2.buffer.current_size}B, UE3={ue3.buffer.current_size}B")
+            
+            # Запуск планировщика
+            result = scheduler.schedule(tti, users)
+            allocation = result['allocation']
+            
+            total_throughput = 0
+            for user in users:
+                throughput = user['ue'].current_throughput
+                total_throughput += throughput
+
+            # Пропускная способность на TTI
+            num_users = len([u for u in users if len(allocation.get(u['UE_ID'], [])) > 0])
+            avg_throughput = (total_throughput / num_users) * 1000 if num_users > 0 else 0  
+            
+            avg_throughput = (total_throughput) / 1048576 # бит/мс -> мбит/с
+            avg_throughput_tti.append(avg_throughput)
+    
+            users_throughput[1].append(ue1.current_throughput / 1048576)
+            users_throughput[2].append(ue2.current_throughput / 1048576)
+            users_throughput[3].append(ue3.current_throughput / 1048576)
+                
+            
+    # Подготовка данных для построения графиков
+    tti_range = range(0, sim_duration, 10)
+    
+    frame_throughput = [
+    np.mean(avg_throughput_tti[i:i+10]) 
+    for i in range(0, len(avg_throughput_tti), 10)
+    ]
+    
+    users_frame_throughput = {
+    ue_id: [
+        np.mean(user_tti_throughputs[i:i+10]) 
+        for i in range(0, len(user_tti_throughputs), 10)
+    ]
+    for ue_id, user_tti_throughputs in users_throughput.items()
+    }
+    
+    average_throughput_per_user = {
+    ue_id: np.mean(throughput) for ue_id, throughput in users_throughput.items()
+    }
+    
+    # ===== ГРАФИКИ ПРОПУСКНОЙ СПОСОБНОСТИ =====
+    # График пропускной способности соты
+    plt.figure(figsize=(10, 6))
+    plt.plot(tti_range, frame_throughput)
+    plt.title(f"Пропускная способность соты при планировщике {scheduler.__class__.__name__}")
+    plt.xlabel("TTI")
+    plt.ylabel("Пропускная способность (Мбит/с)")
+    plt.grid()
+    plt.show()    
+    
+    # Графики пропускной способности пользователей
+    for ue_id, throughput_list in users_frame_throughput.items():
+        plt.figure(figsize=(10, 6))
+        plt.plot(tti_range, throughput_list, label=f'UE{ue_id}', color='red')
+        plt.title(f"Пропускная способность UE{ue_id} при планировщике {scheduler.__class__.__name__}")
+        plt.xlabel("TTI")
+        plt.ylabel("Пропускная способность (Мбит/с)")
+        plt.grid(True)
+        plt.legend()
+        plt.show()
+       
+    # Boxplot'ы для пропускной способности пользователей
+    plt.figure(figsize=(10, 6))
+    plt.boxplot([users_frame_throughput[ue_id] for ue_id in sorted(users_frame_throughput.keys())],
+                labels=[f'UE{ue_id}' for ue_id in sorted(users_frame_throughput.keys())],
+                patch_artist=True,
+                medianprops=dict(color='orange', linewidth=2))
+    plt.title("Boxplot пропускной способности для каждого пользователя")
+    plt.ylabel("Пропускная способность (Мбит/с)")
+    plt.grid(True)
+    plt.show()
+
+    # Столбчатый график средней пропускной способности для каждого пользователя
+    ue_ids = [f'UE{ue_id}' for ue_id in average_throughput_per_user.keys()]
+    avg_values = list(average_throughput_per_user.values())
+    plt.figure(figsize=(10, 6))
+    bars = plt.bar(ue_ids, avg_values, edgecolor='black', width=0.3, zorder=3)
+    
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width() / 2.0, height + 0.01, 
+                 f'{height:.2f}', ha='center', va='bottom', fontsize=10)
+    
+    plt.title(f"Средняя пропускная способность каждого пользователя при планировщике {scheduler.__class__.__name__}")
+    plt.ylabel("Пропускная способность (Мбит/с)")
+    plt.grid(zorder=0)
+    plt.tight_layout()
+    plt.show()
 
 if __name__ == "__main__":
     #test_scheduler_with_buffer()
     #test_visualize_lte_timeline()
-    test_scheduler_grid()
+    #test_scheduler_grid()
+    test_scheduler_with_metrics()
     print("Все тесты успешно пройдены!")
 

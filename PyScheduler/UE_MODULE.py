@@ -781,6 +781,7 @@ class UECollection:
         Args:
             time_ms: Текущее время в миллисекундах
         """
+        print("\n======== ОБНОВЛЕНИЕ СОСТОЯНИЯ ПОЛЬЗОВАТЕЛЕЙ ========")
         for ue in self.users.values():
             # Обновление позиции
             ue.UPD_POSITION(update_interval, bs_position, bs_height, indoor_boundaries)
@@ -790,6 +791,7 @@ class UECollection:
             
             # Генерация нового трафика
             ue.GEN_TRFFC(time_ms, update_interval)
+        print("=====================================================")
     
     def GET_ACTIVE_USERS(self) -> List[UserEquipment]:
         """
