@@ -77,7 +77,7 @@ class AdaptiveModulationAndCoding:
             raise ValueError(f"Invalid CQI: {cqi}. Must be 1-15.")
         
         modulation, code_rate = self.CQI_TO_MCS[cqi]
-        symbols_per_rb = 12 * 7  # 84 символа в RB
+        symbols_per_rb = 12 * 7 * 2  # 84 символа в RB (с учетом слотов)
         return int(symbols_per_rb * modulation * code_rate)
 	#@sherokiddo: "Добавить зависимость от CP"
     
@@ -109,7 +109,7 @@ class AdaptiveModulationAndCoding:
     
         for user in users:
             ue_id = user['UE_ID']
-            rb_count = len(allocation.get(ue_id, []))
+            rb_count = len(allocation.get(ue_id, []))*2
             
             if rb_count == 0:
                 continue
@@ -168,31 +168,33 @@ class RoundRobinScheduler(SchedulerInterface):
         if not active_users:
             return {'allocation': {}, 'statistics': {}}
 
-        # 2. Получение уникальных частотных индексов для TTI
-        free_rbs = self.lte_grid.GET_FREE_RB_FOR_TTI(tti)
-        freq_indices = list({rb.freq_idx for rb in free_rbs})
+        # 2. Формирование групп ресурсных блоков по свободным RB в слоте
+        rbg_size = self.lte_grid.GET_RBG_SIZE()
+        total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size
 
         # 3. Инициализация структур данных
         allocation = {user['UE_ID']: [] for user in active_users}
         current_idx = (self.last_served_index + 1) % len(active_users)
 
         # 4. Основной цикл распределения
-        for freq_idx in freq_indices:
+        for rbg_idx in range(total_rbg):
             user = active_users[current_idx]
             
             # Попытка выделить оба слота
-            if self.lte_grid.ALLOCATE_RB_PAIR(tti, freq_idx, user['UE_ID']):
-                allocation[user['UE_ID']].extend([freq_idx]*2)
+            if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, user['UE_ID']):
+                # Получаем все RB в группе
+                rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
+                allocation[user['UE_ID']].extend(rb_indices)
                 current_idx = (current_idx + 1) % len(active_users)
-
         # 5. Обновление состояния
         self.last_served_index = current_idx
 
         # 6. Обработка буфера и статистики
         for user in active_users:
             ue = user['ue']
+            allocated_rb = len(allocation[user['UE_ID']]) * 2  # Фактически выделенные RB (в слотах)
             bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
-            max_bytes = (len(allocation[user['UE_ID']]) * bits_per_rb) // 8
+            max_bytes = (allocated_rb * bits_per_rb) // 8
             packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti)
             ue.UPD_THROUGHPUT(total * 8, 1)
 
@@ -241,39 +243,43 @@ class BestCQIScheduler(SchedulerInterface):
         bcqi_users = [u for u in active_users if u['cqi'] == max_cqi]
 
         # 3. Получение уникальных свободных частотных индексов
-        free_rbs = self.lte_grid.GET_FREE_RB_FOR_TTI(tti)
-        freq_indices = list({rb.freq_idx for rb in free_rbs})
+        rbg_size = self.lte_grid.GET_RBG_SIZE()
+        total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size
 
         # 4. Инициализация структур данных
         allocation = {user['UE_ID']: [] for user in active_users}
         current_idx = (self.last_served_index + 1) % len(bcqi_users)
 
         # 5. Основной цикл распределения
-        for freq_idx in freq_indices:
+        for rbg_idx in range(total_rbg):
             user = bcqi_users[current_idx % len(bcqi_users)]
             
-            # Попытка выделить группу RB
-            if self.lte_grid.ALLOCATE_RB_PAIR(tti, freq_idx, user['UE_ID']):
-                allocation[user['UE_ID']].append(freq_idx)
+            if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, user['UE_ID']):
+                # Получаем фактические индексы RB для группы
+                rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
+                allocation[user['UE_ID']].extend(rb_indices)
+                
+                # Переход к следующему пользователю
                 current_idx += 1
-
+                
         # 6. Обновление индекса последнего пользователя
         self.last_served_index = current_idx % len(bcqi_users)
 
         # 7. Обработка буфера и статистики
         for user in active_users:
             ue = user['ue']
-            allocated_pairs = len(allocation[user['UE_ID']])
-            total_rb = allocated_pairs * 2  # 2 RB на пару
+            allocated_rb = len(allocation[user['UE_ID']]) * 2
             
             bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
-            max_bytes = (total_rb * bits_per_rb) // 8
+            max_bytes = (allocated_rb * bits_per_rb) // 8
             
             packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti)
             ue.UPD_THROUGHPUT(total * 8, 1)
 
-        stats = self.amc.calculate_throughput(allocation, active_users)
-        return {'allocation': allocation, 'statistics': stats}
+        return {
+            'allocation': allocation,
+            'statistics': self.amc.calculate_throughput(allocation, active_users)
+        }
     
     #@sherokiddo в рамках оптимизации можно разбить весь планировщик на несколько методов
     #для удобного логирования и подсчета времени. Например - подготовка данных один метод

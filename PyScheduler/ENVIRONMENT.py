@@ -248,7 +248,7 @@ def test_scheduler_with_buffer():
     #------------------------------------------------------------------
     # Шаг 2: Создание планировщика
     #------------------------------------------------------------------
-    scheduler = BestCQIScheduler(lte_grid)
+    scheduler = RoundRobinScheduler(lte_grid)
     print(f"[OK] Планировщик {scheduler.__class__.__name__} инициализирован")
 
     #------------------------------------------------------------------
@@ -345,7 +345,7 @@ def test_scheduler_with_buffer():
     
     for user in users:
         ue_id = user['UE_ID']
-        rb_count = len(allocation.get(ue_id, []))
+        rb_count = len(allocation.get(ue_id, [])) * 2
         bits_per_rb = scheduler.amc.GET_BITS_PER_RB(user['cqi'])
         throughput = rb_count * bits_per_rb  # Бит/мс = кбит/с
         
@@ -369,7 +369,7 @@ def test_scheduler_grid():
     # Шаг 1: Инициализация компонентов
     lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=2)  # 1 фрейм = 10 TTI
     visualizer = LTEGridVisualizer(lte_grid)
-    scheduler = ProportionalFairScheduler(lte_grid)
+    scheduler = BestCQIScheduler(lte_grid)
 
     # Шаг 2: Создание пользователей
     bs = BaseStation(x=500, y=500, height=25.0, bandwidth=10)
