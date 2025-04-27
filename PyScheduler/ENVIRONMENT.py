@@ -56,6 +56,7 @@ class LTEGridVisualizer:
                 
         # Количество слотов = количество TTI × 2
         num_slots = (tti_end - tti_start) * 2
+        rb_range = self.lte_grid.rb_per_slot
         
         # Создаем фигуру
         fig, ax = plt.subplots(figsize=(14, 10))
@@ -68,13 +69,13 @@ class LTEGridVisualizer:
         ax.set_xlabel('Time (slot)')
         ax.set_ylabel('Frequency (RB index)')
         
-        # Добавляем сетку
-        ax.set_xticks(range(num_slots))
-        # Создаем метки для слотов (TTI.slot)
-        slot_labels = []
+        # Метки только для начала каждого TTI (каждые два слота)
+        ms_labels = []
         for tti in range(tti_start, tti_end):
-            slot_labels.extend([f"{tti}.0", f"{tti}.1"])
-        ax.set_xticklabels(slot_labels, rotation=45)
+            ms_labels.extend([f"{tti} мс", ""])  # Метка для первого слота, пусто для второго
+
+        ax.set_xticks(range(num_slots))
+        ax.set_xticklabels(ms_labels, rotation=45)
         
         ax.set_yticks(range(0, rb_range, 5))
         ax.grid(True, which='both', linestyle='--', linewidth=0.5, color='gray')
@@ -90,67 +91,30 @@ class LTEGridVisualizer:
         # Сохраняем UE_ID для легенды
         unique_ue_ids = set()
         
-        # Отображаем занятые ресурсные блоки
+        # Отрисовка занятых RB
         for tti in range(tti_start, tti_end):
-            # Вычисляем индексы кадра и подкадра
             frame_idx = tti // 10
             subframe_idx = tti % 10
-            
-            # Вычисляем начальный индекс слота для данного TTI
             slot_start_idx = (tti - tti_start) * 2
-            
-            # Обрабатываем оба слота
             for slot_num in [0, 1]:
-                slot_id = f"sub_{subframe_idx}_slot_{slot_num}"  # Используем subframe_idx вместо tti
+                slot_id = f"sub_{subframe_idx}_slot_{slot_num}"
                 slot_idx = slot_start_idx + slot_num
-                
                 for freq_idx in range(rb_range):
                     rb = self.lte_grid.GET_RB(tti, slot_id, freq_idx)
                     if rb and not rb.CHCK_RB():
-                        # Отрисовка блока
                         ue_id = rb.UE_ID
                         unique_ue_ids.add(ue_id)
-                        
-                        # Используем цвет из словаря или берем стандартный
-                        if ue_id in ue_colors:
-                            color = ue_colors[ue_id]
-                        else:
-                            # Автоматически назначаем цвет и сохраняем для будущего использования
-                            color = default_colors[ue_id % 10]
-                            ue_colors[ue_id] = color
-                        
-                        # Рисуем прямоугольник
-                        rect = plt.Rectangle(
-                            (slot_idx - 0.4, freq_idx - 0.4),
-                            0.8, 0.8,
-                            facecolor=color,
-                            alpha=0.8,
-                            edgecolor='black'
-                        )
+                        color = ue_colors.get(ue_id, default_colors[ue_id % 10])
+                        ue_colors[ue_id] = color
+                        rect = plt.Rectangle((slot_idx - 0.4, freq_idx - 0.4), 0.8, 0.8,
+                                            facecolor=color, alpha=0.8, edgecolor='black')
                         ax.add_patch(rect)
-                        
-                        # Добавляем метку UE_ID
-                        ax.text(
-                            slot_idx, freq_idx,
-                            str(ue_id),
-                            ha='center', va='center',
-                            fontsize=9, fontweight='bold',
-                            color='white'
-                        )
-        
-        # Добавляем поясняющие метки для TTI
-        for tti in range(tti_start, tti_end):
-            slot_start_idx = (tti - tti_start) * 2
-            ax.text(slot_start_idx + 0.5, -3, f"TTI {tti}", 
-                    ha='center', va='center', fontsize=10, fontweight='bold')
-            ax.plot([slot_start_idx - 0.5, slot_start_idx + 1.5], [-2, -2], 'k-', linewidth=2)
-        
+                        ax.text(slot_idx, freq_idx, str(ue_id), ha='center', va='center',
+                                fontsize=9, fontweight='bold', color='white')
+    
         plt.tight_layout()
         plt.show()
-        
-        ax.set_title(title)
         return fig, ax, ue_colors
-
     
     def _plot_slot_data(self, ax, data, tti_start, tti_end, title):
         """Отображение данных для конкретного слота"""

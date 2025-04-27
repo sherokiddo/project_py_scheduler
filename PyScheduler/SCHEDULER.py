@@ -98,30 +98,33 @@ class AdaptiveModulationAndCoding:
             - average_throughput: Средняя пропускная способность (бит/с)
             - total_effective_bits: Фактически переданные биты
         """
+        all_users = {u['UE_ID']: u for u in users}
         stats = {
             'total_allocated_rbs': 0,
-            'user_throughput': {u['UE_ID']: 0 for u in users},  # Инициализация для всех UE
+            'user_throughput': {ue_id: 0 for ue_id in all_users},  # Инициализация для всех UE
             'average_throughput': 0.0,
             'total_effective_bits': 0
         }
         
         total_effective_bits = 0
     
-        for user in users:
-            ue_id = user['UE_ID']
-            rb_count = len(allocation.get(ue_id, []))*2
+        for ue_id in all_users:
+            user = all_users[ue_id]
+            rb_count = len(allocation.get(ue_id, [])) * 2
             
             if rb_count == 0:
+                # Обновление истории для неактивных пользователей
+                user['ue'].UPD_THROUGHPUT(0, 1)
                 continue
     
-            # 1. Реальные переданные биты из буфера
-            real_bits = user['ue'].current_throughput * 1e-3  # бит/мс → бит/с
-    
-            # 2. Расчет максимальной ёмкости RB для данного CQI
+            # 1. Расчет максимальной ёмкости RB для данного CQI
             bits_per_rb = self.GET_BITS_PER_RB(user['cqi'])
 
-            # 3. Расчет эффективно использованных бит
+            # 2. Расчет эффективно использованных бит
             max_bits = rb_count * bits_per_rb
+            
+            # 3. Реальные переданные биты из буфера
+            real_bits = user['ue'].current_throughput * 1e-3  # бит/мс → бит/с
             effective_bits = min(real_bits, max_bits)
             
             # 4. Обновление статистики
@@ -130,8 +133,7 @@ class AdaptiveModulationAndCoding:
             stats['total_allocated_rbs'] += rb_count
     
         # 5. Расчет средней пропускной способности
-        active_users = [u for u in users if stats['user_throughput'][u['UE_ID']] > 0]
-        
+        active_users = [u for u in all_users.values() if stats['user_throughput'][u['UE_ID']] > 0]
         if active_users:
             stats['average_throughput'] = total_effective_bits / len(active_users)
         
@@ -190,17 +192,19 @@ class RoundRobinScheduler(SchedulerInterface):
         self.last_served_index = current_idx
 
         # 6. Обработка буфера и статистики
-        for user in active_users:
+        for user in users:  # Не только active_users!
             ue = user['ue']
-            allocated_rb = len(allocation[user['UE_ID']]) * 2  # Фактически выделенные RB (в слотах)
+            allocated_rb = len(allocation.get(user['UE_ID'], [])) * 2
             bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
             max_bytes = (allocated_rb * bits_per_rb) // 8
+            
+            # Если пользователь неактивен, передаём 0 байт
             packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti)
             ue.UPD_THROUGHPUT(total * 8, 1)
 
         return {
             'allocation': allocation,
-            'statistics': self.amc.calculate_throughput(allocation, active_users)
+            'statistics': self.amc.calculate_throughput(allocation, users)  # Передаём всех пользователей
         }
     
     #@sherokiddo в рамках оптимизации можно разбить весь планировщик на несколько методов
@@ -266,19 +270,19 @@ class BestCQIScheduler(SchedulerInterface):
         self.last_served_index = current_idx % len(bcqi_users)
 
         # 7. Обработка буфера и статистики
-        for user in active_users:
+        for user in users:  # Не только active_users!
             ue = user['ue']
-            allocated_rb = len(allocation[user['UE_ID']]) * 2
-            
+            allocated_rb = len(allocation.get(user['UE_ID'], [])) * 2
             bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
             max_bytes = (allocated_rb * bits_per_rb) // 8
             
+            # Если пользователь неактивен, передаём 0 байт
             packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti)
             ue.UPD_THROUGHPUT(total * 8, 1)
 
         return {
             'allocation': allocation,
-            'statistics': self.amc.calculate_throughput(allocation, active_users)
+            'statistics': self.amc.calculate_throughput(allocation, users)  # Передаём всех пользователей
         }
     
     #@sherokiddo в рамках оптимизации можно разбить весь планировщик на несколько методов
