@@ -334,7 +334,7 @@ def test_scheduler_grid():
     # Шаг 1: Инициализация компонентов
     lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=2)  # 1 фрейм = 10 TTI
     visualizer = LTEGridVisualizer(lte_grid)
-    scheduler = BestCQIScheduler(lte_grid)
+    scheduler = ProportionalFairScheduler(lte_grid)
 
     # Шаг 2: Создание пользователей
     bs = BaseStation(x=500, y=500, height=25.0, bandwidth=10)
@@ -475,7 +475,7 @@ def test_scheduler_with_metrics():
     ue3.SET_CH_MODEL(UMiModel(bs))
     
     lte_grid = RES_GRID_LTE(bandwidth=bandwidth, num_frames=num_frames)
-    scheduler = BestCQIScheduler(lte_grid)
+    scheduler = ProportionalFairScheduler(lte_grid)
     
     total_throughput_tti = []
     
@@ -614,7 +614,7 @@ def test_scheduler_with_metrics():
     plt.show()
     
     print(f"\nСредняя пропускная способность соты за симуляцию: {np.mean(total_throughput_tti)} Мбит/с\n")
-
+    
 if __name__ == "__main__":
     #test_scheduler_with_buffer()
     #test_visualize_lte_timeline()

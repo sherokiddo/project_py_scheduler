@@ -77,7 +77,7 @@ class AdaptiveModulationAndCoding:
             raise ValueError(f"Invalid CQI: {cqi}. Must be 1-15.")
         
         modulation, code_rate = self.CQI_TO_MCS[cqi]
-        symbols_per_rb = 12 * 7 * 2  # 84 символа в RB (с учетом слотов)
+        symbols_per_rb = 12 * 7  # 84 символа в RB (с учетом слотов)
         return int(symbols_per_rb * modulation * code_rate)
 	#@sherokiddo: "Добавить зависимость от CP"
     
@@ -354,7 +354,10 @@ class ProportionalFairScheduler(SchedulerInterface):
             Dict: Результаты распределения ресурсов
         """
         # Фильтрация активных пользователей
-        active_users = [user for user in users if user['buffer_size'] > 0 and 1 <= user['cqi'] <= 15]
+        active_users = [
+            user for user in users 
+            if user['buffer_size'] > 0 and 1 <= user['cqi'] <= 15
+        ]
         if not active_users:
             return {'allocation': {}, 'statistics': {}}
         
@@ -366,38 +369,39 @@ class ProportionalFairScheduler(SchedulerInterface):
         max_pf_metric = active_users[0]['PF_metric']
         pf_users = [u for u in active_users if u['PF_metric'] == max_pf_metric]
         
-        # Получение всех свободных RB и разделение по слотам
-        free_rbs = self.lte_grid.GET_FREE_RB_FOR_TTI(tti)
-        slots = {
-            0: [rb for rb in free_rbs if rb.freq_idx < self.lte_grid.rb_per_slot],
-            1: [rb for rb in free_rbs if rb.freq_idx >= self.lte_grid.rb_per_slot]
-        }
+        # 3. Получение уникальных свободных частотных индексов
+        rbg_size = self.lte_grid.GET_RBG_SIZE()
+        total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size
         
+        # 4. Инициализация структур данных
         allocation = {user['UE_ID']: [] for user in active_users}
-        start_index = (self.last_served_index + 1) % len(pf_users)
+        current_idx = (self.last_served_index + 1) % len(pf_users)
         
-        # Распределение RB для каждого слота
-        for slot_id in [0, 1]:
-            current_index = start_index
-            for rb in slots[slot_id]:
-                user = pf_users[current_index % len(pf_users)]
-                if self.lte_grid.ALLOCATE_RB(tti, rb.slot_id, rb.freq_idx, user['UE_ID']):
-                    allocation[user['UE_ID']].append(rb.freq_idx)
-                    current_index += 1
-                    
-        # Обновление индекса последнего пользователя
-        self.last_served_index = (start_index + len(free_rbs)) % len(pf_users)
+        # 5. Основной цикл распределения
+        for rbg_idx in range(total_rbg):
+            user = pf_users[current_idx % len(pf_users)]
+            
+            if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, user['UE_ID']):
+                # Получаем фактические индексы RB для группы
+                rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
+                allocation[user['UE_ID']].extend(rb_indices)
+                
+                # Переход к следующему пользователю
+                current_idx += 1
+                
+        # 6. Обновление индекса последнего пользователя
+        self.last_served_index = current_idx % len(pf_users)
         
-        # Обработка буфера и статистики
-        for user in users:
+        # 7. Обработка буфера и статистики
+        for user in users:  # Не только active_users!
             ue = user['ue']
-            if user in active_users:
-                bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
-                max_bytes = (len(allocation[user['UE_ID']]) * bits_per_rb) // 8
-                packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti*1)
-                ue.UPD_THROUGHPUT(total * 8, 1)
-            else:
-                ue.UPD_THROUGHPUT(0, 1)
+            allocated_rb = len(allocation.get(user['UE_ID'], [])) * 2
+            bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
+            max_bytes = (allocated_rb * bits_per_rb) // 8
+            
+            # Если пользователь неактивен, передаём 0 байт
+            packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti)
+            ue.UPD_THROUGHPUT(total * 8, 1)
             
             # Обновление средней пропускной способности пользователей
             if user in pf_users:
@@ -407,8 +411,17 @@ class ProportionalFairScheduler(SchedulerInterface):
                 average_throughput_past = ue.average_throughput
                 ue.average_throughput = (1 - 0.2) * average_throughput_past
         
-        stats = self.amc.calculate_throughput(allocation, active_users)
-        return {'allocation': allocation, 'statistics': stats}
+        # 8. Формирование bitmap по Resource Allocation 0
+        bitmap = {}
+        for user in active_users:
+            UE_ID = user['UE_ID']
+            bitmap[UE_ID] = self.lte_grid.GENERATE_BITMAP(tti, UE_ID)
+
+        return {
+            'allocation': allocation,
+            'statistics': self.amc.calculate_throughput(allocation, users),  # Передаём всех пользователей
+            'bitmap': bitmap
+        }
     
 class ProportionalFairScheduler_v2(SchedulerInterface):
     
