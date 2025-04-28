@@ -557,6 +557,23 @@ class RES_GRID_LTE:
                         "UE_ID": rb.UE_ID
                     }
         return status
+    
+    def GENERATE_BITMAP(self, tti: int, UE_ID: int) -> List[int]:
+        """Генерирует bitmap для пользователя на заданном TTI"""
+        subframe = tti % 10
+        rbg_size = self.GET_RBG_SIZE()
+        total_rbg = (self.rb_per_slot + rbg_size - 1) // rbg_size
+        bitmap = [0] * total_rbg
+    
+        for rbg_idx in range(total_rbg):
+            slot0_allocated = any(
+                self.GET_RB(tti, f"sub_{subframe}_slot_0", freq) and 
+                self.GET_RB(tti, f"sub_{subframe}_slot_0", freq).UE_ID == UE_ID
+                for freq in self.GET_RBG_INDICES(rbg_idx)
+            )
+            bitmap[rbg_idx] = 1 if slot0_allocated else 0
+    
+        return bitmap
 
 class SchedulerInterface:
     """

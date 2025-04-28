@@ -202,9 +202,16 @@ class RoundRobinScheduler(SchedulerInterface):
             packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti)
             ue.UPD_THROUGHPUT(total * 8, 1)
 
+        # 7. Формирование bitmap по Resource Allocation 0
+        bitmap = {}
+        for user in active_users:
+            UE_ID = user['UE_ID']
+            bitmap[UE_ID] = self.lte_grid.GENERATE_BITMAP(tti, UE_ID)
+
         return {
             'allocation': allocation,
-            'statistics': self.amc.calculate_throughput(allocation, users)  # Передаём всех пользователей
+            'statistics': self.amc.calculate_throughput(allocation, users),  # Передаём всех пользователей
+            'bitmap': bitmap
         }
     
     #@sherokiddo в рамках оптимизации можно разбить весь планировщик на несколько методов
@@ -280,9 +287,16 @@ class BestCQIScheduler(SchedulerInterface):
             packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti)
             ue.UPD_THROUGHPUT(total * 8, 1)
 
+        # 8. Формирование bitmap по Resource Allocation 0
+        bitmap = {}
+        for user in active_users:
+            UE_ID = user['UE_ID']
+            bitmap[UE_ID] = self.lte_grid.GENERATE_BITMAP(tti, UE_ID)
+
         return {
             'allocation': allocation,
-            'statistics': self.amc.calculate_throughput(allocation, users)  # Передаём всех пользователей
+            'statistics': self.amc.calculate_throughput(allocation, users),  # Передаём всех пользователей
+            'bitmap': bitmap
         }
     
     #@sherokiddo в рамках оптимизации можно разбить весь планировщик на несколько методов
