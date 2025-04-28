@@ -288,6 +288,12 @@ class RES_GRID_LTE:
         20: 100    # 100 RB на слот → 200 RB на TTI
     }
     
+    # Словарь размеров ресурсных групп по TS 36.213
+    RBG_SIZE_TABLE = {
+    1.4: 1, 3: 2, 5: 2, 10: 3, 15: 4, 20: 4
+    }
+
+    
     def __init__(self, bandwidth: float = 10, num_frames: int = 10, cp_type: str = "normal"):
         """
         Инициализация ресурсной сетки LTE.
@@ -403,6 +409,35 @@ class RES_GRID_LTE:
                     self.stats["allocation_by_tti"][tti] -= 1
                 return True
         return False
+
+    def GET_RBG_SIZE(self) -> int:
+        return self.RBG_SIZE_TABLE[self.bandwidth]
+
+    def GET_RBG_INDICES(self, rbg_idx: int) -> List[int]:
+        size = self.GET_RBG_SIZE()
+        start = rbg_idx * size
+        end = start + size
+        return list(range(start, min(end, self.rb_per_slot)))
+
+    def ALLOCATE_RBG(self, tti: int, rbg_idx: int, UE_ID: int) -> bool:
+        rb_indices = self.GET_RBG_INDICES(rbg_idx)
+        success = True
+        for slot in [0, 1]:
+            slot_id = f"sub_{tti%10}_slot_{slot}"
+            for freq in rb_indices:
+                if not self.ALLOCATE_RB(tti, slot_id, freq, UE_ID):
+                    success = False
+                    self.RELEASE_RBG(tti, rbg_idx)
+                    break
+        return success
+
+    def RELEASE_RBG(self, tti: int, rbg_idx: int) -> bool:
+        subframe = tti % 10
+        for slot in [0, 1]:
+            slot_id = f"sub_{subframe}_slot_{slot}"
+            for freq in self.GET_RBG_INDICES(rbg_idx):
+                self.RELEASE_RB(tti, slot_id, freq)
+        return True
     
     def GET_FRAME(self, frame_idx: int) -> Optional[Frame]:
         """
@@ -522,6 +557,23 @@ class RES_GRID_LTE:
                         "UE_ID": rb.UE_ID
                     }
         return status
+    
+    def GENERATE_BITMAP(self, tti: int, UE_ID: int) -> List[int]:
+        """Генерирует bitmap для пользователя на заданном TTI"""
+        subframe = tti % 10
+        rbg_size = self.GET_RBG_SIZE()
+        total_rbg = (self.rb_per_slot + rbg_size - 1) // rbg_size
+        bitmap = [0] * total_rbg
+    
+        for rbg_idx in range(total_rbg):
+            slot0_allocated = any(
+                self.GET_RB(tti, f"sub_{subframe}_slot_0", freq) and 
+                self.GET_RB(tti, f"sub_{subframe}_slot_0", freq).UE_ID == UE_ID
+                for freq in self.GET_RBG_INDICES(rbg_idx)
+            )
+            bitmap[rbg_idx] = 1 if slot0_allocated else 0
+    
+        return bitmap
 
 class SchedulerInterface:
     """

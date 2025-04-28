@@ -342,6 +342,14 @@ class UserEquipment:
         self.total_transmitted_bits = 0
         self.total_transmitted_packets = 0
         self.total_dropped_packets = 0
+
+    def PROCESS_DCI(self, tti: int, bitmap: List[int]):
+        """Обработка Downlink Control Information (имитация)"""
+        self.allocated_rbg = [
+            rbg_idx for rbg_idx, bit in enumerate(bitmap) 
+            if bit == 1
+        ]
+        print(f"UE{self.id} получил DCI (TTI {tti}): RBG {self.allocated_rbg}")
     
     def SET_MOBILITY_MODEL(self, model):
         """
