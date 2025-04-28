@@ -25,6 +25,7 @@
 import time
 from typing import Dict, List, Optional, Union
 import numpy as np
+import math
 import matplotlib
 #matplotlib.use('TkAgg')  # Или 'Qt5Agg' для GUI бэкенда
 import matplotlib.pyplot as plt
@@ -493,33 +494,26 @@ def test_scheduler_with_metrics():
     update_interval = 5 # Интервал обновления параметров пользователя (в мс)
     num_frames = int(np.ceil(sim_duration / 10))
     bandwidth = 10
+    inf = math.inf
 
-    bs = BaseStation(x=500, y=500, height=25.0, bandwidth=bandwidth)
-    ue1 = UserEquipment(UE_ID=1, x=300, y=300, ue_class="pedestrian")
-    ue2 = UserEquipment(UE_ID=2, x=700, y=700, ue_class="car")
-    ue3 = UserEquipment(UE_ID=3, x=100, y=200, ue_class="car")   
+    bs = BaseStation(x=1000, y=1000, height=25.0, bandwidth=bandwidth)
+    ue1 = UserEquipment(UE_ID=1, x=800, y=800, ue_class="pedestrian", buffer_size=inf)
+    ue2 = UserEquipment(UE_ID=2, x=500, y=500, ue_class="car", buffer_size=inf)
+    ue3 = UserEquipment(UE_ID=3, x=100, y=100, ue_class="car", buffer_size=inf)
     
-    ue1.SET_MOBILITY_MODEL(RandomWaypointModel(x_min=0, x_max=1000, y_min=0, y_max=1000, pause_time=10))
-    ue1.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=1500))
+    ue1.SET_MOBILITY_MODEL(RandomWaypointModel(x_min=0, x_max=2000, y_min=0, y_max=2000, pause_time=10))
     ue1.SET_CH_MODEL(UMiModel(bs))
     
-    ue2.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=1000, y_min=0, y_max=1000))
-    ue2.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=1500))
+    ue2.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=2000, y_min=0, y_max=2000))
     ue2.SET_CH_MODEL(UMiModel(bs))
     
-    ue3.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=1000, y_min=0, y_max=1000))
-    ue3.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=1500))
+    ue3.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=2000, y_min=0, y_max=2000))
     ue3.SET_CH_MODEL(UMiModel(bs))
-    
-    ue_collection = UECollection()
-    ue_collection.ADD_USER(ue1)
-    ue_collection.ADD_USER(ue2)
-    ue_collection.ADD_USER(ue3)
     
     lte_grid = RES_GRID_LTE(bandwidth=bandwidth, num_frames=num_frames)
     scheduler = BestCQIScheduler(lte_grid)
     
-    avg_throughput_tti = []
+    total_throughput_tti = []
     
     users_throughput = {
         1: [],
@@ -528,11 +522,18 @@ def test_scheduler_with_metrics():
     }
     
     for current_time in range(update_interval, sim_duration + 1, update_interval):
+
+        ue1.UPD_POSITION(update_interval, bs.position, bs.height)
+        ue2.UPD_POSITION(update_interval, bs.position, bs.height)
+        ue3.UPD_POSITION(update_interval, bs.position, bs.height)
         
-        ue_collection.UPDATE_ALL_USERS(time_ms=current_time, 
-                                       update_interval=update_interval, 
-                                       bs_position=bs.position, 
-                                       bs_height=bs.height)
+        ue1.UPD_CH_QUALITY()
+        ue2.UPD_CH_QUALITY()
+        ue3.UPD_CH_QUALITY() 
+        
+        ue1.buffer.ADD_PACKET(inf, creation_time=current_time, current_time=current_time,ttl_ms=1)
+        ue2.buffer.ADD_PACKET(inf, creation_time=current_time, current_time=current_time,ttl_ms=1)
+        ue3.buffer.ADD_PACKET(inf, creation_time=current_time, current_time=current_time,ttl_ms=1)
         
         for tti in range(current_time - update_interval, current_time):
             # Подготовка данных для планировщика
@@ -563,20 +564,16 @@ def test_scheduler_with_metrics():
             print(f"Buffer Size: UE1={ue1.buffer.current_size}B, UE2={ue2.buffer.current_size}B, UE3={ue3.buffer.current_size}B")
             
             # Запуск планировщика
-            result = scheduler.schedule(tti, users)
-            allocation = result['allocation']
+            scheduler.schedule(tti, users)
             
             total_throughput = 0
             for user in users:
                 throughput = user['ue'].current_throughput
                 total_throughput += throughput
 
-            # Пропускная способность на TTI
-            num_users = len([u for u in users if len(allocation.get(u['UE_ID'], [])) > 0])
-            avg_throughput = (total_throughput / num_users) * 1000 if num_users > 0 else 0  
-            
-            avg_throughput = (total_throughput) / 1048576 # бит/мс -> мбит/с
-            avg_throughput_tti.append(avg_throughput)
+            # Пропускная способность на TTI         
+            total_throughput = (total_throughput) / 1048576 # бит/мс -> мбит/с
+            total_throughput_tti.append(total_throughput)
     
             users_throughput[1].append(ue1.current_throughput / 1048576)
             users_throughput[2].append(ue2.current_throughput / 1048576)
@@ -587,8 +584,8 @@ def test_scheduler_with_metrics():
     tti_range = range(0, sim_duration, 10)
     
     frame_throughput = [
-    np.mean(avg_throughput_tti[i:i+10]) 
-    for i in range(0, len(avg_throughput_tti), 10)
+    np.mean(total_throughput_tti[i:i+10]) 
+    for i in range(0, len(total_throughput_tti), 10)
     ]
     
     users_frame_throughput = {
@@ -651,6 +648,8 @@ def test_scheduler_with_metrics():
     plt.grid(zorder=0)
     plt.tight_layout()
     plt.show()
+    
+    print(f"\nСредняя пропускная способность соты за симуляцию: {np.mean(total_throughput_tti)} Мбит/с\n")
 
 if __name__ == "__main__":
     #test_scheduler_with_buffer()

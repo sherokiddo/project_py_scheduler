@@ -311,8 +311,8 @@ class ProportionalFairScheduler(SchedulerInterface):
             rb_per_slot = self.lte_grid.rb_per_slot
             instant_throughput = rb_per_slot * bits_per_rb * 2 * 1000
             
-            if user['ue'].average_throughput == 0:
-                user['ue'].average_throughput = instant_throughput
+            if user['ue'].average_throughput <= 0:
+                user['ue'].average_throughput = 1e-6
             
             PF_metric = instant_throughput / user['ue'].average_throughput
             user['PF_metric'] = PF_metric
