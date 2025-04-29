@@ -77,7 +77,7 @@ class AdaptiveModulationAndCoding:
             raise ValueError(f"Invalid CQI: {cqi}. Must be 1-15.")
         
         modulation, code_rate = self.CQI_TO_MCS[cqi]
-        symbols_per_rb = 12 * 7 * 2  # 84 символа в RB (с учетом слотов)
+        symbols_per_rb = 12 * 7  # 84 символа в RB (с учетом слотов)
         return int(symbols_per_rb * modulation * code_rate)
 	#@sherokiddo: "Добавить зависимость от CP"
     
@@ -170,7 +170,7 @@ class RoundRobinScheduler(SchedulerInterface):
         if not active_users:
             return {'allocation': {}, 'statistics': {}}
 
-        # 2. Формирование групп ресурсных блоков по свободным RB в слоте
+        # 2. Расчет RBG
         rbg_size = self.lte_grid.GET_RBG_SIZE()
         total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size
 
@@ -178,42 +178,62 @@ class RoundRobinScheduler(SchedulerInterface):
         allocation = {user['UE_ID']: [] for user in active_users}
         current_idx = (self.last_served_index + 1) % len(active_users)
 
-        # 4. Основной цикл распределения
+        # 4. Определение количества бит на передачу каждому пользователю
+        remaining_buffer = {user['UE_ID']: user['buffer_size'] * 8 for user in active_users}  # в битах
+
         for rbg_idx in range(total_rbg):
-            user = active_users[current_idx]
-            
-            # Попытка выделить оба слота
-            if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, user['UE_ID']):
-                # Получаем все RB в группе
-                rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
-                allocation[user['UE_ID']].extend(rb_indices)
+            # Если всем пользователям выделено достаточно ресурсов - завершаем
+            if all(remaining_buffer[ue_id] <= 0 for ue_id in remaining_buffer):
+                break
+
+        # 5. Поиск следующего пользователя с ненулевым буфером
+            initial_idx = current_idx
+            while remaining_buffer[active_users[current_idx]['UE_ID']] <= 0:
                 current_idx = (current_idx + 1) % len(active_users)
-        # 5. Обновление состояния
+                if current_idx == initial_idx:  # Все пользователи обслужены
+                    break
+                
+            user = active_users[current_idx]
+            ue_id = user['UE_ID']
+        
+        # 6. Основной цикл распределения RBG только если в буфере еще есть данные
+            if remaining_buffer[ue_id] > 0:
+                if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, ue_id):
+                    # Получаем индексы ресурсных блоков в группе
+                    rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
+                    allocation[ue_id].extend(rb_indices)
+                    
+                    # Уменьшаем размер буфера в соответствии с емкостью RBG
+                    bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
+                    rbg_capacity = len(rb_indices) * bits_per_rb * 2  # Бит в обоих слотах
+                    remaining_buffer[ue_id] -= min(remaining_buffer[ue_id], rbg_capacity)
+        
+        # 7. Переход к следующему пользователю
+            current_idx = (current_idx + 1) % len(active_users)
+
+        # 8. Обновление планировщика и обработка буфера
         self.last_served_index = current_idx
 
-        # 6. Обработка буфера и статистики
-        for user in users:  # Не только active_users!
+        # 9. Обработка буфера и статистики
+        for user in users:
             ue = user['ue']
             allocated_rb = len(allocation.get(user['UE_ID'], [])) * 2
             bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
             max_bytes = (allocated_rb * bits_per_rb) // 8
-            
+                
             # Если пользователь неактивен, передаём 0 байт
             packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti)
             ue.UPD_THROUGHPUT(total * 8, 1)
 
-        # 7. Формирование bitmap по Resource Allocation 0
-        bitmap = {}
-        for user in active_users:
-            UE_ID = user['UE_ID']
-            bitmap[UE_ID] = self.lte_grid.GENERATE_BITMAP(tti, UE_ID)
-
+    # 10. Формирование bitmap по Resource Allocation 0
+        bitmap = {user['UE_ID']: self.lte_grid.GENERATE_BITMAP(tti, user['UE_ID']) for user in active_users}
+        
         return {
             'allocation': allocation,
-            'statistics': self.amc.calculate_throughput(allocation, users),  # Передаём всех пользователей
+            'statistics': self.amc.calculate_throughput(allocation, users),
             'bitmap': bitmap
         }
-    
+        
     #@sherokiddo в рамках оптимизации можно разбить весь планировщик на несколько методов
     #для удобного логирования и подсчета времени. Например - подготовка данных один метод
     #затем идет непосредственно все планирование, и метод формирования статистики

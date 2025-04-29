@@ -231,8 +231,8 @@ def test_scheduler_with_buffer():
     # Шаг 4: Добавление пакетов в буфер
     #------------------------------------------------------------------
     current_time = 0
-    ue1.buffer.ADD_PACKET(1500, creation_time=current_time, current_time=current_time)  # 1500 Б
-    ue2.buffer.ADD_PACKET(3000, creation_time=current_time, current_time=current_time)  # 3000 Б
+    ue1.buffer.ADD_PACKET(15, creation_time=current_time, current_time=current_time)  # 1500 Б
+    ue2.buffer.ADD_PACKET(0, creation_time=current_time, current_time=current_time)  # 3000 Б
     print("[OK] Пакеты добавлены в буферы")
 
     #------------------------------------------------------------------
@@ -248,8 +248,18 @@ def test_scheduler_with_buffer():
     # Шаг 6: Подготовка данных для планировщика
     #------------------------------------------------------------------
     users = [
-        {'UE_ID': 1, 'buffer_size': 1500, 'cqi': ue1.cqi, 'ue': ue1},
-        {'UE_ID': 2, 'buffer_size': 3000, 'cqi': ue2.cqi, 'ue': ue2}
+        {
+            'UE_ID': 1,
+            'buffer_size': ue1.buffer.current_size,
+            'cqi': ue1.cqi,
+            'ue': ue1
+        },
+        {
+            'UE_ID': 2,
+            'buffer_size': ue2.buffer.current_size,
+            'cqi': ue2.cqi,
+            'ue': ue2
+        }
     ]
 
     #------------------------------------------------------------------
@@ -333,18 +343,20 @@ def test_scheduler_grid():
     # Шаг 1: Инициализация компонентов
     lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=2)  # 1 фрейм = 10 TTI
     visualizer = LTEGridVisualizer(lte_grid)
-    scheduler = BestCQIScheduler(lte_grid)
+    scheduler = RoundRobinScheduler(lte_grid)
 
     # Шаг 2: Создание пользователей
     bs = BaseStation(x=500, y=500, height=25.0, bandwidth=10)
     ue1 = UserEquipment(UE_ID=1, x=300, y=300, ue_class="pedestrian")
     ue2 = UserEquipment(UE_ID=2, x=700, y=700, ue_class="car")
     ue3 = UserEquipment(UE_ID=3, x=100, y=200, ue_class="car")
-    ue1.buffer.ADD_PACKET(10000, creation_time=0, current_time=0,ttl_ms=10000)
-    ue2.buffer.ADD_PACKET(10000, creation_time=0, current_time=0,ttl_ms=10000)
-    ue1.buffer.ADD_PACKET(2000, creation_time=0, current_time=0,ttl_ms=10000)
-    ue2.buffer.ADD_PACKET(3000, creation_time=0, current_time=0,ttl_ms=10000)
-    ue3.buffer.ADD_PACKET(30000, creation_time=0, current_time=0,ttl_ms=10000)
+# =============================================================================
+#     ue1.buffer.ADD_PACKET(1, creation_time=0, current_time=0,ttl_ms=10000)
+#     ue2.buffer.ADD_PACKET(10000, creation_time=0, current_time=0,ttl_ms=10000)
+#     ue1.buffer.ADD_PACKET(2000, creation_time=0, current_time=0,ttl_ms=10000)
+#     ue2.buffer.ADD_PACKET(3000, creation_time=0, current_time=0,ttl_ms=10000)
+#     ue3.buffer.ADD_PACKET(30000, creation_time=0, current_time=0,ttl_ms=10000)
+# =============================================================================
     
     # Настройка моделей
     ue1.SET_MOBILITY_MODEL(RandomWaypointModel(x_min=0, x_max=1000, y_min=0, y_max=1000, pause_time=10))
@@ -352,7 +364,7 @@ def test_scheduler_grid():
     ue1.SET_CH_MODEL(UMiModel(bs))
     
     ue2.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=1000, y_min=0, y_max=1000))
-    ue2.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=100))
+    ue2.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=10000))
     ue2.SET_CH_MODEL(UMiModel(bs))
     
     ue3.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=1000, y_min=0, y_max=1000))
