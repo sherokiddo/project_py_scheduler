@@ -285,28 +285,38 @@ class BestCQIScheduler(SchedulerInterface):
         remaining_buffer = {user['UE_ID']: user['buffer_size'] * 8 for user in active_users}  # в битах
 
         for rbg_idx in range(total_rbg):
-            # Фильтрация пользователей с данными в буфере
+            # 4. Фильтрация пользователей с данными в буфере
             users_with_data = [u for u in active_users if remaining_buffer[u['UE_ID']] > 0]
             if not users_with_data:
                 break  # Все пользователи обработаны
 
-            # Сортировка по CQI для выбора лучшего
+            # 5. Сортировка по CQI для выбора лучшего
             users_with_data.sort(key=lambda u: u['cqi'], reverse=True)
             best_user = users_with_data[0]  # Пользователь с наивысшим CQI
             ue_id = best_user['UE_ID']
             
-            # Выделение RBG
+            # 6. Выделение RBG
             if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, ue_id):
                 rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
                 allocation[ue_id].extend(rb_indices)
                 
-                # Обновление буфера
+                # 7. Обновление буфера
                 bits_per_rb = self.amc.GET_BITS_PER_RB(best_user['cqi'])
                 rbg_capacity = len(rb_indices) * bits_per_rb * 2
                 remaining_buffer[ue_id] -= min(remaining_buffer[ue_id], rbg_capacity)
-    
-            # 8. Формирование bitmap по Resource Allocation 0
-            bitmap = {user['UE_ID']: self.lte_grid.GENERATE_BITMAP(tti, user['UE_ID']) for user in active_users}
+   
+        # 8. Обработка буфера и статистики
+        for user in users:
+            ue = user['ue']
+            allocated_rb = len(allocation.get(user['UE_ID'], [])) * 2
+            bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
+            max_bytes = (allocated_rb * bits_per_rb) // 8
+            
+            packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti)
+            ue.UPD_THROUGHPUT(total * 8, 1)
+   
+        # 9. Формирование bitmap по Resource Allocation 0
+        bitmap = {user['UE_ID']: self.lte_grid.GENERATE_BITMAP(tti, user['UE_ID']) for user in active_users}
         
         return {
             'allocation': allocation,

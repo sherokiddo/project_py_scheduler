@@ -362,11 +362,13 @@ def test_scheduler_grid():
     ue1 = UserEquipment(UE_ID=1, x=300, y=300, ue_class="pedestrian")
     ue2 = UserEquipment(UE_ID=2, x=700, y=700, ue_class="car")
     ue3 = UserEquipment(UE_ID=3, x=100, y=200, ue_class="car")
-    ue1.buffer.ADD_PACKET(1000, creation_time=0, current_time=0,ttl_ms=10000)
-    ue2.buffer.ADD_PACKET(10000, creation_time=0, current_time=0,ttl_ms=10000)
-    ue1.buffer.ADD_PACKET(2000, creation_time=0, current_time=0,ttl_ms=10000)
-    ue2.buffer.ADD_PACKET(3000, creation_time=0, current_time=0,ttl_ms=10000)
-    ue3.buffer.ADD_PACKET(30000, creation_time=0, current_time=0,ttl_ms=10000)
+    ue1.buffer.ADD_PACKET(1, creation_time=0, current_time=0,ttl_ms=10000)
+# =============================================================================
+#     ue2.buffer.ADD_PACKET(10000, creation_time=0, current_time=0,ttl_ms=10000)
+#     ue1.buffer.ADD_PACKET(2000, creation_time=0, current_time=0,ttl_ms=10000)
+#     ue2.buffer.ADD_PACKET(3000, creation_time=0, current_time=0,ttl_ms=10000)
+#     ue3.buffer.ADD_PACKET(30000, creation_time=0, current_time=0,ttl_ms=10000)
+# =============================================================================
     
     # Настройка моделей
     ue1.SET_MOBILITY_MODEL(RandomWaypointModel(x_min=0, x_max=1000, y_min=0, y_max=1000, pause_time=10))
