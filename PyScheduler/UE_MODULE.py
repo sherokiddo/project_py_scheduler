@@ -224,6 +224,9 @@ class Buffer:
         
         return selected, total_bits // 8
 
+    #@sherokiddo: при переводе из бит в байты работает округление
+    #оно приводит к погрешности, надо бы исправить....
+
     def GET_STATUS(self, current_time: int) -> Dict:
         """
         Получить статистику состояния буфера.
