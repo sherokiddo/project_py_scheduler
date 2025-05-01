@@ -213,7 +213,7 @@ def test_scheduler_with_buffer():
     #------------------------------------------------------------------
     # Шаг 2: Создание планировщика
     #------------------------------------------------------------------
-    scheduler = RoundRobinScheduler(lte_grid)
+    scheduler = BestCQIScheduler(lte_grid)
     print(f"[OK] Планировщик {scheduler.__class__.__name__} инициализирован")
 
     #------------------------------------------------------------------
@@ -232,8 +232,8 @@ def test_scheduler_with_buffer():
     # Шаг 4: Добавление пакетов в буфер
     #------------------------------------------------------------------
     current_time = 0
-    ue1.buffer.ADD_PACKET(1500, creation_time=current_time, current_time=current_time)  # 1500 Б
-    ue2.buffer.ADD_PACKET(3000, creation_time=current_time, current_time=current_time)  # 3000 Б
+    ue1.buffer.ADD_PACKET(15, creation_time=current_time, current_time=current_time)  # 1500 Б
+    ue2.buffer.ADD_PACKET(4000, creation_time=current_time, current_time=current_time)  # 3000 Б
     print("[OK] Пакеты добавлены в буферы")
 
     #------------------------------------------------------------------
@@ -249,8 +249,18 @@ def test_scheduler_with_buffer():
     # Шаг 6: Подготовка данных для планировщика
     #------------------------------------------------------------------
     users = [
-        {'UE_ID': 1, 'buffer_size': 1500, 'cqi': ue1.cqi, 'ue': ue1},
-        {'UE_ID': 2, 'buffer_size': 3000, 'cqi': ue2.cqi, 'ue': ue2}
+        {
+            'UE_ID': 1,
+            'buffer_size': ue1.buffer.current_size,
+            'cqi': ue1.cqi,
+            'ue': ue1
+        },
+        {
+            'UE_ID': 2,
+            'buffer_size': ue2.buffer.current_size,
+            'cqi': ue2.cqi,
+            'ue': ue2
+        }
     ]
 
     #------------------------------------------------------------------
@@ -306,25 +316,37 @@ def test_scheduler_with_buffer():
     # Шаг 10: Общая статистика
     #------------------------------------------------------------------
     print("\nИтоговая статистика:")
+    total_effective = 0
+    total_max = 0
     total_throughput = 0
+    total_users = len(users)
     
     for user in users:
         ue_id = user['UE_ID']
         rb_count = len(allocation.get(ue_id, [])) * 2
-        bits_per_rb = scheduler.amc.GET_BITS_PER_RB(user['cqi'])
-        throughput = rb_count * bits_per_rb  # Бит/мс = кбит/с
+        
+        # Использование корректной статистики из планировщика
+        throughput = stats['user_throughput'].get(ue_id, 0)
+        effective = stats['user_effective_throughput'].get(ue_id, 0)
+        max_throughput = stats['user_max_throughput'].get(ue_id, 0)
+        utilization = (effective / max_throughput * 100) if max_throughput > 0 else 0
         
         print(f"\nUE {ue_id}:")
         print(f"  RB выделено: {rb_count}")
-        print(f"  Пропускная способность: {throughput * 1000:.2f} бит/с")
+        print(f"  Макс. пропускная способность: {max_throughput:.2f} бит/мс")
+        print(f"  Фактическая: {effective:.2f} бит/мс")
+        print(f"  Утилизация RBG: {utilization:.1f}%")
+        
         total_throughput += throughput
-
+        total_effective += effective
+        total_max += max_throughput
+        system_utilization = (total_effective / total_max * 100) if total_max > 0 else 0
+        
     # Средняя пропускная способность на TTI
-    num_users = len([u for u in users if len(allocation.get(u['UE_ID'], [])) > 0])
-    avg_throughput = (total_throughput / num_users) * 1000 if num_users > 0 else 0
-    
-    print(f"\nСредняя пропускная способность в TTI: {avg_throughput:.2f} бит/с")
+    avg_throughput = total_throughput / total_users if total_users > 0 else 0
+    print(f"\nСредняя пропускная способность в TTI: {avg_throughput:.2f} бит/мс")
     print(f"Всего выделено RB: {stats['total_allocated_rbs']}/100")
+    print(f"\nОбщая утилизация системы: {system_utilization:.1f}%")
     print("[OK] Тест пройден успешно!")
     
 def test_scheduler_grid():
@@ -341,11 +363,13 @@ def test_scheduler_grid():
     ue1 = UserEquipment(UE_ID=1, x=300, y=300, ue_class="pedestrian")
     ue2 = UserEquipment(UE_ID=2, x=700, y=700, ue_class="car")
     ue3 = UserEquipment(UE_ID=3, x=100, y=200, ue_class="car")
-    ue1.buffer.ADD_PACKET(10000, creation_time=0, current_time=0,ttl_ms=10000)
-    ue2.buffer.ADD_PACKET(10000, creation_time=0, current_time=0,ttl_ms=10000)
-    ue1.buffer.ADD_PACKET(2000, creation_time=0, current_time=0,ttl_ms=10000)
-    ue2.buffer.ADD_PACKET(3000, creation_time=0, current_time=0,ttl_ms=10000)
-    ue3.buffer.ADD_PACKET(30000, creation_time=0, current_time=0,ttl_ms=10000)
+    ue1.buffer.ADD_PACKET(1, creation_time=0, current_time=0,ttl_ms=10000)
+# =============================================================================
+#     ue2.buffer.ADD_PACKET(10000, creation_time=0, current_time=0,ttl_ms=10000)
+#     ue1.buffer.ADD_PACKET(2000, creation_time=0, current_time=0,ttl_ms=10000)
+#     ue2.buffer.ADD_PACKET(3000, creation_time=0, current_time=0,ttl_ms=10000)
+#     ue3.buffer.ADD_PACKET(30000, creation_time=0, current_time=0,ttl_ms=10000)
+# =============================================================================
     
     # Настройка моделей
     ue1.SET_MOBILITY_MODEL(RandomWaypointModel(x_min=0, x_max=1000, y_min=0, y_max=1000, pause_time=10))
@@ -353,7 +377,7 @@ def test_scheduler_grid():
     ue1.SET_CH_MODEL(UMiModel(bs))
     
     ue2.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=1000, y_min=0, y_max=1000))
-    ue2.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=100))
+    ue2.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=10000))
     ue2.SET_CH_MODEL(UMiModel(bs))
     
     ue3.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=1000, y_min=0, y_max=1000))
@@ -374,9 +398,11 @@ def test_scheduler_grid():
     
         # Генерация трафика
         print("\n======== ГЕНЕРАЦИЯ ТРАФИКА ========")
-        ue1.GEN_TRFFC(current_time, update_interval)
-        ue2.GEN_TRFFC(current_time, update_interval)
-        ue3.GEN_TRFFC(current_time, update_interval)
+# =============================================================================
+#         ue1.GEN_TRFFC(current_time, update_interval)
+#         ue2.GEN_TRFFC(current_time, update_interval)
+#         ue3.GEN_TRFFC(current_time, update_interval)
+# =============================================================================
         print("===================================")
         
         # Обновление состояния
