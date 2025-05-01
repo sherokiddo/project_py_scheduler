@@ -501,7 +501,7 @@ def test_scheduler_with_metrics():
     ue3.SET_CH_MODEL(UMiModel(bs))
     
     lte_grid = RES_GRID_LTE(bandwidth=bandwidth, num_frames=num_frames)
-    scheduler = BestCQIScheduler(lte_grid)
+    scheduler = ProportionalFairScheduler(lte_grid)
     
     total_throughput_tti = []
     
@@ -572,7 +572,7 @@ def test_scheduler_with_metrics():
                 total_throughput += throughput
                 
             # Пропускная способность на TTI         
-            total_throughput = (total_throughput) / 1048576 # бит/мс -> мбит/с
+            total_throughput = (total_throughput) / 1048576 # бит/с -> мбит/с
             total_throughput_tti.append(total_throughput)
     
             users_throughput[1].append(ue1.current_throughput / 1048576)

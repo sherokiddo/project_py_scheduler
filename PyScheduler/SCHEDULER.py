@@ -378,7 +378,7 @@ class ProportionalFairScheduler(SchedulerInterface):
         Returns:
             Dict: Результаты распределения ресурсов
         """
-        # Фильтрация активных пользователей
+        # 1. Фильтрация активных пользователей
         active_users = [
             user for user in users 
             if user['buffer_size'] > 0 and 1 <= user['cqi'] <= 15
@@ -386,38 +386,41 @@ class ProportionalFairScheduler(SchedulerInterface):
         if not active_users:
             return {'allocation': {}, 'statistics': {}}
         
-        # Расчёт PF-метрики для каждого пользователя
+        # 2. Расчёт PF-метрики для каждого пользователя
         active_users = self.calculate_pf_metric(active_users)
         
-        # Сортировка по PF-метрике
-        active_users.sort(key=lambda u: u['PF_metric'], reverse=True)
-        max_pf_metric = active_users[0]['PF_metric']
-        pf_users = [u for u in active_users if u['PF_metric'] == max_pf_metric]
-        
-        # 3. Получение уникальных свободных частотных индексов
+        # 3. Расчет RBG
         rbg_size = self.lte_grid.GET_RBG_SIZE()
         total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size
         
         # 4. Инициализация структур данных
-        allocation = {user['UE_ID']: [] for user in active_users}
-        current_idx = (self.last_served_index + 1) % len(pf_users)
+        allocation = {user['UE_ID']: [] for user in users}
         
-        # 5. Основной цикл распределения
+        # 5. Определение количества бит на передачу каждому пользователю
+        remaining_buffer = {user['UE_ID']: user['buffer_size'] * 8 for user in active_users}  # в битах
+        
         for rbg_idx in range(total_rbg):
-            user = pf_users[current_idx % len(pf_users)]
+            # 6. Фильтрация пользователей с данными в буфере
+            users_with_data = [u for u in active_users if remaining_buffer[u['UE_ID']] > 0]
+            if not users_with_data:
+                break  # Все пользователи обработаны
+                
+            # 7. Сортировка по PF-метрике для выбора лучшего
+            users_with_data.sort(key=lambda u: u['PF_metric'], reverse=True)
+            best_user = users_with_data[0]  # Пользователь с наивысшей PF-метрикой
+            ue_id = best_user['UE_ID']
             
-            if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, user['UE_ID']):
-                # Получаем фактические индексы RB для группы
+            # 8. Выделение RBG
+            if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, ue_id):
                 rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
-                allocation[user['UE_ID']].extend(rb_indices)
+                allocation[ue_id].extend(rb_indices)
                 
-                # Переход к следующему пользователю
-                current_idx += 1
-                
-        # 6. Обновление индекса последнего пользователя
-        self.last_served_index = current_idx % len(pf_users)
+                # 9. Обновление буфера
+                bits_per_rb = self.amc.GET_BITS_PER_RB(best_user['cqi'])
+                rbg_capacity = len(rb_indices) * bits_per_rb * 2
+                remaining_buffer[ue_id] -= min(remaining_buffer[ue_id], rbg_capacity)
         
-        # 7. Обработка буфера и статистики
+        # 10. Обработка буфера и статистики
         for user in users:  # Не только active_users!
             ue = user['ue']
             allocated_rb = len(allocation.get(user['UE_ID'], [])) * 2
@@ -427,24 +430,16 @@ class ProportionalFairScheduler(SchedulerInterface):
             # Если пользователь неактивен, передаём 0 байт
             packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti)
             ue.UPD_THROUGHPUT(total * 8, 1)
-            
-            # Обновление средней пропускной способности пользователей
-            if user in pf_users:
-                average_throughput_past = ue.average_throughput
-                ue.average_throughput = (1 - 0.2) * average_throughput_past + 0.2 * ue.current_throughput 
-            else:
-                average_throughput_past = ue.average_throughput
-                ue.average_throughput = (1 - 0.2) * average_throughput_past
-        
-        # 8. Формирование bitmap по Resource Allocation 0
-        bitmap = {}
-        for user in active_users:
-            UE_ID = user['UE_ID']
-            bitmap[UE_ID] = self.lte_grid.GENERATE_BITMAP(tti, UE_ID)
 
+            average_throughput_past = ue.average_throughput
+            ue.average_throughput = (1 - 0.2) * average_throughput_past + 0.2 * ue.current_throughput 
+
+        # 11. Формирование bitmap по Resource Allocation 0
+        bitmap = {user['UE_ID']: self.lte_grid.GENERATE_BITMAP(tti, user['UE_ID']) for user in active_users}
+        
         return {
             'allocation': allocation,
-            'statistics': self.amc.calculate_throughput(allocation, users),  # Передаём всех пользователей
+            'statistics': self.amc.calculate_throughput(allocation, users),
             'bitmap': bitmap
         }
     
