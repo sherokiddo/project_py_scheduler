@@ -66,9 +66,7 @@ import numpy as np
 from collections import deque
 from typing import Dict, List, Optional, Union, Tuple
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel
-from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
 from TRAFFIC_MODEL import PoissonModel, OnOffModel, MMPPModel
-from BS_MODULE import BaseStation
 
 class Packet:
     """Класс для представления сетевого пакета"""
@@ -345,6 +343,13 @@ class UserEquipment:
         self.total_transmitted_bits = 0
         self.total_transmitted_packets = 0
         self.total_dropped_packets = 0
+        
+        # Статистика для DL
+        self.dl_metrics = {
+            'last_throughput': 0.0,
+            'average_throughput': 0.0,
+            'total_transferred': 0
+        }
 
     def PROCESS_DCI(self, tti: int, bitmap: List[int]):
         """Обработка Downlink Control Information (имитация)"""
@@ -447,7 +452,8 @@ class UserEquipment:
             time_ms: Текущее время в миллисекундах
             bs_position: Координаты базовой станции (x, y) в метрах
         """
-        
+        from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
+
         if not self.channel_model:
             raise ValueError("Ошибка! Модель канала не определена! {}".format(self.UE_ID))
             
