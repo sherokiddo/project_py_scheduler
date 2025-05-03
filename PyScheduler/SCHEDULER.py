@@ -44,6 +44,7 @@
 
 from typing import Dict, List, Optional, Union, Tuple
 from RES_GRID import RES_GRID_LTE, SchedulerInterface
+from BS_MODULE import BaseStation
 
 class AdaptiveModulationAndCoding:
     """
@@ -81,7 +82,7 @@ class AdaptiveModulationAndCoding:
         return int(symbols_per_rb * modulation * code_rate)
 	#@sherokiddo: "Добавить зависимость от CP"
     
-    def calculate_throughput(self, allocation: Dict, users: List[Dict]) -> Dict:
+    def calculate_throughput(self, allocation: Dict, users: List[Dict], tti: int, bs: BaseStation) -> Dict:
         """
         Рассчитывает фактическую пропускную способность с учетом:
         - Реальных данных из буфера
@@ -104,7 +105,7 @@ class AdaptiveModulationAndCoding:
             'user_throughput': {ue_id: 0 for ue_id in all_users}, 
             'user_effective_throughput': {ue_id: 0 for ue_id in all_users},
             'user_max_throughput': {ue_id: 0 for ue_id in all_users},
-            'average_throughput': 0.0,
+            'average_dl_throughput': 0.0,
             'total_effective_bits': 0
         }
         
@@ -116,7 +117,7 @@ class AdaptiveModulationAndCoding:
             
             if rb_count == 0:
                 # Обновление истории для неактивных пользователей
-                user['ue'].UPD_THROUGHPUT(0, 1)
+                user['ue'].UPD_DL_THROUGHPUT(0, 1)
                 continue
     
             # 1. Расчет максимальной ёмкости RB для данного CQI
@@ -126,7 +127,7 @@ class AdaptiveModulationAndCoding:
             max_bits = rb_count * bits_per_rb
             
             # 3. Реальные переданные биты из буфера
-            real_bits = user['ue'].current_throughput * 1e-3  # бит/мс → бит/с
+            real_bits = user['ue'].current_dl_throughput
             effective_bits = min(real_bits, max_bits)
             
             # 4. Обновление статистики
@@ -139,107 +140,130 @@ class AdaptiveModulationAndCoding:
         # 5. Расчет средней пропускной способности
         active_users = [u for u in all_users.values() if stats['user_throughput'][u['UE_ID']] > 0]
         if active_users:
-            stats['average_throughput'] = total_effective_bits / len(active_users)
+            stats['average_dl_throughput'] = total_effective_bits / len(active_users)
         
         stats['total_effective_bits'] = total_effective_bits
         return stats
 
 class RoundRobinScheduler(SchedulerInterface):
     
-    def __init__(self, lte_grid: RES_GRID_LTE):
+    def __init__(self, lte_grid: RES_GRID_LTE, bs: BaseStation):
         super().__init__(lte_grid)
+        self.lte_grid = lte_grid
+        self.lte_grid.SET_BS(bs)
         self.last_served_index = -1
-        self.amc = AdaptiveModulationAndCoding()  
+        self.amc = AdaptiveModulationAndCoding() 
     
     def schedule(self, tti: int, users: List[Dict]) -> Dict:
-        """
-        Планирование ресурсов с учётом данных в буфере и CQI.
-        
-        Args:
-            tti: Индекс TTI
-            users: Список пользователей с параметрами:
-                - 'UE_ID': Идентификатор
-                - 'buffer_size': Размер буфера в байтах
-                - 'cqi': Индекс качества канала
-                - 'ue': Объект UserEquipment
-        
-        Returns:
-            Dict: Результаты распределения ресурсов
-        """
-        for user in users:
-            user['ue'].current_throughput = 0
-        
-        # Фильтрация активных пользователей
-        active_users = [
-            user for user in users 
-            if user['buffer_size'] > 0 and 1 <= user['cqi'] <= 15
-        ]
-        if not active_users:
-            return {'allocation': {}, 'statistics': {}}
-
-        # 2. Расчет RBG
-        rbg_size = self.lte_grid.GET_RBG_SIZE()
-        total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size
-
-        # 3. Инициализация структур данных
-        allocation = {user['UE_ID']: [] for user in active_users}
-        current_idx = (self.last_served_index + 1) % len(active_users)
-
-        # 4. Определение количества бит на передачу каждому пользователю
-        remaining_buffer = {user['UE_ID']: user['buffer_size'] * 8 for user in active_users}  # в битах
-
-        for rbg_idx in range(total_rbg):
-            # Если всем пользователям выделено достаточно ресурсов - завершаем
-            if all(remaining_buffer[ue_id] <= 0 for ue_id in remaining_buffer):
-                break
-
-        # 5. Поиск следующего пользователя с ненулевым буфером
-            initial_idx = current_idx
-            while remaining_buffer[active_users[current_idx]['UE_ID']] <= 0:
-                current_idx = (current_idx + 1) % len(active_users)
-                if current_idx == initial_idx:  # Все пользователи обслужены
-                    break
-                
-            user = active_users[current_idx]
-            ue_id = user['UE_ID']
-        
-        # 6. Основной цикл распределения RBG только если в буфере еще есть данные
-            if remaining_buffer[ue_id] > 0:
-                if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, ue_id):
-                    # Получаем индексы ресурсных блоков в группе
-                    rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
-                    allocation[ue_id].extend(rb_indices)
+            """
+            Планирование ресурсов с учётом данных в буфере и CQI.
+            
+            Args:
+                tti: Индекс TTI
+                users: Список пользователей с параметрами:
+                    - 'UE_ID': Идентификатор
+                    - 'buffer_size': Размер буфера в байтах
+                    - 'cqi': Индекс качества канала
+                    - 'ue': Объект UserEquipment
+            
+            Returns:
+                Dict: Результаты распределения ресурсов
+            """
+            for user in users:
+                user['ue'].current_dl_throughput = 0
+            
+            # 1. Фильтрация активных пользователей через буфер BS
+            active_users = []
+            for user in users:
+                ue_id = user['UE_ID']
+                bs_buffer = self.lte_grid.bs.ue_buffers.get(ue_id)
+                if not bs_buffer:
+                    continue
                     
-                    # Уменьшаем размер буфера в соответствии с емкостью RBG
-                    bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
-                    rbg_capacity = len(rb_indices) * bits_per_rb * 2  # Бит в обоих слотах
-                    remaining_buffer[ue_id] -= min(remaining_buffer[ue_id], rbg_capacity)
-        
-        # 7. Переход к следующему пользователю
-            current_idx = (current_idx + 1) % len(active_users)
-
-        # 8. Обновление планировщика и обработка буфера
-        self.last_served_index = current_idx
-
-        # 9. Обработка буфера и статистики
-        for user in users:
-            ue = user['ue']
-            allocated_rb = len(allocation.get(user['UE_ID'], [])) * 2
-            bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
-            max_bytes = (allocated_rb * bits_per_rb) // 8
+                buffer_status = bs_buffer.GET_UE_STATUS(tti)['per_ue'].get(ue_id, {})
+                buffer_size = buffer_status.get('size', 0)
                 
-            # Если пользователь неактивен, передаём 0 байт
-            packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti)
-            ue.UPD_THROUGHPUT(total * 8, 1)
-
-    # 10. Формирование bitmap по Resource Allocation 0
-        bitmap = {user['UE_ID']: self.lte_grid.GENERATE_BITMAP(tti, user['UE_ID']) for user in active_users}
+                if buffer_size > 0 and 1 <= user['cqi'] <= 15:
+                    active_users.append(user)
+                    user['bs_buffer_size'] = buffer_size
+            
+            if not active_users:
+                return {'allocation': {}, 'statistics': {}, 'bitmap': {}}
         
-        return {
-            'allocation': allocation,
-            'statistics': self.amc.calculate_throughput(allocation, users),
-            'bitmap': bitmap
-        }
+            # 2. Расчет параметров RBG
+            rbg_size = self.lte_grid.GET_RBG_SIZE()
+            total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size
+        
+            # 3. Инициализация структур данных
+            allocation = {user['UE_ID']: [] for user in active_users}
+            current_idx = (self.last_served_index + 1) % len(active_users)
+            
+            #4. Определение количества бит на передачу каждому пользователю
+            remaining_buffer = {user['UE_ID']: user['bs_buffer_size'] * 8 for user in active_users}
+
+            for rbg_idx in range(total_rbg):
+                if all(v <= 0 for v in remaining_buffer.values()):
+                    break
+        
+                # 5. Поиск следующего пользователя с данными
+                initial_idx = current_idx
+                while remaining_buffer[active_users[current_idx]['UE_ID']] <= 0:
+                    current_idx = (current_idx + 1) % len(active_users)
+                    if current_idx == initial_idx:
+                        break
+                
+                # Получаем текущего пользователя и выделяем RBG
+                user = active_users[current_idx]
+                ue_id = user['UE_ID']
+                
+                # 6. Основной цикл распределения RBG только если в буфере еще есть данные
+                if remaining_buffer[ue_id] > 0:
+                    if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, ue_id):
+                        #Получаем индексы ресурсных блоков в группе
+                        rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
+                        allocation[ue_id].extend(rb_indices)
+                    
+                # Уменьшает размер буфера в соотв. с емкостью RBG
+                        bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
+                        rbg_capacity = len(rb_indices) * bits_per_rb * 2
+                        remaining_buffer[ue_id] -= min(remaining_buffer[ue_id], rbg_capacity)
+
+                # 7. Переход к следующему пользователю
+                current_idx = (current_idx + 1) % len(active_users)
+                
+                # 8. Обновление индекса последнего обслуженного UE
+            self.last_served_index = current_idx
+                
+                # 9. Обработка буфера и статистики
+            for user in users:
+                ue = user['ue']
+                ue_id = user['UE_ID'] #да, эта часть кода странная, но только после этого все заработало
+                bs_buffer = self.lte_grid.bs.ue_buffers.get(ue_id)
+                
+                if not bs_buffer:
+                    continue
+                allocated_rb = len(allocation.get(user['UE_ID'], [])) * 2
+                bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
+                max_bytes = (allocated_rb * bits_per_rb) // 8  #rbg_capacity // 8??
+
+                #Если пользователь неактивен, передаём 0 байт
+                packets, total = bs_buffer.GET_PACKETS(
+                    ue_id=ue_id,
+                    max_bytes=max_bytes,
+                    bits_per_rb=bits_per_rb,
+                    current_time=tti
+                )               
+            # Обновление метрик DL
+                ue.UPD_DL_THROUGHPUT(total, 1)                
+    
+        # 8. Формирование bitmap
+            bitmap = {user['UE_ID']: self.lte_grid.GENERATE_BITMAP(tti, user['UE_ID']) for user in active_users}
+            
+            return {
+                'allocation': allocation,
+                'statistics': self.amc.calculate_throughput(allocation, users, tti, self.lte_grid.bs),
+                'bitmap': bitmap
+            }
         
     #@sherokiddo в рамках оптимизации можно разбить весь планировщик на несколько методов
     #для удобного логирования и подсчета времени. Например - подготовка данных один метод

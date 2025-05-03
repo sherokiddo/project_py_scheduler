@@ -31,7 +31,7 @@ import matplotlib.pyplot as plt
 %matplotlib
 from matplotlib.lines import Line2D
 from UE_MODULE import UECollection, UserEquipment
-from BS_MODULE import BaseStation
+from BS_MODULE import BaseStation, Buffer, Packet
 from RES_GRID import RES_GRID_LTE
 from SCHEDULER import RoundRobinScheduler, BestCQIScheduler, ProportionalFairScheduler
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel
@@ -206,33 +206,43 @@ def test_scheduler_with_buffer():
     #------------------------------------------------------------------
     # Шаг 1: Инициализация ресурсной сетки (10 МГц, 1 кадр = 10 TTI)
     #------------------------------------------------------------------
-    lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=1)
+    bandwidth = 10 #Mhz
+    lte_grid = RES_GRID_LTE(bandwidth=bandwidth, num_frames=1)
+    bs = BaseStation(x=0, y=0, height=25.0, bandwidth=bandwidth)
     print("[OK] Ресурсная сеть инициализирована")
 
     #------------------------------------------------------------------
     # Шаг 2: Создание планировщика
     #------------------------------------------------------------------
-    scheduler = BestCQIScheduler(lte_grid)
+    scheduler = RoundRobinScheduler(lte_grid, bs)
     print(f"[OK] Планировщик {scheduler.__class__.__name__} инициализирован")
 
     #------------------------------------------------------------------
-    # Шаг 3: Создание пользователей и базовой станции
+    # Шаг 3: Создание пользователей + регистрация
     #------------------------------------------------------------------
-    bs = BaseStation(x=0, y=0, height=25.0, bandwidth=10)
     ue1 = UserEquipment(UE_ID=1, x=500, y=500, ue_class="pedestrian")
     ue2 = UserEquipment(UE_ID=2, x=1000, y=1000, ue_class="car")
+    bs.REG_UE(ue1)
+    bs.REG_UE(ue2)
     
     # Установка моделей канала
     ue1.SET_CH_MODEL(UMiModel(bs))
     ue2.SET_CH_MODEL(UMiModel(bs))
-    print("[OK] Пользователи созданы")
+    
+    print(f"UE1 состояние буфера, Б: {bs.ue_buffers[1].sizes[1]}")
+    print(f"UE2 состояние буфера, Б: {bs.ue_buffers[2].sizes[2]}")
+    
+    print("[OK] Пользователи зарегестрированы")
 
     #------------------------------------------------------------------
     # Шаг 4: Добавление пакетов в буфер
     #------------------------------------------------------------------
+
     current_time = 0
-    ue1.buffer.ADD_PACKET(15, creation_time=current_time, current_time=current_time)  # 1500 Б
-    ue2.buffer.ADD_PACKET(4000, creation_time=current_time, current_time=current_time)  # 3000 Б
+    bs.ue_buffers[1].ADD_PACKET(Packet(size=5, ue_id=1, creation_time=current_time), current_time=current_time)
+    bs.ue_buffers[2].ADD_PACKET(Packet(size=100, ue_id=2, creation_time=current_time), current_time=current_time)
+    print(f"UE1 состояние буфера, Б: {bs.ue_buffers[1].sizes[1]}")
+    print(f"UE2 состояние буфера, Б: {bs.ue_buffers[2].sizes[2]}")
     print("[OK] Пакеты добавлены в буферы")
 
     #------------------------------------------------------------------
@@ -250,13 +260,13 @@ def test_scheduler_with_buffer():
     users = [
         {
             'UE_ID': 1,
-            'buffer_size': ue1.buffer.current_size,
+            'buffer_size': bs.ue_buffers[1].sizes[1],
             'cqi': ue1.cqi,
             'ue': ue1
         },
         {
             'UE_ID': 2,
-            'buffer_size': ue2.buffer.current_size,
+            'buffer_size': bs.ue_buffers[2].sizes[2],
             'cqi': ue2.cqi,
             'ue': ue2
         }
@@ -269,20 +279,17 @@ def test_scheduler_with_buffer():
     allocation = result['allocation']
     stats = result['statistics']
 
+    print(f"UE1 состояние буфера, Б: {bs.ue_buffers[1].sizes[1]}")
+    print(f"UE2 состояние буфера, Б: {bs.ue_buffers[2].sizes[2]}")
+
     #------------------------------------------------------------------
     # Шаг 8: Анализ распределения RB по слотам
     #------------------------------------------------------------------
     print("\nДетализация распределения RB:")
-    
-    # Получение подкадра (TTI=0)
     subframe = lte_grid.GET_SUBFRAME(0)
-    
-    # Анализ слота 0
     slot0 = subframe.slots[0]
-    slot0_rbs = {rb.freq_idx: rb.UE_ID for rb in slot0.GET_ALL_RES_BLCK()}
-    
-    # Анализ слота 1
     slot1 = subframe.slots[1]
+    slot0_rbs = {rb.freq_idx: rb.UE_ID for rb in slot0.GET_ALL_RES_BLCK()}
     slot1_rbs = {rb.freq_idx: rb.UE_ID for rb in slot1.GET_ALL_RES_BLCK()}
 
     print("\nСлот 0:")
@@ -305,7 +312,6 @@ def test_scheduler_with_buffer():
         cqi = user['cqi']
         mcs_params = scheduler.amc.CQI_TO_MCS.get(cqi, (0, 0))
         bits_per_rb = scheduler.amc.GET_BITS_PER_RB(cqi)
-        
         print(f"\nUE {user['UE_ID']} (CQI={cqi}):")
         print(f"- Modulation: {'QPSK' if mcs_params[0] == 2 else '16QAM' if mcs_params[0] == 4 else '64QAM'}")
         print(f"- Code Rate: {mcs_params[1]:.3f}")
@@ -314,39 +320,54 @@ def test_scheduler_with_buffer():
     #------------------------------------------------------------------
     # Шаг 10: Общая статистика
     #------------------------------------------------------------------
-    print("\nИтоговая статистика:")
+    print("\nИтоговая DL статистика базовой станции:")
     total_effective = 0
     total_max = 0
     total_throughput = 0
     total_users = len(users)
+    #current_time += 1
     
     for user in users:
         ue_id = user['UE_ID']
-        rb_count = len(allocation.get(ue_id, [])) * 2
+        rb_count = len(allocation.get(ue_id,[])) * 2
         
-        # Использование корректной статистики из планировщика
+        # Использование статистики из планировщика
         throughput = stats['user_throughput'].get(ue_id, 0)
-        effective = stats['user_effective_throughput'].get(ue_id, 0)
+        effective_bits = stats['user_effective_throughput'].get(ue_id, 0)
         max_throughput = stats['user_max_throughput'].get(ue_id, 0)
-        utilization = (effective / max_throughput * 100) if max_throughput > 0 else 0
+        utilization = (effective_bits / max_throughput * 100) if max_throughput > 0 else 0
         
         print(f"\nUE {ue_id}:")
         print(f"  RB выделено: {rb_count}")
         print(f"  Макс. пропускная способность: {max_throughput:.2f} бит/мс")
-        print(f"  Фактическая: {effective:.2f} бит/мс")
-        print(f"  Утилизация RBG: {utilization:.1f}%")
+        print(f"  Фактическая: {effective_bits:.2f} бит/мс")
         
-        total_throughput += throughput
-        total_effective += effective
+        # 3. Расчет утилизации
+        utilization = (effective_bits / max_throughput * 100) if max_throughput > 0 else 0
+        print(f" Утилизация RBG: {utilization:.1f}%")
+        
+        # 4. Обновление агрегированных метрик
+        total_effective += effective_bits
         total_max += max_throughput
-        system_utilization = (total_effective / total_max * 100) if total_max > 0 else 0
-        
-    # Средняя пропускная способность на TTI
+        total_throughput += throughput
+    
+    # 5. Системные метрики
+    system_utilization = (total_effective / total_max * 100) if total_max > 0 else 0
     avg_throughput = total_throughput / total_users if total_users > 0 else 0
-    print(f"\nСредняя пропускная способность в TTI: {avg_throughput:.2f} бит/мс")
+    
+    print(f"\nСредняя DL пропускная способность: {avg_throughput:.2f} бит/мс")
     print(f"Всего выделено RB: {stats['total_allocated_rbs']}/100")
-    print(f"\nОбщая утилизация системы: {system_utilization:.1f}%")
-    print("[OK] Тест пройден успешно!")
+    print(f"Общая утилизация RBG: {system_utilization:.1f}%")
+    print(f"Всего передано данных: {total_throughput/1e6:.2f} Мбит")
+    
+    # 6. Статистика буфера BS
+    bs_status = lte_grid.bs.GET_GLOBAL_BUFFER_STATUS(current_time)
+    print("\nСтатус буфера BS:")
+    print(f"Общий размер: {bs_status['total_size']/1e3:.1f} КБ")
+    print(f"Средняя задержка: {bs_status['avg_delay']:.1f} мс")
+    print(f"Макс. задержка: {bs_status['max_delay']} мс")
+    
+    print("[OK] Тест DL пройден успешно!")
     
 def test_scheduler_grid():
     """Тест работы Round Robin планировщика с визуализацией полного фрейма"""
@@ -355,19 +376,15 @@ def test_scheduler_grid():
     # Шаг 1: Инициализация компонентов
     lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=2)  # 1 фрейм = 10 TTI
     visualizer = LTEGridVisualizer(lte_grid)
-    scheduler = BestCQIScheduler(lte_grid)
+    bs = BaseStation(x=0, y=0, height=25.0, bandwidth=10)
+    scheduler = RoundRobinScheduler(lte_grid, bs)
+    current_time = 0
 
     # Шаг 2: Создание пользователей
-    bs = BaseStation(x=500, y=500, height=25.0, bandwidth=10)
     ue1 = UserEquipment(UE_ID=1, x=300, y=300, ue_class="pedestrian")
     ue2 = UserEquipment(UE_ID=2, x=700, y=700, ue_class="car")
     ue3 = UserEquipment(UE_ID=3, x=100, y=200, ue_class="car")
-    ue1.buffer.ADD_PACKET(1, creation_time=0, current_time=0,ttl_ms=10000)
-    ue2.buffer.ADD_PACKET(10000, creation_time=0, current_time=0,ttl_ms=10000)
-    ue1.buffer.ADD_PACKET(2000, creation_time=0, current_time=0,ttl_ms=10000)
-    ue2.buffer.ADD_PACKET(3000, creation_time=0, current_time=0,ttl_ms=10000)
-    ue3.buffer.ADD_PACKET(30000, creation_time=0, current_time=0,ttl_ms=10000)
-    
+
     # Настройка моделей
     ue1.SET_MOBILITY_MODEL(RandomWaypointModel(x_min=0, x_max=1000, y_min=0, y_max=1000, pause_time=10))
     ue1.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=1000))
@@ -381,6 +398,16 @@ def test_scheduler_grid():
     ue3.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=1000))
     ue3.SET_CH_MODEL(UMiModel(bs))
     
+    bs.REG_UE(ue1)
+    bs.REG_UE(ue2)
+    bs.REG_UE(ue3)
+    
+    bs.ue_buffers[1].ADD_PACKET(Packet(size=15, ue_id=1, creation_time=current_time), current_time=current_time)
+    bs.ue_buffers[2].ADD_PACKET(Packet(size=10000, ue_id=2, creation_time=current_time), current_time=current_time)
+    bs.ue_buffers[1].ADD_PACKET(Packet(size=2000, ue_id=1, creation_time=current_time), current_time=current_time)
+    bs.ue_buffers[2].ADD_PACKET(Packet(size=3000, ue_id=2, creation_time=current_time), current_time=current_time)
+    bs.ue_buffers[3].ADD_PACKET(Packet(size=30000, ue_id=3, creation_time=current_time), current_time=current_time)
+
     sim_duration = 20 # Время симуляции (в мс)
     update_interval = 1 # Интервал обновления параметров пользователя (в мс)
 
@@ -394,13 +421,13 @@ def test_scheduler_grid():
     for current_time in range(update_interval, sim_duration + 1, update_interval):  # 0-9 TTI (полный фрейм)
     
         # Генерация трафика
-        print("\n======== ГЕНЕРАЦИЯ ТРАФИКА ========")
-        ue1.GEN_TRFFC(current_time, update_interval)
-        ue2.GEN_TRFFC(current_time, update_interval)
 # =============================================================================
+#         print("\n======== ГЕНЕРАЦИЯ ТРАФИКА ========")
+#         ue1.GEN_TRFFC(current_time, update_interval)
+#         ue2.GEN_TRFFC(current_time, update_interval)
 #         ue3.GEN_TRFFC(current_time, update_interval)
+#         print("===================================")
 # =============================================================================
-        print("===================================")
         
         # Обновление состояния
         ue1.UPD_POSITION(update_interval, bs.position, bs.height)
@@ -421,28 +448,29 @@ def test_scheduler_grid():
             users = [
                 {
                     'UE_ID': 1,
-                    'buffer_size': ue1.buffer.current_size,
+                    'buffer_size': bs.ue_buffers[1].sizes[1],
                     'cqi': ue1.cqi,
                     'ue': ue1
                 },
                 {
                     'UE_ID': 2,
-                    'buffer_size': ue2.buffer.current_size,
+                    'buffer_size': bs.ue_buffers[2].sizes[2],
                     'cqi': ue2.cqi,
                     'ue': ue2
                 },
                 {
                     'UE_ID': 3,
-                    'buffer_size': ue3.buffer.current_size,
+                    'buffer_size': bs.ue_buffers[3].sizes[3],
                     'cqi': ue3.cqi,
                     'ue': ue3
                 }
             ]
             
+            
             # Вывод параметров для каждого TTI
             print(f"\n[TTI {tti}]")
             print(f"CQI: UE1={ue1.cqi}, UE2={ue2.cqi}, UE3={ue3.cqi}")
-            print(f"Buffer Size: UE1={ue1.buffer.current_size}B, UE2={ue2.buffer.current_size}B, UE3={ue3.buffer.current_size}B")
+            print(f"Buffer Size: UE1={bs.ue_buffers[1].sizes[1]}B, UE2={bs.ue_buffers[2].sizes[2],}B, UE3={bs.ue_buffers[3].sizes[3],}B")
             
             # Запуск планировщика
             scheduler.schedule(tti, users)

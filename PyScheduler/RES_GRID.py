@@ -43,6 +43,7 @@
 """
 
 from typing import Dict, List, Optional, Union
+from BS_MODULE import BaseStation
 # %matplotlib
 
 class RES_BLCK:
@@ -328,6 +329,7 @@ class RES_GRID_LTE:
         }
         # Инициализация rb_map для быстрого доступа к ресурсным блокам
         self._init_rb_map()
+        self.bs = None
     
     def _init_rb_map(self):
         """Инициализация карты ресурсных блоков для быстрого доступа"""
@@ -563,17 +565,26 @@ class RES_GRID_LTE:
         subframe = tti % 10
         rbg_size = self.GET_RBG_SIZE()
         total_rbg = (self.rb_per_slot + rbg_size - 1) // rbg_size
-        bitmap = [0] * total_rbg
-    
+        
+        bitmap = []
         for rbg_idx in range(total_rbg):
-            slot0_allocated = any(
-                self.GET_RB(tti, f"sub_{subframe}_slot_0", freq) and 
-                self.GET_RB(tti, f"sub_{subframe}_slot_0", freq).UE_ID == UE_ID
-                for freq in self.GET_RBG_INDICES(rbg_idx)
-            )
-            bitmap[rbg_idx] = 1 if slot0_allocated else 0
-    
+            allocated = False
+            # Проверка выделения в любом из слотов
+            for slot in [0, 1]:
+                slot_id = f"sub_{subframe}_slot_{slot}"
+                for freq in self.GET_RBG_INDICES(rbg_idx):
+                    rb = self.GET_RB(tti, slot_id, freq)
+                    if rb and rb.UE_ID == UE_ID:
+                        allocated = True
+                        break
+                if allocated:
+                    break
+            bitmap.append(1 if allocated else 0)
         return bitmap
+    
+    def SET_BS(self, bs: BaseStation):
+        """Установка ссылки на базовую станцию"""
+        self.bs = bs
 
 class SchedulerInterface:
     """

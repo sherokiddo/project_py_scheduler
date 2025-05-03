@@ -345,11 +345,12 @@ class UserEquipment:
         self.total_dropped_packets = 0
         
         # Статистика для DL
-        self.dl_metrics = {
-            'last_throughput': 0.0,
-            'average_throughput': 0.0,
-            'total_transferred': 0
-        }
+        self.current_dl_throughput = 0.0
+        self.average_dl_throughput = 0.0
+        self.total_dl_transmitted_bits = 0
+        self.total_transmitted_dl_packets = 0
+        self.total_dropped_dl_packets = 0
+
 
     def PROCESS_DCI(self, tti: int, bitmap: List[int]):
         """Обработка Downlink Control Information (имитация)"""
@@ -568,6 +569,20 @@ class UserEquipment:
         
         # Обновление общей статистики
         self.total_transmitted_bits += bits_transmitted
+        
+    def UPD_DL_THROUGHPUT(self, bits_dl_transmitted: int, time_interval_ms: int):
+        """
+        Обновить статистику пропускной способности в DL
+        
+        Args:
+            bits_dl_transmitted: Количество переданных бит
+            time_interval_ms: Интервал времени в мс
+        """
+        # Текущая пропускная способность в бит/с
+        self.current_dl_throughput = (bits_dl_transmitted * 1000) / time_interval_ms if time_interval_ms > 0 else 0
+        
+        # Обновление общей статистики
+        self.total_dl_transmitted_bits += bits_dl_transmitted * 1000
     
     def UPD_BUFFER(self, current_time: int):
         """Обновление задержки пакетов в буфере"""

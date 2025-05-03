@@ -32,7 +32,7 @@ class Packet:
         self.ue_id = ue_id
         self.creation_time = creation_time
         self.priority = priority
-        self.ttl_ms = ttl_ms
+        self.ttl_ms = ttl_ms #сделай как тебе удобно
         self.is_fragment = is_fragment
 
     @property
@@ -65,7 +65,6 @@ class Buffer:
         self.ingress_stats = defaultdict(lambda: {
             'total_bytes': 0,
             'start_time': None,
-            'last_update': 0
         })
     
     def ADD_PACKET(self, packet: Packet, current_time: int) -> bool:        
@@ -137,8 +136,8 @@ class Buffer:
         # а также, добавить возможность менять приоритет пакета через метод
         # а напоследок, метод для получения пакетов определенного приоритета GET_PCKT_BY_PR"
 
-    def GET_PACKETS(self, ue_id: int, max_bytes: int, bits_per_rb: int,
-                current_time: int) -> Tuple[List[Packet], int]:
+    def GET_PACKETS(self, ue_id: int, max_bytes: int, bits_per_rb: int, 
+               current_time: int) -> Tuple[List[Packet], int]:
         """
         Извлечение данных из буфера с фрагментацией.
         
@@ -152,66 +151,66 @@ class Buffer:
             Tuple[List[Packet], int]: (список пакетов/фрагментов, общий размер в байтах)
         """
         
-        # Шаг 1: Фильтрация устаревших пакетов для конкретного UE
+        # 1. Предварительная очистка буфера от устаревших пакетов
         self.queues[ue_id] = deque([
-            p for p in self.queues[ue_id]
-            if current_time - p.creation_time <= p.ttl_ms
+            p for p in self.queues[ue_id] 
+            if (current_time - p.creation_time) <= p.ttl_ms
         ])
         
-        # Обновление размера буфера после очистки
-        self.sizes[ue_id] = sum(p.size for p in self.queues[ue_id])
-        self.total_size = sum(self.sizes.values())
-        
+        # 2. Инициализация структур данных
         selected = []
         total_bits = 0
         max_bits = max_bytes * 8  # Конвертация в биты
-        extracted_size = 0  # Суммарный размер извлеченных данных
+        extracted_size = 0
         
-        # Шаг 2: Извлечение пакетов только для указанного UE
+        # 3. Основной цикл извлечения
         while self.queues[ue_id] and total_bits < max_bits:
             packet = self.queues[ue_id][0]
-            packet_bits = packet.size * 8
+            packet_size_bits = packet.size * 8
             
-            remaining_bits = max_bits - total_bits
-            fragment_bits = min(packet_bits, remaining_bits)
-            fragment_size = fragment_bits // 8  # Размер фрагмента в байтах
-    
-            if fragment_size >= packet.size:
-                # Весь пакет помещается
+            # 3.1. Полное извлечение пакета
+            if (total_bits + packet_size_bits) <= max_bits:
                 selected_packet = self.queues[ue_id].popleft()
                 selected.append(selected_packet)
-                total_bits += packet_bits
+                total_bits += packet_size_bits
                 extracted_size += selected_packet.size
+                
+            # 3.2. Фрагментация пакета
             else:
-                # Создание фрагмента с наследованием TTL
+                remaining_bits = max_bits - total_bits
+                fragment_size = remaining_bits // 8
+                
+                # Создание фрагмента с наследованием параметров
                 fragment = Packet(
                     size=fragment_size,
                     ue_id=ue_id,
                     creation_time=packet.creation_time,
                     priority=packet.priority,
-                    ttl_ms=packet.ttl_ms,  # Ключевое исправление
+                    ttl_ms=packet.ttl_ms,
                     is_fragment=True
                 )
-                selected.append(fragment)
                 
-                # Обновление исходного пакета
+                # Модификация исходного пакета
                 packet.size -= fragment_size
+                packet.creation_time = current_time  # Обновление времени для TTL
+                
+                # Обновление статистики
+                selected.append(fragment)
+                total_bits += fragment_size * 8
                 extracted_size += fragment_size
-                total_bits += fragment_bits
-    
-        # Шаг 3: Обновление глобального и локального размеров буфера
+                break
+        
+        # 4. Корректное обновление буфера
         self.sizes[ue_id] -= extracted_size
         self.total_size -= extracted_size
-    
-        # Точный расчет размера в байтах (без округления)
+        
+        # 5. Точный расчет без округления
         exact_bytes = total_bits // 8
-        if total_bits % 8 != 0:
-            exact_bytes += 1  # Добавляем 1 байт для неполного байта
-    
+        
         return selected, exact_bytes
 
-    #@sherokiddo: при переводе из бит в байты работает округление
-    #оно приводит к погрешности, надо бы исправить....
+    #@sherokiddo: тут мог закрасться какой-то баг, но
+    # меня еще надо убедить в этом
 
     def GET_UE_STATUS(self, current_time: int) -> Dict:
         """
@@ -263,7 +262,8 @@ class Buffer:
                 'oldest_delay': max(delays) if delays else 0,
                 'avg_delay': sum(delays)/len(delays) if delays else 0.0,
                 'dropped': self.dropped[ue_id],
-                'expired': self.expired[ue_id]
+                'expired': self.expired[ue_id],
+                'ingress_bytes': self.ingress_stats[ue_id]['total_bytes']
             }
             
             # Агрегированная статистика
@@ -271,14 +271,11 @@ class Buffer:
             status['total_size'] += ue_status['size']
             status['total_packets'] += ue_status['packet_count']
             status['total_expired'] += ue_status['expired']
-            time_interval = current_time - self.ingress_stats[ue_id]['last_update']
-            ingress_rate = (self.ingress_stats[ue_id]['total_bytes'] * 8 * 1000) / time_interval if time_interval > 0 else 0
+            time_interval = current_time - self.ingress_stats[ue_id]['start_time']
+            ue_status['ingress_rate_bps'] = (ue_status['ingress_bytes'] * 8 / time_interval) * 1000 if time_interval > 0 else 0
             
-            ue_status.update({
-                'ingress_rate_bps': ingress_rate,
-                'ingress_rate_mbps': ingress_rate / 1e6
-            })
-            
+            status['per_ue'][ue_id] = ue_status
+        
         return status
     
     def DESTROY_UE_PACKETS(self, ue_id: int) -> None:
@@ -465,45 +462,7 @@ class BaseStation:
             print(f"TTL пакетов: {ttl_ms} мс")
             print(f"Скорость: {bitrate/1e6:.2f} Mbps")
             print(f"Текущий размер буфера: {status.get('size', 0)} байт")
-            print(f"Отброшено: {status.get('dropped', 0)}")
-        
-    def UPD_DL_THROUGHPUT(self, ue: UserEquipment, transmitted_bits: int, time_interval_ms: int) -> None:
-        """
-        Обновить статистику пропускной способности.
-        
-        Args:
-            ue: Объект UE
-            transmitted_bits: Фактически переданные биты за интервал
-            time_interval_ms: Длительность интервала передачи в мс
-        """
-        
-        # Вызов метрик
-        if not hasattr(ue, 'dl_metrics'):
-            ue.dl_metrics = {
-                'current_dl_throughput': 0.0,
-                'average_dl_throughput': 0.0,
-                'total_dl_transferred': 0,
-                'last_update_time': 0
-            }
-        
-        # Расчет текущей скорости (бит/с)
-        current_tput = (transmitted_bits * 1000) / time_interval_ms if time_interval_ms > 0 else 0
-        
-        # Экспоненциальное скользящее среднее
-        alpha = 0.2
-        ue.dl_metrics['average_dl_throughput'] = (
-            (1 - alpha) * ue.dl_metrics['average_dl_throughput'] + 
-            alpha * current_tput
-        )
-        
-        # Обновление метрик
-        ue.dl_metrics.update({
-            'current_dl_throughput': current_tput,
-            'total_dl_transferred': ue.dl_metrics['total_dl_transferred'] + transmitted_bits,
-            'last_update_time': time_interval_ms
-        })
-        #@sherokiddo: моя энергия на этом методе кончилась. Реализуй его сам, если вдруг
-        # он не будет работать так, как этого ожидаешь. У меня уже кончилась фантазия.
+            print(f"Отброшено: {status.get('dropped', 0)}")        
     
     def UPD_GLOBAL_BUFFER(self, current_time: int) -> None:
         """
@@ -638,13 +597,24 @@ def test_bs_buffer_fifo():
         print(f"UE {ue_id}: {status['per_ue'].get(ue_id, {})}")
         
     # Этап 2: Извлечение пакетов для UE1
-    extracted, size = bs.ue_buffers[1].GET_PACKETS(
+    extracted1, size1 = bs.ue_buffers[1].GET_PACKETS(
         ue_id=1, 
-        max_bytes=4000, 
-        bits_per_rb=8000, 
+        max_bytes=3000, 
+        bits_per_rb=229, 
         current_time=current_time
     )
-    print(f"\n[Этап 2] Извлечено для UE1: {len(extracted)} пакетов ({size} байт)")
+    extracted2, size2 = bs.ue_buffers[2].GET_PACKETS(
+        ue_id=2, 
+        max_bytes=4000, 
+        bits_per_rb=229, 
+        current_time=current_time
+    )
+    print(f"\n[Этап 2] Извлечено для UE1: {len(extracted1)} пакетов ({size1} байт)")
+    print(f"\n[Этап 2] Извлечено для UE2: {len(extracted2)} пакетов ({size2} байт)")
+    print("\n[Этап 2] Статус после извлечения:")
+    status = bs.GET_GLOBAL_BUFFER_STATUS(current_time)
+    for ue_id in [1, 2]:
+        print(f"UE {ue_id}: {status['per_ue'].get(ue_id, {})}")
 
 # =============================================================================
 #     packets = [Packet(size=500, ue_id=2, creation_time=current_time - 100, ttl_ms=500),
