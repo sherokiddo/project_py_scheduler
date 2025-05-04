@@ -96,21 +96,30 @@ class LTEGridVisualizer:
             frame_idx = tti // 10
             subframe_idx = tti % 10
             slot_start_idx = (tti - tti_start) * 2
+            
+            # Получаем подфрейм напрямую
+            subframe = self.lte_grid.GET_SUBFRAME(tti)
             for slot_num in [0, 1]:
-                slot_id = f"sub_{subframe_idx}_slot_{slot_num}"
+                # Получаем слот напрямую из подфрейма
+                slot = subframe.slots[slot_num]
                 slot_idx = slot_start_idx + slot_num
-                for freq_idx in range(rb_range):
-                    rb = self.lte_grid.GET_RB(tti, slot_id, freq_idx)
-                    if rb and not rb.CHCK_RB():
+                
+                # Получаем все ресурсные блоки в слоте
+                all_rbs = slot.GET_ALL_RES_BLCK()
+                for rb in all_rbs:
+                    if not rb.CHCK_RB():  # Если блок занят
+                        freq_idx = rb.freq_idx
                         ue_id = rb.UE_ID
                         unique_ue_ids.add(ue_id)
+                        
                         color = ue_colors.get(ue_id, default_colors[ue_id % 10])
                         ue_colors[ue_id] = color
+                        
                         rect = plt.Rectangle((slot_idx - 0.4, freq_idx - 0.4), 0.8, 0.8,
                                             facecolor=color, alpha=0.8, edgecolor='black')
                         ax.add_patch(rect)
                         ax.text(slot_idx, freq_idx, str(ue_id), ha='center', va='center',
-                                fontsize=9, fontweight='bold', color='white')
+                               fontsize=9, fontweight='bold', color='white')
     
         plt.tight_layout()
         plt.show()
@@ -214,7 +223,7 @@ def test_scheduler_with_buffer():
     #------------------------------------------------------------------
     # Шаг 2: Создание планировщика
     #------------------------------------------------------------------
-    scheduler = RoundRobinScheduler(lte_grid, bs)
+    scheduler = BestCQIScheduler(lte_grid, bs)
     print(f"[OK] Планировщик {scheduler.__class__.__name__} инициализирован")
 
     #------------------------------------------------------------------
@@ -380,7 +389,7 @@ def test_scheduler_grid():
     lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=2)  # 1 фрейм = 10 TTI
     visualizer = LTEGridVisualizer(lte_grid)
     bs = BaseStation(x=0, y=0, height=25.0, bandwidth=10)
-    scheduler = RoundRobinScheduler(lte_grid, bs)
+    scheduler = BestCQIScheduler(lte_grid, bs)
     current_time = 0
 
     # Шаг 2: Создание пользователей
@@ -405,7 +414,7 @@ def test_scheduler_grid():
     bs.REG_UE(ue2)
     bs.REG_UE(ue3)
     
-    bs.ue_buffers[1].ADD_PACKET(Packet(size=15, ue_id=1, creation_time=current_time), current_time=current_time)
+    bs.ue_buffers[1].ADD_PACKET(Packet(size=50, ue_id=1, creation_time=current_time), current_time=current_time)
     bs.ue_buffers[2].ADD_PACKET(Packet(size=10000, ue_id=2, creation_time=current_time), current_time=current_time)
     bs.ue_buffers[1].ADD_PACKET(Packet(size=2000, ue_id=1, creation_time=current_time), current_time=current_time)
     bs.ue_buffers[2].ADD_PACKET(Packet(size=3000, ue_id=2, creation_time=current_time), current_time=current_time)
@@ -504,6 +513,62 @@ def test_scheduler_grid():
     
     plt.tight_layout()
     plt.show()
+    
+    subframe = lte_grid.GET_SUBFRAME(0)
+    slot0 = subframe.slots[0]
+    slot1 = subframe.slots[1]
+    slot0_rbs = {rb.freq_idx: rb.UE_ID for rb in slot0.GET_ALL_RES_BLCK()}
+    slot1_rbs = {rb.freq_idx: rb.UE_ID for rb in slot1.GET_ALL_RES_BLCK()}
+
+    print("\nСлот 0:")
+    print("RB Индекс | Пользователь")
+    print("-----------------------")
+    for freq_idx in sorted(slot0_rbs.keys()):
+        print(f"{freq_idx:8} | {slot0_rbs[freq_idx] or 'Свободен'}")
+
+    print("\nСлот 1:")
+    print("RB Индекс | Пользователь")
+    print("-----------------------")
+    for freq_idx in sorted(slot1_rbs.keys()):
+        print(f"{freq_idx:8} | {slot1_rbs[freq_idx] or 'Свободен'}")
+    print("[OK] Тест завершен с визуализацией")
+    
+    subframe = lte_grid.GET_SUBFRAME(1)
+    slot0 = subframe.slots[0]
+    slot1 = subframe.slots[1]
+    slot0_rbs = {rb.freq_idx: rb.UE_ID for rb in slot0.GET_ALL_RES_BLCK()}
+    slot1_rbs = {rb.freq_idx: rb.UE_ID for rb in slot1.GET_ALL_RES_BLCK()}
+
+    print("\nСлот 0:")
+    print("RB Индекс | Пользователь")
+    print("-----------------------")
+    for freq_idx in sorted(slot0_rbs.keys()):
+        print(f"{freq_idx:8} | {slot0_rbs[freq_idx] or 'Свободен'}")
+
+    print("\nСлот 1:")
+    print("RB Индекс | Пользователь")
+    print("-----------------------")
+    for freq_idx in sorted(slot1_rbs.keys()):
+        print(f"{freq_idx:8} | {slot1_rbs[freq_idx] or 'Свободен'}")
+    print("[OK] Тест завершен с визуализацией")
+    
+    subframe = lte_grid.GET_SUBFRAME(2)
+    slot0 = subframe.slots[0]
+    slot1 = subframe.slots[1]
+    slot0_rbs = {rb.freq_idx: rb.UE_ID for rb in slot0.GET_ALL_RES_BLCK()}
+    slot1_rbs = {rb.freq_idx: rb.UE_ID for rb in slot1.GET_ALL_RES_BLCK()}
+
+    print("\nСлот 0:")
+    print("RB Индекс | Пользователь")
+    print("-----------------------")
+    for freq_idx in sorted(slot0_rbs.keys()):
+        print(f"{freq_idx:8} | {slot0_rbs[freq_idx] or 'Свободен'}")
+
+    print("\nСлот 1:")
+    print("RB Индекс | Пользователь")
+    print("-----------------------")
+    for freq_idx in sorted(slot1_rbs.keys()):
+        print(f"{freq_idx:8} | {slot1_rbs[freq_idx] or 'Свободен'}")
     print("[OK] Тест завершен с визуализацией")
 
 
