@@ -580,7 +580,7 @@ def test_bs_buffer_fifo():
     packets = [
         # UE1: 2 пакета (TTL=1000)
         Packet(size=2000, ue_id=1, creation_time=current_time - 400, ttl_ms=500),
-        Packet(size=1500, ue_id=1, creation_time=current_time - 300, ttl_ms=500),
+        Packet(size=500, ue_id=1, creation_time=current_time - 300, ttl_ms=500),
         
         # UE2: 3 пакета (TTL=300 мс)
         Packet(size=3000, ue_id=2, creation_time=current_time - 500, ttl_ms=1000),
@@ -605,7 +605,7 @@ def test_bs_buffer_fifo():
     )
     extracted2, size2 = bs.ue_buffers[2].GET_PACKETS(
         ue_id=2, 
-        max_bytes=4000, 
+        max_bytes=3000, 
         bits_per_rb=229, 
         current_time=current_time
     )

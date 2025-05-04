@@ -262,7 +262,8 @@ class RoundRobinScheduler(SchedulerInterface):
             return {
                 'allocation': allocation,
                 'statistics': self.amc.calculate_throughput(allocation, users, tti, self.lte_grid.bs),
-                'bitmap': bitmap
+                'bitmap': bitmap#,
+                #'dl_throughput': {user['UE_ID']: user['ue'].current_dl_throughput for user in users}
             }
         
     #@sherokiddo в рамках оптимизации можно разбить весь планировщик на несколько методов

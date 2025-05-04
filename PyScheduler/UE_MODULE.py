@@ -579,7 +579,7 @@ class UserEquipment:
             time_interval_ms: Интервал времени в мс
         """
         # Текущая пропускная способность в бит/с
-        self.current_dl_throughput = (bits_dl_transmitted * 1000) / time_interval_ms if time_interval_ms > 0 else 0
+        self.current_dl_throughput = (bits_dl_transmitted * 8) / time_interval_ms if time_interval_ms > 0 else 0
         
         # Обновление общей статистики
         self.total_dl_transmitted_bits += bits_dl_transmitted * 1000

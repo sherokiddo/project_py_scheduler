@@ -278,6 +278,7 @@ def test_scheduler_with_buffer():
     result = scheduler.schedule(0, users)
     allocation = result['allocation']
     stats = result['statistics']
+    #dl_thpt = result['dl_throughput']
 
     print(f"UE1 состояние буфера, Б: {bs.ue_buffers[1].sizes[1]}")
     print(f"UE2 состояние буфера, Б: {bs.ue_buffers[2].sizes[2]}")
@@ -333,6 +334,7 @@ def test_scheduler_with_buffer():
         
         # Использование статистики из планировщика
         throughput = stats['user_throughput'].get(ue_id, 0)
+        #effective_bits_d = dl_thpt.get(ue_id, 0)   
         effective_bits = stats['user_effective_throughput'].get(ue_id, 0)
         max_throughput = stats['user_max_throughput'].get(ue_id, 0)
         utilization = (effective_bits / max_throughput * 100) if max_throughput > 0 else 0
@@ -341,6 +343,7 @@ def test_scheduler_with_buffer():
         print(f"  RB выделено: {rb_count}")
         print(f"  Макс. пропускная способность: {max_throughput:.2f} бит/мс")
         print(f"  Фактическая: {effective_bits:.2f} бит/мс")
+        #print(f"  Фактическая_дебаг: {effective_bits_d:.2f} бит/мс")
         
         # 3. Расчет утилизации
         utilization = (effective_bits / max_throughput * 100) if max_throughput > 0 else 0
@@ -505,7 +508,7 @@ def test_scheduler_grid():
 
 
 if __name__ == "__main__":
-    #test_scheduler_with_buffer()
+    test_scheduler_with_buffer()
     #test_visualize_lte_timeline()
-    test_scheduler_grid()
+    #test_scheduler_grid()
     print("Все тесты успешно пройдены!")
