@@ -482,10 +482,11 @@ def test_scheduler_with_metrics():
     
     sim_duration = 5000 # Время симуляции (в мс)
     update_interval = 5 # Интервал обновления параметров пользователя (в мс)
-    num_frames = int(np.ceil(sim_duration / 10))
-    bandwidth = 10
-    inf = math.inf
+    num_frames = int(np.ceil(sim_duration / 10)) # Кол-во кадров (для ресурсной сетки)
+    bandwidth = 10 # Ширина полосы (в МГц)
+    inf = math.inf 
 
+    # Настройка базовой станции и пользователей
     bs = BaseStation(x=1000, y=1000, height=25.0, bandwidth=bandwidth)
     ue1 = UserEquipment(UE_ID=1, x=800, y=800, ue_class="pedestrian", buffer_size=inf)
     ue2 = UserEquipment(UE_ID=2, x=500, y=500, ue_class="car", buffer_size=inf)
@@ -500,6 +501,7 @@ def test_scheduler_with_metrics():
     ue3.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=2000, y_min=0, y_max=2000))
     ue3.SET_CH_MODEL(UMiModel(bs))
     
+    # Настройка ресурсной сетки и планировщика
     lte_grid = RES_GRID_LTE(bandwidth=bandwidth, num_frames=num_frames)
     scheduler = ProportionalFairScheduler(lte_grid)
     
@@ -511,27 +513,26 @@ def test_scheduler_with_metrics():
         3: []
     }
     
-    users_rb_count = {
-        1: [],
-        2: [],
-        3: []
-    }
-    
+    # Основной цикл симуляции (обновление различных параметров у пользователей)
     for current_time in range(update_interval, sim_duration + 1, update_interval):
-
+        
+        # Обновление местоположения пользователей
         ue1.UPD_POSITION(update_interval, bs.position, bs.height)
         ue2.UPD_POSITION(update_interval, bs.position, bs.height)
         ue3.UPD_POSITION(update_interval, bs.position, bs.height)
         
+        # Обновление состояния канала пользователей
         ue1.UPD_CH_QUALITY()
         ue2.UPD_CH_QUALITY()
         ue3.UPD_CH_QUALITY() 
         
+        # Имитация Full Buffer 
         ue1.buffer.ADD_PACKET(inf, creation_time=current_time, current_time=current_time,ttl_ms=1)
         ue2.buffer.ADD_PACKET(inf, creation_time=current_time, current_time=current_time,ttl_ms=1)
         ue3.buffer.ADD_PACKET(inf, creation_time=current_time, current_time=current_time,ttl_ms=1)
         
-        for tti in range(current_time - update_interval, current_time):
+        # Цикл для планирования ресурсов (по TTI)
+        for tti in range(current_time - update_interval, current_time): 
             # Подготовка данных для планировщика
             users = [
                 {
@@ -560,29 +561,24 @@ def test_scheduler_with_metrics():
             print(f"Buffer Size: UE1={ue1.buffer.current_size}B, UE2={ue2.buffer.current_size}B, UE3={ue3.buffer.current_size}B")
             
             # Запуск планировщика
-            result = scheduler.schedule(tti, users)
-            allocation = result['allocation']
+            scheduler.schedule(tti, users)
             
             total_throughput = 0
             for user in users:
                 ue_id = user['UE_ID']
-                rb_count = len(allocation.get(ue_id, [])) * 2
-                users_rb_count[ue_id].append(rb_count)
                 throughput = user['ue'].current_throughput
                 total_throughput += throughput
                 
             # Пропускная способность на TTI         
-            total_throughput = (total_throughput) / 1048576 # бит/с -> мбит/с
+            total_throughput = (total_throughput) / 1e6 # бит/с -> мбит/с
             total_throughput_tti.append(total_throughput)
     
-            users_throughput[1].append(ue1.current_throughput / 1048576)
-            users_throughput[2].append(ue2.current_throughput / 1048576)
-            users_throughput[3].append(ue3.current_throughput / 1048576)
+            users_throughput[1].append(ue1.current_throughput / 1e6)
+            users_throughput[2].append(ue2.current_throughput / 1e6)
+            users_throughput[3].append(ue3.current_throughput / 1e6)
                 
             
     # Подготовка данных для построения графиков
-    tti_range = range(0, sim_duration, 10)
-    
     frame_throughput = [
     np.mean(total_throughput_tti[i:i+10]) 
     for i in range(0, len(total_throughput_tti), 10)
@@ -600,15 +596,7 @@ def test_scheduler_with_metrics():
     ue_id: np.mean(throughput) for ue_id, throughput in users_throughput.items()
     }
     
-    users_frame_rb = {
-        ue_id: [
-            np.sum(user_tti_rbs[i:i+10])
-            for i in range(0, len(user_tti_rbs), 10)
-        ]
-        for ue_id, user_tti_rbs in users_rb_count.items()
-    }
-    
-    # Расчет Jain's Fairness Index для каждого кадра (по пропускной способности)
+    # Расчет Jain's Fairness Index для каждого кадра
     fairness_per_frame = []
     for i in range(num_frames):
         frame_throughputs = [users_frame_throughput[ue_id][i] for ue_id in users_frame_throughput]
@@ -616,26 +604,17 @@ def test_scheduler_with_metrics():
         fairness = (np.sum(frame_throughputs) ** 2) / (len(frame_throughputs) * np.sum(frame_throughputs ** 2))
         fairness_per_frame.append(fairness)
         
-    # Расчет Jain's Fairness Index для всей симуляции (по пропускной способности)
+    # Расчет Jain's Fairness Index для всей симуляции
     throughputs = np.array(list(average_throughput_per_user.values()))
     fairness_index = (np.sum(throughputs) ** 2) / (len(throughputs) * np.sum(throughputs ** 2))
-    
-    # Расчет Jain's Fairness Index для каждого кадра (по выделенным RB)
-    rb_fairness_per_frame = []
-    for i in range(num_frames):
-        frame_rb = [users_frame_rb[ue_id][i] for ue_id in users_frame_rb]
-        frame_rb = np.array(frame_rb)
-        fairness = (np.sum(frame_rb) ** 2) / (len(frame_rb) * np.sum(frame_rb ** 2))
-        rb_fairness_per_frame.append(fairness)
-        
-    # Расчет Jain's Fairness Index для всей симуляции (по выделенным RB)    
-    total_rbs = np.array([np.sum(rb_list) for rb_list in users_rb_count.values()])
-    numerator = np.square(np.sum(total_rbs, dtype=np.float64))
-    denominator = len(total_rbs) * np.sum(np.square(total_rbs, dtype=np.float64))
-    rb_fairness_index = numerator / denominator
+
+    # Расчёт спектральной эффективности соты
+    spectral_efficiency_cell = np.array(frame_throughput) / bandwidth
     
     
     # ===== ГРАФИКИ ПРОПУСКНОЙ СПОСОБНОСТИ =====
+    tti_range = range(0, sim_duration, 10)
+    
     # График пропускной способности соты
     plt.figure(figsize=(10, 6))
     plt.plot(tti_range, frame_throughput)
@@ -666,7 +645,7 @@ def test_scheduler_with_metrics():
     plt.ylabel("Пропускная способность (Мбит/с)")
     plt.grid(True)
     plt.show()
-
+    
     # Столбчатый график средней пропускной способности для каждого пользователя
     ue_ids = [f'UE{ue_id}' for ue_id in average_throughput_per_user.keys()]
     avg_values = list(average_throughput_per_user.values())
@@ -685,17 +664,17 @@ def test_scheduler_with_metrics():
     plt.show()
     
     # ===== ГРАФИКИ ИНДЕКСА СПРАВЕДЛИВОСТИ =====  
-    # График индекса справедливости во времени (по пропускной способности)
+    # График индекса справедливости во времени
     plt.figure(figsize=(10, 6))
     plt.plot(tti_range, fairness_per_frame, color='green')
-    plt.title(f"Индекс справедливости Джайна во времени при планировщике {scheduler.__class__.__name__} (по пропускной способности)")
+    plt.title(f"Индекс справедливости Джайна во времени при планировщике {scheduler.__class__.__name__}")
     plt.xlabel("TTI")
     plt.ylabel("Справедливость")
     plt.ylim(0, 1.05)
     plt.grid(True)
     plt.show()
     
-    # График индекса справедливости за всё время симуляции (по пропускной способности)
+    # График индекса справедливости за всё время симуляции
     plt.figure(figsize=(10, 6))
     bar = plt.bar(['Jain Fairness'], 
                   [fairness_index], 
@@ -705,43 +684,28 @@ def test_scheduler_with_metrics():
                   zorder=3)
     
     plt.text(0, fairness_index + 0.01, f'{fairness_index:.4f}', ha='center', va='bottom', fontsize=10)
-    plt.title(f"Индекс справедливости Джайна при планировщике {scheduler.__class__.__name__} (по пропускной способности)")
+    plt.title(f"Индекс справедливости Джайна при планировщике {scheduler.__class__.__name__}")
     plt.ylim(0, 1.05)
     plt.ylabel("Справедливость")
     plt.grid(zorder=0)
     plt.tight_layout()
     plt.show()
     
-    # График индекса справедливости во времени (по выделенным RB)
+    # ===== ГРАФИКИ СПЕКТРАЛЬНОЙ ЭФФЕКТИВНОСТИ =====
+    # График спектральной эффективности соты
     plt.figure(figsize=(10, 6))
-    plt.plot(tti_range, rb_fairness_per_frame, color='purple')
-    plt.title(f"Справедливость по RB при планировщике {scheduler.__class__.__name__} (по выделенным RB)")
+    plt.plot(tti_range, spectral_efficiency_cell, color='purple')
+    plt.title(f"Спектральная эффективность соты при планировщике {scheduler.__class__.__name__}")
     plt.xlabel("TTI")
-    plt.ylabel("Справедливость")
-    plt.ylim(0, 1.05)
+    plt.ylabel("Спектральная эффективность (бит/с/Гц)")
     plt.grid(True)
-    plt.show()
-    
-    # График индекса справедливости за всё время симуляции (по выделенным RB)
-    plt.figure(figsize=(10, 6))
-    bar = plt.bar(['Jain Fairness'], 
-                  [rb_fairness_index], 
-                  color='purple', 
-                  edgecolor='black', 
-                  width=0.2, 
-                  zorder=3)
-    
-    plt.text(0, rb_fairness_index + 0.01, f'{rb_fairness_index:.4f}', ha='center', va='bottom', fontsize=10)
-    plt.title(f"Индекс справедливости Джайна при планировщике {scheduler.__class__.__name__} (по выделенным RB)")
-    plt.ylim(0, 1.05)
-    plt.ylabel("Справедливость")
-    plt.grid(zorder=0)
+    plt.ylim(0, max(spectral_efficiency_cell) * 1.1)
     plt.tight_layout()
     plt.show()
-    
-    print(f"\nИндекс справедливости Джайна (по пропускной способности): {fairness_index:.4f}")
-    print(f"Индекс справедливости Джайна (по выделенным RB): {rb_fairness_index:.4f}")
-    print(f"Средняя пропускная способность соты за симуляцию: {np.mean(total_throughput_tti)} Мбит/с\n")
+
+    print(f"\nСредняя пропускная способность соты за симуляцию: {np.mean(total_throughput_tti):.4f} Мбит/с")
+    print(f"Индекс справедливости Джайна: {fairness_index:.4f}")
+    print(f"Средняя спектральная эффективность соты за симуляцию: {np.mean(spectral_efficiency_cell):.4f} бит/с/Гц\n")
     
 if __name__ == "__main__":
     #test_scheduler_with_buffer()
