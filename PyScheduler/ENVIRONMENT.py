@@ -585,6 +585,7 @@ def test_scheduler_with_metrics():
 
     # Настройка базовой станции и пользователей
     bs = BaseStation(x=1000, y=1000, height=25.0, bandwidth=bandwidth, global_max=inf, per_ue_max=inf)
+    ue_collection = UECollection()
     ue1 = UserEquipment(UE_ID=1, x=800, y=800, ue_class="pedestrian")
     ue2 = UserEquipment(UE_ID=2, x=500, y=500, ue_class="car")
     ue3 = UserEquipment(UE_ID=3, x=100, y=100, ue_class="car")
@@ -602,6 +603,10 @@ def test_scheduler_with_metrics():
     bs.REG_UE(ue2)
     bs.REG_UE(ue3)
     
+    ue_collection.ADD_USER(ue1)
+    ue_collection.ADD_USER(ue2)
+    ue_collection.ADD_USER(ue3)
+    
     # Имитация Full Buffer 
     bs.ue_buffers[1].ADD_PACKET(Packet(size=inf, ue_id=1, creation_time=0), current_time=0)
     bs.ue_buffers[2].ADD_PACKET(Packet(size=inf, ue_id=2, creation_time=0), current_time=0)
@@ -609,7 +614,7 @@ def test_scheduler_with_metrics():
     
     # Настройка ресурсной сетки и планировщика
     lte_grid = RES_GRID_LTE(bandwidth=bandwidth, num_frames=num_frames)
-    scheduler = ProportionalFairScheduler(lte_grid, bs)
+    scheduler = BestCQIScheduler(lte_grid, bs)
     
     total_throughput_tti = []
     
@@ -622,39 +627,17 @@ def test_scheduler_with_metrics():
     # Основной цикл симуляции (обновление различных параметров у пользователей)
     for current_time in range(update_interval, sim_duration + 1, update_interval):
         
-        # Обновление местоположения пользователей
-        ue1.UPD_POSITION(update_interval, bs.position, bs.height)
-        ue2.UPD_POSITION(update_interval, bs.position, bs.height)
-        ue3.UPD_POSITION(update_interval, bs.position, bs.height)
-        
-        # Обновление состояния канала пользователей
-        ue1.UPD_CH_QUALITY()
-        ue2.UPD_CH_QUALITY()
-        ue3.UPD_CH_QUALITY() 
+        # Обновление состояния пользователей
+        ue_collection.UPDATE_ALL_USERS(time_ms=current_time, 
+                                       update_interval=update_interval, 
+                                       bs_position=bs.position, 
+                                       bs_height=bs.height)
         
         # Цикл для планирования ресурсов (по TTI)
         for tti in range(current_time - update_interval, current_time): 
-            # Подготовка данных для планировщика
-            users = [
-                {
-                    'UE_ID': 1,
-                    'buffer_size': ue1.buffer.current_size,
-                    'cqi': ue1.cqi,
-                    'ue': ue1
-                },
-                {
-                    'UE_ID': 2,
-                    'buffer_size': ue2.buffer.current_size,
-                    'cqi': ue2.cqi,
-                    'ue': ue2
-                },
-                {
-                    'UE_ID': 3,
-                    'buffer_size': ue3.buffer.current_size,
-                    'cqi': ue3.cqi,
-                    'ue': ue3
-                }
-            ]
+            
+            # Подготовка данных для планировщика     
+            users = ue_collection.GET_USERS_FOR_SCHEDULER()
             
             # Вывод параметров для каждого TTI
             print(f"\n[TTI {tti}]")
@@ -727,6 +710,18 @@ def test_scheduler_with_metrics():
 
     save_scheduler_metrics(scheduler.__class__.__name__, metrics)
     print(f"Метрики для {scheduler.__class__.__name__} сохранены в файл.")
+    
+    tti_range = np.arange(0, sim_duration, update_interval)
+    plt.figure(figsize=(10, 6))
+    plt.title("График SINR во времени для всех пользователей")
+    plt.xlabel("TTI")
+    plt.ylabel("SINR (dB)")
+    for ue in ue_collection.GET_ALL_USERS():
+        sinr_values = ue.SINR_values
+        plt.plot(tti_range, sinr_values, label=f'UE{ue.UE_ID}')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
 
 def save_scheduler_metrics(scheduler_name, metrics, filename='metrics_results.json'):
     if os.path.exists(filename):

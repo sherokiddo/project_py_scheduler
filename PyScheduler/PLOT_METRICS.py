@@ -1,5 +1,6 @@
 import os
 import json
+import math
 import matplotlib.pyplot as plt
 
 def plot_scheduler_metrics_from_file(json_file='metrics_results.json'):
@@ -26,6 +27,26 @@ def plot_scheduler_metrics_from_file(json_file='metrics_results.json'):
         plt.ylabel("Пропускная способность (Мбит/с)")
         plt.grid(True)
         plt.tight_layout()
+        plt.show()
+        
+        # График пропускной способности для каждого пользователя
+        user_throughput = metrics["user_throughput"]
+        user_ids = sorted(user_throughput.keys(), key=int)
+        num_users = len(user_ids)
+        
+        cols = 2
+        rows = math.ceil(num_users / cols)   
+        plt.figure(figsize=(10, 6))
+        for idx, uid in enumerate(user_ids):
+            plt.subplot(rows, cols, idx + 1)
+            plt.plot(tti_range, user_throughput[uid], color='red')
+            plt.title(f"Пропускная способность UE{uid}")
+            plt.xlabel("TTI")
+            plt.ylabel("Пропускная способность (Мбит/с)")
+            plt.grid(True)
+            plt.tight_layout()
+        plt.suptitle(f"Пропускная способность каждого пользователя при планировщике {scheduler}", fontsize=14)
+        plt.subplots_adjust(top=0.92)
         plt.show()
 
         # Boxplot'ы для пропускной способности пользователей

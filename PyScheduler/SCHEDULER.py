@@ -467,7 +467,6 @@ class ProportionalFairScheduler(SchedulerInterface):
                 continue
             buffer_status = bs_buffer.GET_UE_STATUS(tti)['per_ue'].get(ue_id, {})
             buffer_size = buffer_status.get('size', 0)
-            print(f"UE{user['UE_ID']} Buffer size: {buffer_size}")
             if buffer_size > 0 and 1 <= user['cqi'] <= 15:
                 active_users.append(user)
                 user['bs_buffer_size'] = buffer_size

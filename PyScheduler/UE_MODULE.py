@@ -813,7 +813,6 @@ class UECollection:
         Args:
             time_ms: Текущее время в миллисекундах
         """
-        print("\n======== ОБНОВЛЕНИЕ СОСТОЯНИЯ ПОЛЬЗОВАТЕЛЕЙ ========")
         for ue in self.users.values():
             # Обновление позиции
             ue.UPD_POSITION(update_interval, bs_position, bs_height, indoor_boundaries)
@@ -822,8 +821,10 @@ class UECollection:
             ue.UPD_CH_QUALITY()
             
             # Генерация нового трафика
-            ue.GEN_TRFFC(time_ms, update_interval)
-        print("=====================================================")
+            # Пока что закрыто на ремонт
+# =============================================================================
+#             ue.GEN_TRFFC(time_ms, update_interval)
+# =============================================================================
     
     def GET_ACTIVE_USERS(self) -> List[UserEquipment]:
         """
@@ -834,6 +835,18 @@ class UECollection:
         """
         return [ue for ue in self.users.values() 
                 if ue.buffer.GET_STATUS(0)['size'] > 0]
+    
+    def GET_USERS_FOR_SCHEDULER(self):
+        
+        users_data = []
+        for user in self.users.values():
+            users_data.append({
+                'UE_ID': user.UE_ID,
+                'cqi': user.cqi,
+                'ue': user,
+                })
+        
+        return users_data
 
 def prepare_users_for_scheduler(ue_collection: UECollection, time_ms: int) -> List[Dict]:
     """
