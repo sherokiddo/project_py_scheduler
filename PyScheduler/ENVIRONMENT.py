@@ -27,6 +27,8 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 import math
 import matplotlib
+import json
+import os
 #matplotlib.use('TkAgg')  # Или 'Qt5Agg' для GUI бэкенда
 import matplotlib.pyplot as plt
 #%matplotlib
@@ -352,7 +354,8 @@ def test_scheduler_with_buffer():
         print(f"\nUE {ue_id}:")
         print(f"  RB выделено: {rb_count}")
         print(f"  Макс. пропускная способность: {max_throughput:.2f} бит/мс")
-        print(f"  Фактическая: {effective_bits:.2f} бит/мс")
+        #print(f"  Фактическая: {effective_bits:.2f} бит/мс")
+        print(f"  Фактическая: {user['ue'].current_dl_throughput / 1000:.2f} бит/мс")
         #print(f"  Фактическая_дебаг: {effective_bits_d:.2f} бит/мс")
         
         # 3. Расчет утилизации
@@ -390,7 +393,7 @@ def test_scheduler_grid():
     lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=2)  # 1 фрейм = 10 TTI
     visualizer = LTEGridVisualizer(lte_grid)
     bs = BaseStation(x=0, y=0, height=25.0, bandwidth=10)
-    scheduler = BestCQIScheduler(lte_grid, bs)
+    scheduler = ProportionalFairScheduler(lte_grid, bs)
     current_time = 0
 
     # Шаг 2: Создание пользователей
@@ -483,7 +486,7 @@ def test_scheduler_grid():
             # Вывод параметров для каждого TTI
             print(f"\n[TTI {tti}]")
             print(f"CQI: UE1={ue1.cqi}, UE2={ue2.cqi}, UE3={ue3.cqi}")
-            print(f"Buffer Size: UE1={bs.ue_buffers[1].sizes[1]}B, UE2={bs.ue_buffers[2].sizes[2],}B, UE3={bs.ue_buffers[3].sizes[3],}B")
+            print(f"Buffer Size: UE1={bs.ue_buffers[1].sizes[1]}B, UE2={bs.ue_buffers[2].sizes[2]}B, UE3={bs.ue_buffers[3].sizes[3]}B")
             
             # Запуск планировщика
             scheduler.schedule(tti, users)
@@ -581,10 +584,10 @@ def test_scheduler_with_metrics():
     inf = math.inf 
 
     # Настройка базовой станции и пользователей
-    bs = BaseStation(x=1000, y=1000, height=25.0, bandwidth=bandwidth)
-    ue1 = UserEquipment(UE_ID=1, x=800, y=800, ue_class="pedestrian", buffer_size=inf)
-    ue2 = UserEquipment(UE_ID=2, x=500, y=500, ue_class="car", buffer_size=inf)
-    ue3 = UserEquipment(UE_ID=3, x=100, y=100, ue_class="car", buffer_size=inf)
+    bs = BaseStation(x=1000, y=1000, height=25.0, bandwidth=bandwidth, global_max=inf, per_ue_max=inf)
+    ue1 = UserEquipment(UE_ID=1, x=800, y=800, ue_class="pedestrian")
+    ue2 = UserEquipment(UE_ID=2, x=500, y=500, ue_class="car")
+    ue3 = UserEquipment(UE_ID=3, x=100, y=100, ue_class="car")
     
     ue1.SET_MOBILITY_MODEL(RandomWaypointModel(x_min=0, x_max=2000, y_min=0, y_max=2000, pause_time=10))
     ue1.SET_CH_MODEL(UMiModel(bs))
@@ -595,9 +598,18 @@ def test_scheduler_with_metrics():
     ue3.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=2000, y_min=0, y_max=2000))
     ue3.SET_CH_MODEL(UMiModel(bs))
     
+    bs.REG_UE(ue1)
+    bs.REG_UE(ue2)
+    bs.REG_UE(ue3)
+    
+    # Имитация Full Buffer 
+    bs.ue_buffers[1].ADD_PACKET(Packet(size=inf, ue_id=1, creation_time=0), current_time=0)
+    bs.ue_buffers[2].ADD_PACKET(Packet(size=inf, ue_id=2, creation_time=0), current_time=0)
+    bs.ue_buffers[3].ADD_PACKET(Packet(size=inf, ue_id=3, creation_time=0), current_time=0)
+    
     # Настройка ресурсной сетки и планировщика
     lte_grid = RES_GRID_LTE(bandwidth=bandwidth, num_frames=num_frames)
-    scheduler = ProportionalFairScheduler(lte_grid)
+    scheduler = ProportionalFairScheduler(lte_grid, bs)
     
     total_throughput_tti = []
     
@@ -619,11 +631,6 @@ def test_scheduler_with_metrics():
         ue1.UPD_CH_QUALITY()
         ue2.UPD_CH_QUALITY()
         ue3.UPD_CH_QUALITY() 
-        
-        # Имитация Full Buffer 
-        ue1.buffer.ADD_PACKET(inf, creation_time=current_time, current_time=current_time,ttl_ms=1)
-        ue2.buffer.ADD_PACKET(inf, creation_time=current_time, current_time=current_time,ttl_ms=1)
-        ue3.buffer.ADD_PACKET(inf, creation_time=current_time, current_time=current_time,ttl_ms=1)
         
         # Цикл для планирования ресурсов (по TTI)
         for tti in range(current_time - update_interval, current_time): 
@@ -652,24 +659,23 @@ def test_scheduler_with_metrics():
             # Вывод параметров для каждого TTI
             print(f"\n[TTI {tti}]")
             print(f"CQI: UE1={ue1.cqi}, UE2={ue2.cqi}, UE3={ue3.cqi}")
-            print(f"Buffer Size: UE1={ue1.buffer.current_size}B, UE2={ue2.buffer.current_size}B, UE3={ue3.buffer.current_size}B")
+            print(f"Buffer Size: UE1={bs.ue_buffers[1].sizes[1]}B, UE2={bs.ue_buffers[2].sizes[2]}B, UE3={bs.ue_buffers[3].sizes[3]}B")
             
             # Запуск планировщика
             scheduler.schedule(tti, users)
             
             total_throughput = 0
             for user in users:
-                ue_id = user['UE_ID']
-                throughput = user['ue'].current_throughput
+                throughput = user['ue'].current_dl_throughput
                 total_throughput += throughput
                 
             # Пропускная способность на TTI         
             total_throughput = (total_throughput) / 1e6 # бит/с -> мбит/с
             total_throughput_tti.append(total_throughput)
     
-            users_throughput[1].append(ue1.current_throughput / 1e6)
-            users_throughput[2].append(ue2.current_throughput / 1e6)
-            users_throughput[3].append(ue3.current_throughput / 1e6)
+            users_throughput[1].append(ue1.current_dl_throughput / 1e6)
+            users_throughput[2].append(ue2.current_dl_throughput / 1e6)
+            users_throughput[3].append(ue3.current_dl_throughput / 1e6)
                 
             
     # Подготовка данных для построения графиков
@@ -705,106 +711,39 @@ def test_scheduler_with_metrics():
     # Расчёт спектральной эффективности соты
     spectral_efficiency_cell = np.array(frame_throughput) / bandwidth
     
-    
-    # ===== ГРАФИКИ ПРОПУСКНОЙ СПОСОБНОСТИ =====
-    tti_range = range(0, sim_duration, 10)
-    
-    # График пропускной способности соты
-    plt.figure(figsize=(10, 6))
-    plt.plot(tti_range, frame_throughput)
-    plt.title(f"Пропускная способность соты при планировщике {scheduler.__class__.__name__}")
-    plt.xlabel("TTI")
-    plt.ylabel("Пропускная способность (Мбит/с)")
-    plt.grid(True)
-    plt.show()    
-    
-    # Графики пропускной способности пользователей
-    for ue_id, throughput_list in users_frame_throughput.items():
-        plt.figure(figsize=(10, 6))
-        plt.plot(tti_range, throughput_list, label=f'UE{ue_id}', color='red')
-        plt.title(f"Пропускная способность UE{ue_id} при планировщике {scheduler.__class__.__name__}")
-        plt.xlabel("TTI")
-        plt.ylabel("Пропускная способность (Мбит/с)")
-        plt.grid(True)
-        plt.legend()
-        plt.show()
-       
-    # Boxplot'ы для пропускной способности пользователей
-    plt.figure(figsize=(10, 6))
-    plt.boxplot([users_frame_throughput[ue_id] for ue_id in sorted(users_frame_throughput.keys())],
-                labels=[f'UE{ue_id}' for ue_id in sorted(users_frame_throughput.keys())],
-                patch_artist=True,
-                medianprops=dict(color='orange', linewidth=2))
-    plt.title("Boxplot пропускной способности для каждого пользователя")
-    plt.ylabel("Пропускная способность (Мбит/с)")
-    plt.grid(True)
-    plt.show()
-    
-    # Столбчатый график средней пропускной способности для каждого пользователя
-    ue_ids = [f'UE{ue_id}' for ue_id in average_throughput_per_user.keys()]
-    avg_values = list(average_throughput_per_user.values())
-    plt.figure(figsize=(10, 6))
-    bars = plt.bar(ue_ids, avg_values, edgecolor='black', width=0.3, zorder=3)
-    
-    for bar in bars:
-        height = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width() / 2.0, height + 0.01, 
-                 f'{height:.2f}', ha='center', va='bottom', fontsize=10)
-    
-    plt.title(f"Средняя пропускная способность каждого пользователя при планировщике {scheduler.__class__.__name__}")
-    plt.ylabel("Пропускная способность (Мбит/с)")
-    plt.grid(zorder=0)
-    plt.tight_layout()
-    plt.show()
-    
-    # ===== ГРАФИКИ ИНДЕКСА СПРАВЕДЛИВОСТИ =====  
-    # График индекса справедливости во времени
-    plt.figure(figsize=(10, 6))
-    plt.plot(tti_range, fairness_per_frame, color='green')
-    plt.title(f"Индекс справедливости Джайна во времени при планировщике {scheduler.__class__.__name__}")
-    plt.xlabel("TTI")
-    plt.ylabel("Справедливость")
-    plt.ylim(0, 1.05)
-    plt.grid(True)
-    plt.show()
-    
-    # График индекса справедливости за всё время симуляции
-    plt.figure(figsize=(10, 6))
-    bar = plt.bar(['Jain Fairness'], 
-                  [fairness_index], 
-                  color='green', 
-                  edgecolor='black', 
-                  width=0.2, 
-                  zorder=3)
-    
-    plt.text(0, fairness_index + 0.01, f'{fairness_index:.4f}', ha='center', va='bottom', fontsize=10)
-    plt.title(f"Индекс справедливости Джайна при планировщике {scheduler.__class__.__name__}")
-    plt.ylim(0, 1.05)
-    plt.ylabel("Справедливость")
-    plt.grid(zorder=0)
-    plt.tight_layout()
-    plt.show()
-    
-    # ===== ГРАФИКИ СПЕКТРАЛЬНОЙ ЭФФЕКТИВНОСТИ =====
-    # График спектральной эффективности соты
-    plt.figure(figsize=(10, 6))
-    plt.plot(tti_range, spectral_efficiency_cell, color='purple')
-    plt.title(f"Спектральная эффективность соты при планировщике {scheduler.__class__.__name__}")
-    plt.xlabel("TTI")
-    plt.ylabel("Спектральная эффективность (бит/с/Гц)")
-    plt.grid(True)
-    plt.ylim(0, max(spectral_efficiency_cell) * 1.1)
-    plt.tight_layout()
-    plt.show()
-
     print(f"\nСредняя пропускная способность соты за симуляцию: {np.mean(total_throughput_tti):.4f} Мбит/с")
     print(f"Индекс справедливости Джайна: {fairness_index:.4f}")
     print(f"Средняя спектральная эффективность соты за симуляцию: {np.mean(spectral_efficiency_cell):.4f} бит/с/Гц\n")
     
+    metrics = {
+        "sim_duration": sim_duration,
+        "cell_throughput": frame_throughput,
+        "user_throughput": users_frame_throughput,
+        "avg_user_throughput": average_throughput_per_user,
+        "jain_index_per_frame": fairness_per_frame,
+        "jain_index_overall": fairness_index,
+        "spectral_efficiency": spectral_efficiency_cell.tolist()
+    }
+
+    save_scheduler_metrics(scheduler.__class__.__name__, metrics)
+    print(f"Метрики для {scheduler.__class__.__name__} сохранены в файл.")
+
+def save_scheduler_metrics(scheduler_name, metrics, filename='metrics_results.json'):
+    if os.path.exists(filename):
+        with open(filename, 'r') as f:
+            all_metrics = json.load(f)
+    else:
+        all_metrics = {}
+
+    all_metrics[scheduler_name] = metrics
+
+    with open(filename, 'w') as f:
+        json.dump(all_metrics, f, indent=4)
+
 if __name__ == "__main__":
-    test_scheduler_with_buffer()
+    #test_scheduler_with_buffer()
     #test_visualize_lte_timeline()
     #test_scheduler_grid()
-    #test_scheduler_with_metrics()
+    test_scheduler_with_metrics()
     print("Все тесты успешно пройдены!")
 

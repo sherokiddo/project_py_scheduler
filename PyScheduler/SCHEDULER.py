@@ -277,7 +277,7 @@ class RoundRobinScheduler(SchedulerInterface):
                     current_time=tti
                 )               
             # Обновление метрик DL
-                ue.UPD_DL_THROUGHPUT(total, 1)                
+                ue.UPD_DL_THROUGHPUT(total * 8, 1)                
     
         # 8. Формирование bitmap
             bitmap = {user['UE_ID']: self.lte_grid.GENERATE_BITMAP(tti, user['UE_ID']) for user in active_users}
@@ -388,7 +388,7 @@ class BestCQIScheduler(SchedulerInterface):
             )
             
             # Обновление метрик DL
-            ue.UPD_DL_THROUGHPUT(total, 1)
+            ue.UPD_DL_THROUGHPUT(total * 8, 1)
    
         # 8. Формирование bitmap
         bitmap = {user['UE_ID']: self.lte_grid.GENERATE_BITMAP(tti, user['UE_ID']) for user in active_users}
@@ -406,9 +406,10 @@ class BestCQIScheduler(SchedulerInterface):
 
 class ProportionalFairScheduler(SchedulerInterface):
     
-    def __init__(self, lte_grid: RES_GRID_LTE):
+    def __init__(self, lte_grid: RES_GRID_LTE, bs: BaseStation):
         super().__init__(lte_grid)
-        self.last_served_index = -1
+        self.lte_grid = lte_grid
+        self.lte_grid.SET_BS(bs)
         self.amc = AdaptiveModulationAndCoding()
         
     def calculate_pf_metric(self, users: List[Dict]):
@@ -454,13 +455,25 @@ class ProportionalFairScheduler(SchedulerInterface):
         Returns:
             Dict: Результаты распределения ресурсов
         """
+        for user in users:
+            user['ue'].current_dl_throughput = 0
+            
         # 1. Фильтрация активных пользователей
-        active_users = [
-            user for user in users 
-            if user['buffer_size'] > 0 and 1 <= user['cqi'] <= 15
-        ]
+        active_users = []
+        for user in users:
+            ue_id = user['UE_ID']
+            bs_buffer = self.lte_grid.bs.ue_buffers.get(ue_id)
+            if not bs_buffer:
+                continue
+            buffer_status = bs_buffer.GET_UE_STATUS(tti)['per_ue'].get(ue_id, {})
+            buffer_size = buffer_status.get('size', 0)
+            print(f"UE{user['UE_ID']} Buffer size: {buffer_size}")
+            if buffer_size > 0 and 1 <= user['cqi'] <= 15:
+                active_users.append(user)
+                user['bs_buffer_size'] = buffer_size
+
         if not active_users:
-            return {'allocation': {}, 'statistics': {}}
+            return {'allocation': {}, 'statistics': {}, 'bitmap': {}}
         
         # 2. Расчёт PF-метрики для каждого пользователя
         active_users = self.calculate_pf_metric(active_users)
@@ -470,16 +483,18 @@ class ProportionalFairScheduler(SchedulerInterface):
         total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size
         
         # 4. Инициализация структур данных
-        allocation = {user['UE_ID']: [] for user in users}
+        allocation = {user['UE_ID']: [] for user in active_users}
         
         # 5. Определение количества бит на передачу каждому пользователю
-        remaining_buffer = {user['UE_ID']: user['buffer_size'] * 8 for user in active_users}  # в битах
+        remaining_buffer = {user['UE_ID']: user['bs_buffer_size'] * 8 for user in active_users}
         
         for rbg_idx in range(total_rbg):
-            # 6. Фильтрация пользователей с данными в буфере
+            if all(v <= 0 for v in remaining_buffer.values()):
+                break
+            #фильтрация пользователей с данными в буфере
             users_with_data = [u for u in active_users if remaining_buffer[u['UE_ID']] > 0]
             if not users_with_data:
-                break  # Все пользователи обработаны
+                break
                 
             # 7. Сортировка по PF-метрике для выбора лучшего
             users_with_data.sort(key=lambda u: u['PF_metric'], reverse=True)
@@ -497,26 +512,37 @@ class ProportionalFairScheduler(SchedulerInterface):
                 remaining_buffer[ue_id] -= min(remaining_buffer[ue_id], rbg_capacity)
         
         # 10. Обработка буфера и статистики
-        for user in users:  # Не только active_users!
+        for user in users:
             ue = user['ue']
+            ue_id = user['UE_ID']
+            bs_buffer = self.lte_grid.bs.ue_buffers.get(ue_id)
+            if not bs_buffer:
+                continue
+            
             allocated_rb = len(allocation.get(user['UE_ID'], [])) * 2
             bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
             max_bytes = (allocated_rb * bits_per_rb) // 8
+            packets, total = bs_buffer.GET_PACKETS(
+                ue_id=ue_id,
+                max_bytes=max_bytes,
+                bits_per_rb=bits_per_rb,
+                current_time=tti
+            )
             
-            # Если пользователь неактивен, передаём 0 байт
-            packets, total = ue.buffer.GET_PACKETS(max_bytes, bits_per_rb, current_time=tti)
-            ue.UPD_THROUGHPUT(total * 8, 1)
+            # Обновление метрик DL
+            ue.UPD_DL_THROUGHPUT(total * 8, 1)
 
             average_throughput_past = ue.average_throughput
-            ue.average_throughput = (1 - 0.2) * average_throughput_past + 0.2 * ue.current_throughput 
+            ue.average_throughput = (1 - 0.2) * average_throughput_past + 0.2 * ue.current_dl_throughput 
 
         # 11. Формирование bitmap по Resource Allocation 0
         bitmap = {user['UE_ID']: self.lte_grid.GENERATE_BITMAP(tti, user['UE_ID']) for user in active_users}
         
         return {
             'allocation': allocation,
-            'statistics': self.amc.calculate_throughput(allocation, users),
-            'bitmap': bitmap
+            'statistics': self.amc.calculate_throughput(allocation, users, tti, self.lte_grid.bs),
+            'bitmap': bitmap#,
+            #'dl_throughput': {user['UE_ID']: user['ue'].current_dl_throughput for user in users}
         }
     
 class ProportionalFairScheduler_v2(SchedulerInterface):

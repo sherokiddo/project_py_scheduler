@@ -361,7 +361,8 @@ class BaseStation:
     }
     
     def __init__(self, x: float = 0.0, y: float = 0.0, height: float = 35.0,
-                 frequency_GHz: float = 1.8, bandwidth: float = 10):
+                 frequency_GHz: float = 1.8, bandwidth: float = 10,
+                 global_max: int = 1048576, per_ue_max: int = 262144):
         """
         Инициализация базовой станции.
         
@@ -385,12 +386,14 @@ class BaseStation:
         self.antenna_gain = 15 # Коэффициент усиления антенны (дБи)
 
         # Апдейт по буферу
+        self.global_max = global_max
+        self.per_ue_max = per_ue_max
         self.ue_buffers = defaultdict(Buffer)
         self.ue_traffic_models = {}  # {ue_id: traffic_model}
 
     def REG_UE(self, ue: UserEquipment):
         """Регистрация UE с переносом модели трафика"""
-        self.ue_buffers[ue.UE_ID] = Buffer()
+        self.ue_buffers[ue.UE_ID] = Buffer(global_max=self.global_max, per_ue_max=self.per_ue_max)
         self.ue_traffic_models[ue.UE_ID] = ue.traffic_model
         
     def SET_TRAFFIC_MODEL(self, ue: UserEquipment, model):
