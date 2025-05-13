@@ -688,8 +688,7 @@ def test_scheduler_with_metrics():
         fairness_per_frame.append(fairness)
         
     # Расчет Jain's Fairness Index для всей симуляции
-    throughputs = np.array(list(average_throughput_per_user.values()))
-    fairness_index = (np.sum(throughputs) ** 2) / (len(throughputs) * np.sum(throughputs ** 2))
+    fairness_index = np.mean(fairness_per_frame)
 
     # Расчёт спектральной эффективности соты
     spectral_efficiency_cell = np.array(frame_throughput) / bandwidth

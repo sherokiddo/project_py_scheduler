@@ -1,7 +1,9 @@
 import os
 import json
 import math
+import numpy as np
 import matplotlib.pyplot as plt
+from statsmodels.distributions.empirical_distribution import ECDF
 
 def plot_scheduler_metrics_from_file(json_file='metrics_results.json'):
     if not os.path.exists(json_file):
@@ -17,13 +19,14 @@ def plot_scheduler_metrics_from_file(json_file='metrics_results.json'):
 
     for scheduler, metrics in metrics_data.items():
         tti_range = range(0, metrics["sim_duration"], 10)
+        plt.rcParams.update({'font.size': 12})
 
         # ===== ГРАФИКИ ПРОПУСКНОЙ СПОСОБНОСТИ =====
         # График пропускной способности соты
         plt.figure(figsize=(10, 6))
         plt.plot(tti_range, metrics["cell_throughput"])
         plt.title(f"Пропускная способность соты при планировщике {scheduler}")
-        plt.xlabel("TTI")
+        plt.xlabel("Время (мс)")
         plt.ylabel("Пропускная способность (Мбит/с)")
         plt.grid(True)
         plt.tight_layout()
@@ -41,7 +44,7 @@ def plot_scheduler_metrics_from_file(json_file='metrics_results.json'):
             plt.subplot(rows, cols, idx + 1)
             plt.plot(tti_range, user_throughput[uid], color='red')
             plt.title(f"Пропускная способность UE{uid}")
-            plt.xlabel("TTI")
+            plt.xlabel("Время (мс)")
             plt.ylabel("Пропускная способность (Мбит/с)")
             plt.grid(True)
             plt.tight_layout()
@@ -87,7 +90,7 @@ def plot_scheduler_metrics_from_file(json_file='metrics_results.json'):
         plt.figure(figsize=(10, 6))
         plt.plot(tti_range, metrics["jain_index_per_frame"], color='green')
         plt.title(f"Индекс справедливости Джайна во времени при планировщике {scheduler}")
-        plt.xlabel("TTI")
+        plt.xlabel("Время (мс)")
         plt.ylabel("Справедливость")
         plt.ylim(0, 1.05)
         plt.grid(True)
@@ -101,22 +104,47 @@ def plot_scheduler_metrics_from_file(json_file='metrics_results.json'):
         "BestCQIScheduler": "red"
     }    
     
+    scheduler_labels = {
+        "RoundRobinScheduler": "RR",
+        "ProportionalFairScheduler": "PF",
+        "BestCQIScheduler": "BCQI"
+    }
+    
+    # График сравнения пропускной способности для всех планировщиков 
+    plt.figure(figsize=(10, 6))
+    for scheduler, metrics in metrics_data.items():
+        tti_range = range(0, metrics["sim_duration"], 10)
+        color = scheduler_colors.get(scheduler, "gray")
+
+        plt.plot(tti_range, metrics["cell_throughput"],
+                 label=scheduler_labels.get(scheduler, scheduler),
+                 color=color)
+
+    plt.title("Сравнение пропускной способности соты для разных планировщиков")
+    plt.xlabel("Время (мс)")
+    plt.ylabel("Пропускная способность (Мбит/с)")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+    
     # График сравнения справедливости всех планировщиков
     schedulers = list(metrics_data.keys())
     fairness_values = [metrics_data[s]["jain_index_overall"] for s in schedulers]
 
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(6, 6))
     bar_colors = [scheduler_colors.get(s, "gray") for s in schedulers]
-    bars = plt.bar(schedulers,
+    x_labels = [scheduler_labels.get(s, s) for s in schedulers]
+    bars = plt.bar(x_labels,
                    fairness_values,
                    color=bar_colors,
                    edgecolor='black',
-                   width=0.4,
+                   width=0.7,
                    zorder=3)
 
     for bar, val in zip(bars, fairness_values):
         plt.text(bar.get_x() + bar.get_width() / 2, val + 0.01, f"{val:.4f}",
-                 ha='center', va='bottom', fontsize=10)
+                 ha='center', va='bottom', fontsize=12)
 
     plt.title("Индекс справедливости Джайна для разных планировщиков")
     plt.ylabel("Справедливость")
@@ -133,15 +161,32 @@ def plot_scheduler_metrics_from_file(json_file='metrics_results.json'):
         color = scheduler_colors.get(scheduler, "gray")
 
         plt.plot(tti_range, metrics["spectral_efficiency"],
-                 label=scheduler,
-                 color=color,
-                 linewidth=2)
+                 label=scheduler_labels.get(scheduler, scheduler),
+                 color=color)
 
     plt.title("Сравнение спектральной эффективности разных планировщиков")
-    plt.xlabel("TTI")
+    plt.xlabel("Время (мс)")
     plt.ylabel("Спектральная эффективность (бит/с/Гц)")
     plt.grid(True)
-    plt.legend(title="Планировщик")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    # График CDF для спектральной эффективности
+    plt.figure(figsize=(6, 6))
+    
+    for scheduler, metrics in metrics_data.items():
+        spectral_eff = np.array(metrics["spectral_efficiency"])
+        ecdf = ECDF(spectral_eff)
+        color = scheduler_colors.get(scheduler, "gray")
+
+        plt.step(ecdf.x, ecdf.y, where='post', color=color, label=scheduler_labels.get(scheduler, scheduler))
+        
+    plt.title("CDF спектральной эффективности")
+    plt.xlabel("Спектральная эффективность (бит/с/Гц)")
+    plt.ylabel("CDF")
+    plt.grid(True)
+    plt.legend(loc='upper left')
     plt.tight_layout()
     plt.show()
     
