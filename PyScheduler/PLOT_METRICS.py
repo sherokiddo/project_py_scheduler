@@ -18,14 +18,18 @@ def plot_scheduler_metrics_from_file(json_file='metrics_results.json'):
         return
 
     for scheduler, metrics in metrics_data.items():
+        
         tti_range = range(0, metrics["sim_duration"], 10)
         plt.rcParams.update({'font.size': 12})
+        
+        SHOW_TITLES = False
 
         # ===== ГРАФИКИ ПРОПУСКНОЙ СПОСОБНОСТИ =====
         # График пропускной способности соты
         plt.figure(figsize=(10, 6))
         plt.plot(tti_range, metrics["cell_throughput"])
-        plt.title(f"Пропускная способность соты при планировщике {scheduler}")
+        if SHOW_TITLES:
+            plt.title(f"Пропускная способность соты при планировщике {scheduler}")
         plt.xlabel("Время (мс)")
         plt.ylabel("Пропускная способность (Мбит/с)")
         plt.grid(True)
@@ -48,22 +52,9 @@ def plot_scheduler_metrics_from_file(json_file='metrics_results.json'):
             plt.ylabel("Пропускная способность (Мбит/с)")
             plt.grid(True)
             plt.tight_layout()
-        plt.suptitle(f"Пропускная способность каждого пользователя при планировщике {scheduler}", fontsize=14)
+        if SHOW_TITLES:    
+            plt.suptitle(f"Пропускная способность каждого пользователя при планировщике {scheduler}", fontsize=14)
         plt.subplots_adjust(top=0.92)
-        plt.show()
-
-        # Boxplot'ы для пропускной способности пользователей
-        user_throughput = metrics["user_throughput"]
-        user_ids = sorted(user_throughput.keys(), key=int)
-        user_data = [user_throughput[uid] for uid in user_ids]
-
-        plt.figure(figsize=(10, 6))
-        plt.boxplot(user_data, labels=[f"UE{uid}" for uid in user_ids],
-                    patch_artist=True, medianprops=dict(color='orange', linewidth=2))
-        plt.title(f"Boxplot пропускной способности пользователей при планировщике {scheduler}")
-        plt.ylabel("Пропускная способность (Мбит/с)")
-        plt.grid(True)
-        plt.tight_layout()
         plt.show()
 
         # Столбчатый график средней пропускной способности для каждого пользователя
@@ -78,8 +69,8 @@ def plot_scheduler_metrics_from_file(json_file='metrics_results.json'):
             height = bar.get_height()
             plt.text(bar.get_x() + bar.get_width() / 2, height + 0.01, f"{height:.2f}",
                      ha='center', va='bottom', fontsize=10)
-            
-        plt.title(f"Средняя пропускная способность каждого пользователя при планировщике {scheduler}")
+        if SHOW_TITLES:
+            plt.title(f"Средняя пропускная способность каждого пользователя при планировщике {scheduler}")
         plt.ylabel("Пропускная способность (Мбит/с)")
         plt.grid(True, zorder=0)
         plt.tight_layout()
@@ -89,7 +80,8 @@ def plot_scheduler_metrics_from_file(json_file='metrics_results.json'):
         # График индекса справедливости во времени
         plt.figure(figsize=(10, 6))
         plt.plot(tti_range, metrics["jain_index_per_frame"], color='green')
-        plt.title(f"Индекс справедливости Джайна во времени при планировщике {scheduler}")
+        if SHOW_TITLES:
+            plt.title(f"Индекс справедливости Джайна во времени при планировщике {scheduler}")
         plt.xlabel("Время (мс)")
         plt.ylabel("Справедливость")
         plt.ylim(0, 1.05)
@@ -119,8 +111,9 @@ def plot_scheduler_metrics_from_file(json_file='metrics_results.json'):
         plt.plot(tti_range, metrics["cell_throughput"],
                  label=scheduler_labels.get(scheduler, scheduler),
                  color=color)
-
-    plt.title("Сравнение пропускной способности соты для разных планировщиков")
+    
+    if SHOW_TITLES:
+        plt.title("Сравнение пропускной способности соты для разных планировщиков")
     plt.xlabel("Время (мс)")
     plt.ylabel("Пропускная способность (Мбит/с)")
     plt.grid(True)
@@ -146,7 +139,8 @@ def plot_scheduler_metrics_from_file(json_file='metrics_results.json'):
         plt.text(bar.get_x() + bar.get_width() / 2, val + 0.01, f"{val:.4f}",
                  ha='center', va='bottom', fontsize=12)
 
-    plt.title("Индекс справедливости Джайна для разных планировщиков")
+    if SHOW_TITLES:
+        plt.title("Индекс справедливости Джайна для разных планировщиков")
     plt.ylabel("Справедливость")
     plt.ylim(0, 1.05)
     plt.grid(axis='y', zorder=0)
@@ -164,7 +158,8 @@ def plot_scheduler_metrics_from_file(json_file='metrics_results.json'):
                  label=scheduler_labels.get(scheduler, scheduler),
                  color=color)
 
-    plt.title("Сравнение спектральной эффективности разных планировщиков")
+    if SHOW_TITLES:
+        plt.title("Сравнение спектральной эффективности разных планировщиков")
     plt.xlabel("Время (мс)")
     plt.ylabel("Спектральная эффективность (бит/с/Гц)")
     plt.grid(True)
@@ -181,14 +176,49 @@ def plot_scheduler_metrics_from_file(json_file='metrics_results.json'):
         color = scheduler_colors.get(scheduler, "gray")
 
         plt.step(ecdf.x, ecdf.y, where='post', color=color, label=scheduler_labels.get(scheduler, scheduler))
-        
-    plt.title("CDF спектральной эффективности")
+    
+    if SHOW_TITLES:
+        plt.title("CDF спектральной эффективности")
     plt.xlabel("Спектральная эффективность (бит/с/Гц)")
     plt.ylabel("CDF")
     plt.grid(True)
     plt.legend(loc='upper left')
     plt.tight_layout()
     plt.show()
+    
+    plt.figure(figsize=(10, 6))
+    boxplot_data = []
+    xtick_labels = []
+    colors = []
+    
+    # График сравнения Boxplot'ов всех планировщиков
+    for scheduler, metrics in metrics_data.items():
+        user_throughput = metrics["user_throughput"]
+        scheduler_short = scheduler_labels.get(scheduler, scheduler)
+        color = scheduler_colors.get(scheduler, "gray")
+    
+        for uid in sorted(user_throughput.keys(), key=int):
+            boxplot_data.append(user_throughput[uid])
+            xtick_labels.append(f"UE{uid} ({scheduler_short})")
+            colors.append(color)
+    
+    bp = plt.boxplot(boxplot_data,
+                     patch_artist=True,
+                     labels=xtick_labels,
+                     widths=0.3,
+                     medianprops=dict(color='orange', linewidth=2))
+    
+    for patch, color in zip(bp['boxes'], colors):
+        patch.set_facecolor(color)
+    
+    plt.xticks(rotation=30)
+    plt.ylabel("Пропускная способность (Мбит/с)")
+    if SHOW_TITLES:
+        plt.title("Boxplot пропускной способности пользователей (все планировщики)")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
     
 if __name__ == "__main__":
     plot_scheduler_metrics_from_file()
