@@ -219,6 +219,85 @@ def plot_scheduler_metrics_from_file(json_file='metrics_results.json'):
     plt.tight_layout()
     plt.show()
 
+def plot_scheduler_efficiency_from_file(filename='scheduler_efficiency.json'):
+    with open(filename, 'r') as f:
+        all_results = json.load(f)
+
+    for scheduler_name, experiments in all_results.items():
+        
+        plt.rcParams.update({'font.size': 12})
+        
+        # График среднего затраченного времени на планирование ресурсов в одном TTI
+        x_users = []
+        y_mean_times = []
+        
+        for experiment in experiments:
+            num_users = experiment["num_users"]
+            mean_times = experiment["mean_elapsed_time_array"]
+            if not mean_times:
+                continue
+            mean_time = np.mean(mean_times)
+        
+            x_users.append(num_users)
+            y_mean_times.append(mean_time)
+        
+        sorted_pairs = sorted(zip(x_users, y_mean_times))
+        x_users_sorted, y_mean_times_sorted = zip(*sorted_pairs)
+        
+        plt.figure(figsize=(10, 6))
+        plt.title(f"Среднее время распределения ресурсов в одном TTI\nПланировщик: {scheduler_name}")
+        plt.xlabel("Кол-во пользователей")
+        plt.ylabel("Среднее время (мс)")
+        plt.plot(x_users_sorted, y_mean_times_sorted, marker='o', linestyle='-')
+        plt.xticks(ticks=range(min(x_users_sorted), max(x_users_sorted) + 1))
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+        
+        # График CDF времени распределения ресурсов в одном TTI
+        plt.figure(figsize=(10, 6))
+        plt.title(f"CDF времени распределения ресурсов в одном TTI\nПланировщик: {scheduler_name}")
+        plt.xlabel("Время (мс)")
+        plt.ylabel("CDF")
+
+        for experiment in experiments:
+            num_users = experiment["num_users"]
+            elapsed_time_array = experiment["elapsed_time_array"]
+
+            if not elapsed_time_array:
+                continue
+
+            ecdf = ECDF(elapsed_time_array)
+            plt.step(ecdf.x, ecdf.y, label=f"{num_users} UEs")
+
+        plt.legend(title="Кол-во пользователей")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+
+        # График Boxplot’ов времени распределения ресурсов в одном TTI
+        plt.figure(figsize=(10, 6))
+        plt.title(f"Boxplot времени распределения ресурсов в одном TTI\nПланировщик: {scheduler_name}")
+        plt.xlabel("Кол-во пользователей")
+        plt.ylabel("Время (мс)")
+
+        # Сортировка по возрастанию пользователей для читаемости
+        experiments_sorted = sorted(experiments, key=lambda x: x["num_users"])
+        boxplot_data = [exp["elapsed_time_array"] for exp in experiments_sorted]
+        labels = [f"{exp['num_users']} UEs" for exp in experiments_sorted]
+
+        plt.boxplot(boxplot_data, 
+                    labels=labels, 
+                    widths=0.3,
+                    patch_artist=True,
+                    boxprops=dict(facecolor='blue'),
+                    medianprops=dict(color='orange', linewidth=2))
+
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+
     
 if __name__ == "__main__":
     plot_scheduler_metrics_from_file()
+    #plot_scheduler_efficiency_from_file()

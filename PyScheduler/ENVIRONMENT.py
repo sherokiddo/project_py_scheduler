@@ -23,6 +23,8 @@
 """
 
 import time
+import psutil
+import yappi
 from typing import Dict, List, Optional, Union
 import numpy as np
 import math
@@ -177,6 +179,48 @@ class LTEGridVisualizer:
                 fontsize=9, fontweight='bold',
                 color='white'
             )
+
+def save_scheduler_metrics(scheduler_name, metrics, filename='metrics_results.json'):
+    if os.path.exists(filename):
+        with open(filename, 'r') as f:
+            all_metrics = json.load(f)
+    else:
+        all_metrics = {}
+
+    all_metrics[scheduler_name] = metrics
+
+    with open(filename, 'w') as f:
+        json.dump(all_metrics, f, indent=4)
+
+def save_scheduler_efficiency(scheduler_name, num_users, mean_elapsed_time_array, elapsed_time_array, filename='scheduler_efficiency.json'):
+    
+    new_entry = {
+        "num_users": num_users,
+        "mean_elapsed_time_array": mean_elapsed_time_array,
+        "elapsed_time_array": elapsed_time_array
+    }
+
+    if os.path.exists(filename):
+        with open(filename, 'r') as f:
+            all_results = json.load(f)
+    else:
+        all_results = {}
+
+    if scheduler_name not in all_results:
+        all_results[scheduler_name] = []
+
+    updated = False
+    for i, entry in enumerate(all_results[scheduler_name]):
+        if entry["num_users"] == num_users:
+            all_results[scheduler_name][i] = new_entry
+            updated = True
+            break
+
+    if not updated:
+        all_results[scheduler_name].append(new_entry)
+
+    with open(filename, 'w') as f:
+        json.dump(all_results, f, indent=4)
 
 def test_visualize_lte_timeline():
     """Тестовая функция для проверки корректной визуализации слотов по временной оси"""
@@ -575,6 +619,7 @@ def test_scheduler_grid():
         print(f"{freq_idx:8} | {slot1_rbs[freq_idx] or 'Свободен'}")
     print("[OK] Тест завершен с визуализацией")
 
+
 def test_scheduler_with_metrics():
     
     sim_duration = 5000 # Время симуляции (в мс)
@@ -644,7 +689,7 @@ def test_scheduler_with_metrics():
             print(f"CQI: UE1={ue1.cqi}, UE2={ue2.cqi}, UE3={ue3.cqi}")
             print(f"Buffer Size: UE1={bs.ue_buffers[1].sizes[1]}B, UE2={bs.ue_buffers[2].sizes[2]}B, UE3={bs.ue_buffers[3].sizes[3]}B")
             
-            # Запуск планировщика
+            # Запуск планировщика  
             scheduler.schedule(tti, users)
             
             total_throughput = 0
@@ -658,9 +703,9 @@ def test_scheduler_with_metrics():
     
             users_throughput[1].append(ue1.current_dl_throughput / 1e6)
             users_throughput[2].append(ue2.current_dl_throughput / 1e6)
-            users_throughput[3].append(ue3.current_dl_throughput / 1e6)
-                
-            
+            users_throughput[3].append(ue3.current_dl_throughput / 1e6)       
+
+    
     # Подготовка данных для построения графиков
     frame_throughput = [
     np.mean(total_throughput_tti[i:i+10]) 
@@ -695,7 +740,7 @@ def test_scheduler_with_metrics():
     
     print(f"\nСредняя пропускная способность соты за симуляцию: {np.mean(total_throughput_tti):.4f} Мбит/с")
     print(f"Индекс справедливости Джайна: {fairness_index:.4f}")
-    print(f"Средняя спектральная эффективность соты за симуляцию: {np.mean(spectral_efficiency_cell):.4f} бит/с/Гц\n")
+    print(f"Средняя спектральная эффективность соты за симуляцию: {np.mean(spectral_efficiency_cell):.4f} бит/с/Гц")
     
     metrics = {
         "sim_duration": sim_duration,
@@ -721,23 +766,125 @@ def test_scheduler_with_metrics():
     plt.legend()
     plt.grid(True)
     plt.show()
+    
 
-def save_scheduler_metrics(scheduler_name, metrics, filename='metrics_results.json'):
-    if os.path.exists(filename):
-        with open(filename, 'r') as f:
-            all_metrics = json.load(f)
-    else:
-        all_metrics = {}
+def test_scheduler_efficiency_simulation():
+    
+    sim_duration = 5000 # Время симуляции (в мс)
+    update_interval = 5 # Интервал обновления параметров пользователя (в мс)
+    num_frames = int(np.ceil(sim_duration / 10)) # Кол-во кадров (для ресурсной сетки)
+    bandwidth = 10 # Ширина полосы (в МГц)
+    inf = math.inf 
 
-    all_metrics[scheduler_name] = metrics
+    # Настройка базовой станции и пользователей
+    bs = BaseStation(x=1000, y=1000, height=25.0, bandwidth=bandwidth, global_max=inf, per_ue_max=inf)
+    ue_collection = UECollection()
+    ue1 = UserEquipment(UE_ID=1, x=800, y=800, ue_class="pedestrian")
+    ue2 = UserEquipment(UE_ID=2, x=500, y=500, ue_class="car")
+    ue3 = UserEquipment(UE_ID=3, x=100, y=100, ue_class="car")
+    ue4 = UserEquipment(UE_ID=4, x=600, y=600, ue_class="car")
+    ue5 = UserEquipment(UE_ID=5, x=200, y=200, ue_class="car")
+    
+    ue1.SET_MOBILITY_MODEL(RandomWaypointModel(x_min=0, x_max=2000, y_min=0, y_max=2000, pause_time=10))
+    ue1.SET_CH_MODEL(UMiModel(bs))
+    
+    ue2.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=2000, y_min=0, y_max=2000))
+    ue2.SET_CH_MODEL(UMiModel(bs))
+    
+    ue3.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=2000, y_min=0, y_max=2000))
+    ue3.SET_CH_MODEL(UMiModel(bs))
+    
+    ue4.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=2000, y_min=0, y_max=2000))
+    ue4.SET_CH_MODEL(UMiModel(bs))
+    
+    ue5.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=2000, y_min=0, y_max=2000))
+    ue5.SET_CH_MODEL(UMiModel(bs))
+    
+    bs.REG_UE(ue1)
+    bs.REG_UE(ue2)
+    bs.REG_UE(ue3)
+    bs.REG_UE(ue4)
+    bs.REG_UE(ue5)
 
-    with open(filename, 'w') as f:
-        json.dump(all_metrics, f, indent=4)
+    ue_collection.ADD_USER(ue1)
+    ue_collection.ADD_USER(ue2)
+    ue_collection.ADD_USER(ue3)
+    ue_collection.ADD_USER(ue4)
+    ue_collection.ADD_USER(ue5)
+ 
+    # Имитация Full Buffer 
+    bs.ue_buffers[1].ADD_PACKET(Packet(size=inf, ue_id=1, creation_time=0), current_time=0)
+    bs.ue_buffers[2].ADD_PACKET(Packet(size=inf, ue_id=2, creation_time=0), current_time=0)
+    bs.ue_buffers[3].ADD_PACKET(Packet(size=inf, ue_id=3, creation_time=0), current_time=0)
+    bs.ue_buffers[4].ADD_PACKET(Packet(size=inf, ue_id=4, creation_time=0), current_time=0)
+    bs.ue_buffers[5].ADD_PACKET(Packet(size=inf, ue_id=5, creation_time=0), current_time=0)
+    
+    # Настройка ресурсной сетки и планировщика
+    lte_grid = RES_GRID_LTE(bandwidth=bandwidth, num_frames=num_frames)
+    scheduler = BestCQIScheduler(lte_grid, bs)
+    
+    elapsed_time_tti = []
+    
+    # Основной цикл симуляции (обновление различных параметров у пользователей)
+    for current_time in range(update_interval, sim_duration + 1, update_interval):
+        
+        # Обновление состояния пользователей
+        ue_collection.UPDATE_ALL_USERS(time_ms=current_time, 
+                                       update_interval=update_interval, 
+                                       bs_position=bs.position, 
+                                       bs_height=bs.height)
+        
+        # Цикл для планирования ресурсов (по TTI)
+        for tti in range(current_time - update_interval, current_time): 
+            
+            # Подготовка данных для планировщика     
+            users = ue_collection.GET_USERS_FOR_SCHEDULER()
+            
+            # Вывод параметров для каждого TTI
+            print(f"\n[TTI {tti}]")
+            print(f"CQI: UE1={ue1.cqi}, UE2={ue2.cqi}, UE3={ue3.cqi}")
+            print(f"Buffer Size: UE1={bs.ue_buffers[1].sizes[1]}B, UE2={bs.ue_buffers[2].sizes[2]}B, UE3={bs.ue_buffers[3].sizes[3]}B")
+            
+            start_time = time.perf_counter()
+            
+            # Запуск планировщика  
+            scheduler.schedule(tti, users)
+            
+            end_time = time.perf_counter()
+            
+            elapsed_time_ms = (end_time - start_time) * 1000
+            elapsed_time_tti.append(elapsed_time_ms)
+            print(f"Resource allocation time: {elapsed_time_ms:.3f} ms")
+        
+    return scheduler.__class__.__name__, len(ue_collection.users), np.mean(elapsed_time_tti), elapsed_time_tti
+
+def test_scheduler_efficiency():
+    
+    num_iterations = 10
+    
+    mean_elapsed_time_array = []
+    elapsed_time_array = []
+    
+    for i in range(num_iterations):
+        scheduler_name, num_users, mean_elapsed_time, elapsed_time = test_scheduler_efficiency_simulation()
+        mean_elapsed_time_array.append(mean_elapsed_time)
+        elapsed_time_array.extend(elapsed_time)
+        
+    print(f"\nСреднее затраченное время распределения ресурсов в TTI: {np.mean(mean_elapsed_time_array):.4f} мс\n")
+    
+    save_scheduler_efficiency(
+        scheduler_name=scheduler_name,
+        num_users=num_users,
+        mean_elapsed_time_array=mean_elapsed_time_array,
+        elapsed_time_array=elapsed_time_array
+    )
 
 if __name__ == "__main__":
     #test_scheduler_with_buffer()
     #test_visualize_lte_timeline()
     #test_scheduler_grid()
     test_scheduler_with_metrics()
+    #test_scheduler_efficiency()
+    
     print("Все тесты успешно пройдены!")
 
