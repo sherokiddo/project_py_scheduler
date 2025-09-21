@@ -14,14 +14,229 @@
 #------------------------------------------------------------------------------
 """
 import numpy as np
+import GLOBALS
 from BS_MODULE import BaseStation
 
-class RMaModel:
+class ChannelModel:
+    """
+    """
+    
+    SHADOW_FADING_INFO = {}
+    CHANNEL_COND_INFO = {}
+    O2I_INFO = {}
+    
+    def __init__(self, bs: BaseStation):
+        self.bs = bs
+        
+    def calculate_path_loss(self, UE_ID: int, displacement: float, d_2D: float, 
+                            d_2D_in: float, d_3D: float, UE_height: float, 
+                            ue_class: str) -> float:
+        """
+        Расчет затухания сигнала с учетом LOS/NLOS условий.
+    
+        Args:
+            d_2D: 2D расстояние между БС и UE в метрах
+            d_2D_in: Внутреннее расстояние в здании в метрах
+            d_3D: 3D расстояние между БС и UE в метрах
+            UE_height: Высота пользовательского оборудования в метрах
+            ue_class: Класс UE
+    
+        Returns:
+            PL: Затухание сигнала в дБ
+        """
+        channel_condition = self.calculate_channel_condition(UE_ID, 
+                                                             self.cond_update_period, 
+                                                             d_2D)
+        
+        if channel_condition == "LOS":
+            PL = self._calculate_los_path_loss(UE_ID, displacement, 
+                                               channel_condition, d_2D, d_3D, 
+                                               UE_height)
+        elif channel_condition == "NLOS":
+            PL = self._calculate_nlos_path_loss(UE_ID, displacement, 
+                                           channel_condition, d_2D, d_3D, 
+                                           UE_height)
+            
+        if ue_class == "indoor":
+            o2i_penetration_loss = self.calculate_o2i_building_loss(UE_ID, 
+                                                                    channel_condition,
+                                                                    self.o2i_model, 
+                                                                    d_2D_in, 
+                                                                    self.bs.frequency_GHz)
+            PL = PL + o2i_penetration_loss
+            
+        elif ue_class == "car":
+            o2i_penetration_loss = self.calculate_o2i_car_loss(UE_ID)
+            PL = PL + o2i_penetration_loss
+            
+        return PL
+    
+    def calculate_channel_condition(self, UE_ID: int, cond_update_period: float, 
+                                    d_2D: float) -> str:
+        """
+        """
+        channel_condition = None
+        not_found = False
+        update = False
+        
+        if UE_ID in ChannelModel.CHANNEL_COND_INFO:
+            ue_cond_info = ChannelModel.CHANNEL_COND_INFO[UE_ID]
+            channel_condition = ue_cond_info["cond"]
+            
+            if (cond_update_period != 0.0 and GLOBALS.CURRENT_TIME - 
+                ue_cond_info["updated_time"] > cond_update_period):
+                update = True  
+                
+        else:
+            not_found = True
+            ChannelModel.CHANNEL_COND_INFO[UE_ID] = {"cond": None,
+                                                     "updated_time": None}
+            ue_cond_info = ChannelModel.CHANNEL_COND_INFO[UE_ID]
+            
+        if not_found or update:
+            los_probability = self.calculate_los_probability(d_2D)
+            channel_condition = ("LOS" if np.random.random() <= los_probability 
+                                 else "NLOS")
+            
+            ue_cond_info["cond"] = channel_condition
+            ue_cond_info["updated_time"] = GLOBALS.CURRENT_TIME
+            
+        return channel_condition
+    
+    def calculate_shadow_fading(self, UE_ID: int, displacement: float, 
+                                channel_condition: str, sigma_SF: float,
+                                correlation_dist: float) -> float:
+        """
+        """
+        shadow_fading = None
+        not_found = False
+        new_condition = False
+        
+        if UE_ID in ChannelModel.SHADOW_FADING_INFO:
+            ue_sf_info = ChannelModel.SHADOW_FADING_INFO[UE_ID]
+            new_condition = ue_sf_info["cond"] != channel_condition
+        else:
+            not_found = True
+            ChannelModel.SHADOW_FADING_INFO[UE_ID] = {"SF_value": None,
+                                                      "cond": None}
+            ue_sf_info = ChannelModel.SHADOW_FADING_INFO[UE_ID]
+            
+        if not_found or new_condition:
+            shadow_fading = np.random.normal(0, sigma_SF)
+        else:
+            R = np.exp(-1 * displacement / correlation_dist)
+            shadow_fading = (R * ue_sf_info["SF_value"] + np.sqrt(1 - R * R) * 
+                             np.random.normal(0, sigma_SF))
+            
+        ue_sf_info["SF_value"] = shadow_fading
+        ue_sf_info["cond"] = channel_condition
+        
+        return shadow_fading
+    
+    def calculate_o2i_building_loss(self, UE_ID: int, channel_condition: str, 
+                                    model_type: str, d_2D_in: float, 
+                                    fc_GHz: float) -> float:
+        """
+        """
+        o2i_loss = None
+        not_found = False
+        new_condition = False
+        
+        if UE_ID in ChannelModel.O2I_INFO:
+            ue_o2i_info = ChannelModel.O2I_INFO[UE_ID]
+            new_condition = ue_o2i_info["cond"] != channel_condition
+        else:
+            not_found = True
+            ChannelModel.O2I_INFO[UE_ID] = {"o2i_loss": None,
+                                            "cond": None}
+            ue_o2i_info = ChannelModel.O2I_INFO[UE_ID]
+            
+        if not_found or new_condition:
+            L_concrete = 5 + 4 * fc_GHz
+            
+            if model_type == "low":
+                L_glass = 2 + 0.2 * fc_GHz
+                PL_tw = 5 - 10 * np.log10(0.3 * 10**(-L_glass / 10) + 0.7 * 10**(-L_concrete / 10))
+                sigma_p = 4.4
+                
+            elif model_type == "high":
+                L_IRR_glass = 23 + 0.3 * fc_GHz
+                PL_tw = 5 - 10 * np.log10(0.7 * 10**(-L_IRR_glass / 10) + 0.3 * 10**(-L_concrete/10))
+                sigma_p = 6.5
+                
+            PL_in = 0.5 * d_2D_in
+            random_loss = np.random.normal(0, sigma_p)
+            o2i_loss = PL_tw + PL_in + random_loss
+            
+        else:
+            o2i_loss = ue_o2i_info["o2i_loss"]
+            
+        ue_o2i_info["o2i_loss"] = o2i_loss
+        ue_o2i_info["cond"] = channel_condition
+        
+        return o2i_loss
+    
+    def calculate_o2i_car_loss(self, UE_ID: int):
+        """
+        """
+        o2i_loss = None
+        not_found = False
+        
+        if UE_ID in ChannelModel.O2I_INFO:
+            ue_o2i_info = ChannelModel.O2I_INFO[UE_ID]
+        else:
+            not_found = True
+            ChannelModel.O2I_INFO[UE_ID] = {"o2i_loss": None,
+                                            "cond": None}
+            ue_o2i_info = ChannelModel.O2I_INFO[UE_ID]
+            
+        if not_found:
+            o2i_loss = np.random.normal(9, 5)
+        else:
+            o2i_loss = ue_o2i_info["o2i_loss"]
+            
+        ue_o2i_info["o2i_loss"] = o2i_loss
+        
+        return o2i_loss
+        
+    def calculate_SINR(self, UE_ID: int, displacement: float, d_2D: float, 
+                       d_2D_in: float, d_3D: float, UE_height: float, 
+                       ue_class: str) -> float:
+        """
+        Расчет отношения сигнал-интерференция-шум (SINR).
+    
+        Args:
+            d_2D: 2D расстояние между БС и UE в метрах
+            d_2D_in: Внутреннее расстояние в здании в метрах
+            d_3D: 3D расстояние между БС и UE в метрах
+            UE_height: Высота пользовательского оборудования в метрах
+            ue_class: Класс UE
+    
+        Returns:
+            Значение SINR в дБ
+        """
+        path_loss = self.calculate_path_loss(UE_ID, displacement, d_2D, d_2D_in, 
+                                             d_3D, UE_height, ue_class)
+        cable_loss = 2
+        interference_margin = 2
+        
+        P_signal = self.bs.tx_power + self.bs.antenna_gain - cable_loss - path_loss - interference_margin
+            
+        P_interference = -95
+        P_noise = -174 + 10 * np.log10(self.bs.bandwidth * 1e6)
+        
+        SINR = P_signal - 10 * np.log10(10 ** (P_interference / 10) + 10 ** (P_noise / 10))
+        
+        return SINR
+
+
+class RMaModel(ChannelModel):
     """
     Модель радиоканала для сельской местности (Rural Macro - RMa).
     Реализует расчеты для сценариев макросотового покрытия в сельской местности.
     """
-    def __init__(self, bs: BaseStation, W: float = 20.0, h: float = 5.0):
+    def __init__(self, bs: BaseStation, cond_update_period: float = 0.0,
+                 W: float = 20.0, h: float = 5.0):
         """
         Инициализация модели RMa.
 
@@ -30,16 +245,23 @@ class RMaModel:
             W: Средняя ширина улиц в метрах (по умолчанию 20.0)
             h: Средняя высота зданий в метрах (по умолчанию 5.0)
         """
-        self.bs = bs
+        super().__init__(bs)
         self.W = W
         self.h = h
         
         self.bs.tx_power = self.bs.MACROCELL_TX_POWER[self.bs.bandwidth]
         self.bs.height = 35.0
         
+        self.cond_update_period = cond_update_period
+        
         self.sigma_SF_LOS_1 = 4.0
         self.sigma_SF_LOS_2 = 6.0
         self.sigma_SF_NLOS = 8.0
+        
+        self.correlation_dist_LOS = 37
+        self.correlation_dist_NLOS = 120
+        
+        self.o2i_model = "low"
         
     def calculate_breakpoint_distance(self, UE_height: float) -> float:
         """
@@ -69,41 +291,10 @@ class RMaModel:
         
         los_probability = np.exp(-(d_2D - 10) / 1000)
         return los_probability
-         
-    def calculate_path_loss(self, d_2D: float, d_2D_in: float, d_3D: float, 
-                            UE_height: float, ue_class: str) -> float:
-        """
-        Расчет затухания сигнала с учетом LOS/NLOS условий.
-    
-        Args:
-            d_2D: 2D расстояние между БС и UE в метрах
-            d_2D_in: Внутреннее расстояние в здании в метрах
-            d_3D: 3D расстояние между БС и UE в метрах
-            UE_height: Высота пользовательского оборудования в метрах
-            ue_class: Класс UE
-    
-        Returns:
-            PL: Затухание сигнала в дБ
-        """
-        los_probability = self.calculate_los_probability(d_2D)
-        is_LOS = np.random.random() <= los_probability
-        
-        if is_LOS:
-            PL = self._calculate_los_path_loss(d_2D, d_3D, UE_height)
-        else:
-            PL = self._calculate_nlos_path_loss(d_2D, d_3D, UE_height)
             
-        if ue_class == "indoor":
-            o2i_penetration_loss = o2i_building_penetration_loss("low", d_2D_in, self.bs.frequency_GHz)
-            PL = PL + o2i_penetration_loss
-        
-        elif ue_class == "car":
-            o2i_penetration_loss = o2i_car_penetration_loss()
-            PL = PL + o2i_penetration_loss
-            
-        return PL
-            
-    def _calculate_los_path_loss(self, d_2D: float, d_3D: float, UE_height: float) -> float:
+    def _calculate_los_path_loss(self, UE_ID: int, displacement: float, 
+                                 channel_condition: str, d_2D: float, 
+                                 d_3D: float, UE_height: float) -> float:
         """
         Расчет затухания сигнала для LOS условий.
     
@@ -123,7 +314,11 @@ class RMaModel:
                    min(0.03 * self.h**1.72, 10) * np.log10(d_3D) - 
                    min(0.044 * self.h**1.72, 14.77) + 0.002 * np.log10(self.h) * d_3D)
             
-            shadow_fading = np.random.normal(0, self.sigma_SF_LOS_1)
+            shadow_fading = self.calculate_shadow_fading(UE_ID, 
+                                                         displacement, 
+                                                         channel_condition, 
+                                                         self.sigma_SF_LOS_1, 
+                                                         self.correlation_dist_LOS)
             PL1 = PL1 + shadow_fading
             return PL1
     
@@ -133,13 +328,19 @@ class RMaModel:
                    min(0.044 * self.h**1.72, 14.77) + 0.002 * np.log10(self.h) * d_BP)
             PL2 = PL1_at_dBP + 40 * np.log10(d_3D / d_BP)
             
-            shadow_fading = np.random.normal(0, self.sigma_SF_LOS_2)
+            shadow_fading = self.calculate_shadow_fading(UE_ID, 
+                                                         displacement, 
+                                                         channel_condition, 
+                                                         self.sigma_SF_LOS_2, 
+                                                         self.correlation_dist_LOS)
             PL2 = PL2 + shadow_fading
             return PL2
         else:
             return 10000.0
         
-    def _calculate_nlos_path_loss(self, d_2D: float, d_3D: float, UE_height: float) -> float:
+    def _calculate_nlos_path_loss(self, UE_ID: int, displacement: float, 
+                                 channel_condition: str, d_2D: float, 
+                                 d_3D: float, UE_height: float) -> float:
         """
         Расчет затухания сигнала для NLOS условий.
     
@@ -152,7 +353,8 @@ class RMaModel:
             PL: Затухание сигнала в дБ для NLOS случая
         """
         if 10 <= d_2D <= 5000:
-            PL_LOS = self._calculate_los_path_loss(d_2D, d_3D, UE_height)
+            PL_LOS = self._calculate_los_path_loss(UE_ID, displacement, channel_condition, 
+                                                   d_2D, d_3D, UE_height)
             PL_NLOS = (161.04 - 7.1 * np.log10(self.W) + 
                          7.5 * np.log10(self.h) -
                          (24.37 - 3.7 * (self.h / self.bs.height)**2) * np.log10(self.bs.height) +
@@ -162,40 +364,17 @@ class RMaModel:
             
             PL = max(PL_LOS, PL_NLOS)
             
-            shadow_fading = np.random.normal(0, self.sigma_SF_NLOS)
+            shadow_fading = self.calculate_shadow_fading(UE_ID, 
+                                                         displacement, 
+                                                         channel_condition, 
+                                                         self.sigma_SF_NLOS, 
+                                                         self.correlation_dist_LOS)
             PL = PL + shadow_fading
             return PL
             
         else:
             return 10000.0
         
-    def calculate_SINR(self, d_2D: float, d_2D_in: float, d_3D: float, 
-                            UE_height: float, ue_class: str) -> float:
-        """
-        Расчет отношения сигнал-интерференция-шум (SINR).
-    
-        Args:
-            d_2D: 2D расстояние между БС и UE в метрах
-            d_2D_in: Внутреннее расстояние в здании в метрах
-            d_3D: 3D расстояние между БС и UE в метрах
-            UE_height: Высота пользовательского оборудования в метрах
-            ue_class: Класс UE
-    
-        Returns:
-            Значение SINR в дБ
-        """
-        path_loss = self.calculate_path_loss(d_2D, d_2D_in, d_3D, UE_height, ue_class)
-        cable_loss = 2
-        interference_margin = 2
-        
-        P_signal = self.bs.tx_power + self.bs.antenna_gain - cable_loss - path_loss - interference_margin
-            
-        P_interference = -95
-        P_noise = -174 + 10 * np.log10(self.bs.bandwidth * 1e6)
-        
-        SINR = P_signal - 10 * np.log10(10 ** (P_interference / 10) + 10 ** (P_noise / 10))
-        
-        return SINR
     
 class UMaModel:
     """
@@ -216,6 +395,9 @@ class UMaModel:
         
         self.sigma_SF_LOS = 4.0
         self.sigma_SF_NLOS = 6.0
+        
+        self.correlation_dist_LOS = 37
+        self.correlation_dist_NLOS = 50
         
         self.o2i_model = o2i_model
         
@@ -426,6 +608,9 @@ class UMiModel:
         self.sigma_SF_LOS = 4.0
         self.sigma_SF_NLOS = 7.82
         
+        self.correlation_dist_LOS = 10
+        self.correlation_dist_NLOS = 13
+        
         self.o2i_model = o2i_model
         
     def calculate_breakpoint_distance(self, UE_height: float) -> float:
@@ -579,13 +764,6 @@ class UMiModel:
         
         P_interference = -95
         P_noise = -174 + 10 * np.log10(self.bs.bandwidth * 1e6)
-        
-# =============================================================================
-#         RSRP = P_signal - 10 * np.log10(50 * 2)
-#         RSSI = RSSI = 10 * np.log10(10**(P_signal/10) + 10**(P_interference/10) + 10**(P_noise/10))
-#         RSRQ = 10 * np.log10(50) + RSRP - RSSI
-# =============================================================================
-        
         
         SINR = P_signal - 10 * np.log10(10 ** (P_interference / 10) + 10 ** (P_noise / 10))
         

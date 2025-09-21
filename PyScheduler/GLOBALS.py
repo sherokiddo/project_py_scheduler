@@ -1,0 +1,1 @@
+CURRENT_TIME = 0.0

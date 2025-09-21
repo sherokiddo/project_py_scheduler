@@ -24,7 +24,6 @@
 
 import time
 import psutil
-import yappi
 from typing import Dict, List, Optional, Union
 import numpy as np
 import math
@@ -41,7 +40,8 @@ from RES_GRID import RES_GRID_LTE
 from SCHEDULER import RoundRobinScheduler, BestCQIScheduler, ProportionalFairScheduler, ProportionalFairScheduler_v2
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel
 from TRAFFIC_MODEL import PoissonModel
-from CHANNEL_MODEL import UMiModel
+from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
+import GLOBALS
 
 class LTEGridVisualizer:
     def __init__(self, lte_grid):
@@ -623,7 +623,7 @@ def test_scheduler_grid():
 def test_scheduler_with_metrics():
     
     sim_duration = 5000 # Время симуляции (в мс)
-    update_interval = 5 # Интервал обновления параметров пользователя (в мс)
+    update_interval = 1 # Интервал обновления параметров пользователя (в мс)
     num_frames = int(np.ceil(sim_duration / 10)) # Кол-во кадров (для ресурсной сетки)
     bandwidth = 10 # Ширина полосы (в МГц)
     inf = math.inf 
@@ -635,14 +635,15 @@ def test_scheduler_with_metrics():
     ue2 = UserEquipment(UE_ID=2, x=500, y=500, ue_class="car")
     ue3 = UserEquipment(UE_ID=3, x=100, y=100, ue_class="car")
     
+    rma = RMaModel(bs)
     ue1.SET_MOBILITY_MODEL(RandomWaypointModel(x_min=0, x_max=2000, y_min=0, y_max=2000, pause_time=10))
-    ue1.SET_CH_MODEL(UMiModel(bs))
+    ue1.SET_CH_MODEL(rma)
     
     ue2.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=2000, y_min=0, y_max=2000))
-    ue2.SET_CH_MODEL(UMiModel(bs))
+    ue2.SET_CH_MODEL(rma)
     
     ue3.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=2000, y_min=0, y_max=2000))
-    ue3.SET_CH_MODEL(UMiModel(bs))
+    ue3.SET_CH_MODEL(rma)
     
     bs.REG_UE(ue1)
     bs.REG_UE(ue2)
@@ -671,6 +672,8 @@ def test_scheduler_with_metrics():
     
     # Основной цикл симуляции (обновление различных параметров у пользователей)
     for current_time in range(update_interval, sim_duration + 1, update_interval):
+        
+        GLOBALS.CURRENT_TIME = current_time
         
         # Обновление состояния пользователей
         ue_collection.UPDATE_ALL_USERS(time_ms=current_time, 
@@ -706,54 +709,56 @@ def test_scheduler_with_metrics():
             users_throughput[3].append(ue3.current_dl_throughput / 1e6)       
 
     
-    # Подготовка данных для построения графиков
-    frame_throughput = [
-    np.mean(total_throughput_tti[i:i+10]) 
-    for i in range(0, len(total_throughput_tti), 10)
-    ]
-    
-    users_frame_throughput = {
-    ue_id: [
-        np.mean(user_tti_throughputs[i:i+10]) 
-        for i in range(0, len(user_tti_throughputs), 10)
-    ]
-    for ue_id, user_tti_throughputs in users_throughput.items()
-    }
-    
-    average_throughput_per_user = {
-    ue_id: np.mean(throughput) for ue_id, throughput in users_throughput.items()
-    }
-    
-    # Расчет Jain's Fairness Index для каждого кадра
-    fairness_per_frame = []
-    for i in range(num_frames):
-        frame_throughputs = [users_frame_throughput[ue_id][i] for ue_id in users_frame_throughput]
-        frame_throughputs = np.array(frame_throughputs)
-        fairness = (np.sum(frame_throughputs) ** 2) / (len(frame_throughputs) * np.sum(frame_throughputs ** 2))
-        fairness_per_frame.append(fairness)
-        
-    # Расчет Jain's Fairness Index для всей симуляции
-    fairness_index = np.mean(fairness_per_frame)
-
-    # Расчёт спектральной эффективности соты
-    spectral_efficiency_cell = np.array(frame_throughput) / bandwidth
-    
-    print(f"\nСредняя пропускная способность соты за симуляцию: {np.mean(total_throughput_tti):.4f} Мбит/с")
-    print(f"Индекс справедливости Джайна: {fairness_index:.4f}")
-    print(f"Средняя спектральная эффективность соты за симуляцию: {np.mean(spectral_efficiency_cell):.4f} бит/с/Гц")
-    
-    metrics = {
-        "sim_duration": sim_duration,
-        "cell_throughput": frame_throughput,
-        "user_throughput": users_frame_throughput,
-        "avg_user_throughput": average_throughput_per_user,
-        "jain_index_per_frame": fairness_per_frame,
-        "jain_index_overall": fairness_index,
-        "spectral_efficiency": spectral_efficiency_cell.tolist()
-    }
-
-    save_scheduler_metrics(scheduler.__class__.__name__, metrics)
-    print(f"Метрики для {scheduler.__class__.__name__} сохранены в файл.")
+# =============================================================================
+#     # Подготовка данных для построения графиков
+#     frame_throughput = [
+#     np.mean(total_throughput_tti[i:i+10]) 
+#     for i in range(0, len(total_throughput_tti), 10)
+#     ]
+#     
+#     users_frame_throughput = {
+#     ue_id: [
+#         np.mean(user_tti_throughputs[i:i+10]) 
+#         for i in range(0, len(user_tti_throughputs), 10)
+#     ]
+#     for ue_id, user_tti_throughputs in users_throughput.items()
+#     }
+#     
+#     average_throughput_per_user = {
+#     ue_id: np.mean(throughput) for ue_id, throughput in users_throughput.items()
+#     }
+#     
+#     # Расчет Jain's Fairness Index для каждого кадра
+#     fairness_per_frame = []
+#     for i in range(num_frames):
+#         frame_throughputs = [users_frame_throughput[ue_id][i] for ue_id in users_frame_throughput]
+#         frame_throughputs = np.array(frame_throughputs)
+#         fairness = (np.sum(frame_throughputs) ** 2) / (len(frame_throughputs) * np.sum(frame_throughputs ** 2))
+#         fairness_per_frame.append(fairness)
+#         
+#     # Расчет Jain's Fairness Index для всей симуляции
+#     fairness_index = np.mean(fairness_per_frame)
+# 
+#     # Расчёт спектральной эффективности соты
+#     spectral_efficiency_cell = np.array(frame_throughput) / bandwidth
+#     
+#     print(f"\nСредняя пропускная способность соты за симуляцию: {np.mean(total_throughput_tti):.4f} Мбит/с")
+#     print(f"Индекс справедливости Джайна: {fairness_index:.4f}")
+#     print(f"Средняя спектральная эффективность соты за симуляцию: {np.mean(spectral_efficiency_cell):.4f} бит/с/Гц")
+#     
+#     metrics = {
+#         "sim_duration": sim_duration,
+#         "cell_throughput": frame_throughput,
+#         "user_throughput": users_frame_throughput,
+#         "avg_user_throughput": average_throughput_per_user,
+#         "jain_index_per_frame": fairness_per_frame,
+#         "jain_index_overall": fairness_index,
+#         "spectral_efficiency": spectral_efficiency_cell.tolist()
+#     }
+# 
+#     save_scheduler_metrics(scheduler.__class__.__name__, metrics)
+#     print(f"Метрики для {scheduler.__class__.__name__} сохранены в файл.")
+# =============================================================================
     
     tti_range = np.arange(0, sim_duration, update_interval)
     plt.figure(figsize=(10, 6))
