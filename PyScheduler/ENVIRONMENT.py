@@ -636,14 +636,17 @@ def test_scheduler_with_metrics():
     ue3 = UserEquipment(UE_ID=3, x=100, y=100, ue_class="car")
     
     rma = RMaModel(bs)
+    uma = UMaModel(bs)
+    umi = UMiModel(bs)
+    
     ue1.SET_MOBILITY_MODEL(RandomWaypointModel(x_min=0, x_max=2000, y_min=0, y_max=2000, pause_time=10))
-    ue1.SET_CH_MODEL(rma)
+    ue1.SET_CH_MODEL(uma)
     
     ue2.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=2000, y_min=0, y_max=2000))
-    ue2.SET_CH_MODEL(rma)
+    ue2.SET_CH_MODEL(uma)
     
     ue3.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=2000, y_min=0, y_max=2000))
-    ue3.SET_CH_MODEL(rma)
+    ue3.SET_CH_MODEL(uma)
     
     bs.REG_UE(ue1)
     bs.REG_UE(ue2)
