@@ -19,14 +19,21 @@ from BS_MODULE import BaseStation
 
 class ChannelModel:
     """
+    Базовый класс для моделей радиоканалов.
     """
-    
     SHADOW_FADING_INFO = {}
     CHANNEL_COND_INFO = {}
     O2I_INFO = {}
     
     def __init__(self, bs: BaseStation, cond_update_period: float = 0.0):
         """
+        Инициализация базового класса моделей радиоканала.
+
+        Args:
+            bs (BaseStation): Объект базовой станции.
+            cond_update_period (float, optional): Период обновления состояния 
+                радиоканала (мс) По умолчанию 0.0.
+                
         """
         self.bs = bs
         self.cond_update_period = cond_update_period
@@ -34,6 +41,19 @@ class ChannelModel:
     def _get_sigma_sf(self, channel_condition: str, d_2D: float = None, 
                       UE_height: float = None) -> float:
         """
+        Возвращает стандартное отклонение теневого затенения (SF) для 
+        заданного состояния канала (LOS/NLOS).
+
+        Args:
+            channel_condition (str): Состояние радиоканала (LOS/NLOS).
+            d_2D (float, optional): 2D расстояние между БС и UE (м). 
+                По умолчанию None. 
+            UE_height (float, optional): Высота пользовательского оборудования (м). 
+                По умолчанию None.
+
+        Returns:
+            float: Стандартное отклонение теневого затенения (дБ).
+
         """
         if channel_condition == "LOS":
             return getattr(self, "sigma_SF_LOS", None)
@@ -45,17 +65,23 @@ class ChannelModel:
                             d_2D_in: float, d_3D: float, UE_height: float, 
                             ue_class: str) -> float:
         """
-        Расчет затухания сигнала с учетом LOS/NLOS условий.
-    
+        Расчёт значения затухания сигнала между базовой станцией (BS) 
+        и пользовательским оборудованием (UE) с учётом условий канала (LOS/NLOS), 
+        теневого затенения (shadow fading) и проникновения сигнала внутрь 
+        здания или автомобиля (O2I).
+
         Args:
-            d_2D: 2D расстояние между БС и UE в метрах
-            d_2D_in: Внутреннее расстояние в здании в метрах
-            d_3D: 3D расстояние между БС и UE в метрах
-            UE_height: Высота пользовательского оборудования в метрах
-            ue_class: Класс UE
-    
+            UE_ID (int): Уникальный идентификатор UE.
+            displacement (float): Смещение UE относительно предыдущего положения (м).
+            d_2D (float): 2D расстояние между БС и UE (м).
+            d_2D_in (float): Внутреннее расстояние в здании (м).
+            d_3D (float): 3D расстояние между БС и UE (м).
+            UE_height (float): Высота пользовательского оборудования (м).
+            ue_class (str): Класс UE.
+
         Returns:
-            PL: Затухание сигнала в дБ
+            float: Затухание сигнала (дБ).
+
         """
         channel_condition = self._calculate_channel_condition(UE_ID,
                                                               self.cond_update_period, 
@@ -102,6 +128,17 @@ class ChannelModel:
     def _calculate_channel_condition(self, UE_ID: int, cond_update_period: float, 
                                     UE_height: float, d_2D: float) -> str:
         """
+        Расчёт состояния радоканала (LOS/NLOS).
+
+        Args:
+            UE_ID (int): Уникальный идентификатор UE.
+            cond_update_period (float): Период обновления состояния радиоканала (мс).
+            UE_height (float): Высота пользовательского оборудования (м).
+            d_2D (float): 2D расстояние между БС и UE (м).
+
+        Returns:
+            str: Состояние радиоканала (LOS/NLOS).
+
         """
         channel_condition = None
         not_found = False
@@ -135,6 +172,18 @@ class ChannelModel:
                                 channel_condition: str, sigma_SF: float,
                                 correlation_dist: float) -> float:
         """
+        Расчёт значения теневого затененеия (Shadow Fading).
+
+        Args:
+            UE_ID (int): Уникальный идентификатор UE.
+            displacement (float): Смещение UE относительно предыдущего положения (м).
+            channel_condition (str): Состояние радиоканала (LOS/NLOS).
+            sigma_SF (float): Стандартное отклонение теневого затенения (дБ)
+            correlation_dist (float): Корреляционное расстояние (м).
+
+        Returns:
+            float: Теневое затененеие (дБ)
+
         """
         shadow_fading = None
         not_found = False
@@ -165,6 +214,18 @@ class ChannelModel:
                                     model_type: str, d_2D_in: float, 
                                     fc_GHz: float) -> float:
         """
+        Расчёт значения потерь при проникновении сигнала внутрь здания.
+
+        Args:
+            UE_ID (int): Уникальный идентификатор UE.
+            channel_condition (str): Состояние радиоканала (LOS/NLOS).
+            model_type (str): Тип модели проникновения в здание ('low' или 'high').
+            d_2D_in (float): Внутреннее расстояние в здании (м).
+            fc_GHz (float): Несущая частота сигнала (ГГц).
+
+        Returns:
+            float: Потери при проникновении сигнала внутрь здания (дБ).
+
         """
         o2i_loss = None
         not_found = False
@@ -204,8 +265,16 @@ class ChannelModel:
         
         return o2i_loss
     
-    def _calculate_o2i_car_loss(self, UE_ID: int):
+    def _calculate_o2i_car_loss(self, UE_ID: int) -> float:
         """
+        Расчёт значения потерь при проникновении сигнала внутрь автомобиля.
+
+        Args:
+            UE_ID (int): Уникальный идентификатор UE.
+
+        Returns:
+            float: Потери при проникновении сигнала внутрь автомобиля (дБ).
+
         """
         o2i_loss = None
         not_found = False
@@ -232,16 +301,19 @@ class ChannelModel:
                        ue_class: str) -> float:
         """
         Расчет отношения сигнал-интерференция-шум (SINR).
-    
+
         Args:
-            d_2D: 2D расстояние между БС и UE в метрах
-            d_2D_in: Внутреннее расстояние в здании в метрах
-            d_3D: 3D расстояние между БС и UE в метрах
-            UE_height: Высота пользовательского оборудования в метрах
-            ue_class: Класс UE
-    
+            UE_ID (int): Уникальный идентификатор UE.
+            displacement (float): Смещение UE относительно предыдущего положения (м).
+            d_2D (float): 2D расстояние между БС и UE (м).
+            d_2D_in (float): Внутреннее расстояние в здании (м).
+            d_3D (float): 3D расстояние между БС и UE (м).
+            UE_height (float): Высота пользовательского оборудования (м).
+            ue_class (str): Класс UE.
+
         Returns:
-            Значение SINR в дБ
+            float: Значение SINR (дБ).
+
         """
         path_loss = self._calculate_path_loss(UE_ID, displacement, d_2D, d_2D_in, 
                                               d_3D, UE_height, ue_class)
@@ -269,9 +341,12 @@ class RMaModel(ChannelModel):
         Инициализация модели RMa.
 
         Args:
-            bs: Объект базовой станции
-            W: Средняя ширина улиц в метрах (по умолчанию 20.0)
-            h: Средняя высота зданий в метрах (по умолчанию 5.0)
+            bs (BaseStation): Объект базовой станции.
+            W (float, optional): Средняя ширина улиц (м). По умолчанию 20.0.
+            h (float, optional): Средняя высота зданий в метрах. По умолчанию 5.0.
+            cond_update_period (float, optional): Период обновления состояния 
+                радиоканала (мс). По умолчанию 0.0.
+                
         """
         super().__init__(bs, cond_update_period)
         
@@ -290,9 +365,20 @@ class RMaModel(ChannelModel):
         
         self.o2i_model = "low"
         
-    def _get_sigma_sf(self, channel_condition: str, d_2D: float = None, 
-                      UE_height: float = None) -> float:
+    def _get_sigma_sf(self, channel_condition: str, d_2D: float, 
+                      UE_height: float) -> float:
         """
+        Возвращает стандартное отклонение теневого затенения (SF) для 
+        заданного состояния канала (LOS/NLOS).
+
+        Args:
+            channel_condition (str): Состояние радиоканала (LOS/NLOS).
+            d_2D (float): 2D расстояние между БС и UE (м).
+            UE_height (float): Высота пользовательского оборудования (м). 
+
+        Returns:
+            float: Стандартное отклонение теневого затенения (дБ).
+
         """
         if channel_condition == "LOS":
             d_BP = self._calculate_breakpoint_distance(UE_height)
@@ -307,25 +393,28 @@ class RMaModel(ChannelModel):
     def _calculate_breakpoint_distance(self, UE_height: float) -> float:
         """
         Расчет дистанции излома (breakpoint distance).
-    
+
         Args:
-            UE_height: Высота пользовательского оборудования в метрах
-    
+            UE_height (float): Высота пользовательского оборудования (м). 
+
         Returns:
-            d_BP: Дистанция излома в метрах
+            float: Дистанция излома (м).
+
         """
         d_BP = (2 * np.pi * self.bs.height * UE_height * self.bs.frequency_Hz) / 3.0e8
         return d_BP
     
     def _calculate_los_probability(self, UE_height: float, d_2D: float) -> float:
         """
-        Расчет вероятности прямой видимости (LOS).
-    
+        Расчет вероятности прямой видимости (LOS) между UE и базовой станцией.
+
         Args:
-            d_2D: 2D расстояние между БС и UE в метрах
-    
+            UE_height (float): Высота пользовательского оборудования (м).
+            d_2D (float): 2D расстояние между БС и UE (м).
+
         Returns:
-            los_probability: Вероятность LOS в диапазоне [0, 1]
+            float: Вероятность LOS в диапазоне [0, 1]
+
         """
         if d_2D <= 10:
             return 1.0
@@ -338,15 +427,18 @@ class RMaModel(ChannelModel):
                                  d_3D: float, UE_height: float) -> float:
         """
         Расчет затухания сигнала для LOS условий.
-    
+
         Args:
-            d_2D: 2D расстояние между БС и UE в метрах
-            d_3D: 3D расстояние между БС и UE в метрах
-            UE_height: Высота пользовательского оборудования в метрах
-    
+            UE_ID (int): Уникальный идентификатор UE.
+            displacement (float): Смещение UE относительно предыдущего положения (м).
+            channel_condition (str): Состояние радиоканала (LOS/NLOS).
+            d_2D (float): 2D расстояние между БС и UE (м).
+            d_3D (float): 3D расстояние между БС и UE (м).
+            UE_height (float): Высота пользовательского оборудования (м).
+
         Returns:
-            PL1: Затухание сигнала в дБ для LOS случая 1
-            PL2: Затухание сигнала в дБ для LOS случая 2
+            float: Затухание сигнала для LOS случая (дБ).
+
         """
         d_BP = self._calculate_breakpoint_distance(UE_height)
         
@@ -373,14 +465,18 @@ class RMaModel(ChannelModel):
                                  d_3D: float, UE_height: float) -> float:
         """
         Расчет затухания сигнала для NLOS условий.
-    
+
         Args:
-            d_2D: 2D расстояние между БС и UE в метрах
-            d_3D: 3D расстояние между БС и UE в метрах
-            UE_height: Высота пользовательского оборудования в метрах
-    
+            UE_ID (int): Уникальный идентификатор UE.
+            displacement (float): Смещение UE относительно предыдущего положения (м).
+            channel_condition (str): Состояние радиоканала (LOS/NLOS).
+            d_2D (float): 2D расстояние между БС и UE (м).
+            d_3D (float): 3D расстояние между БС и UE (м).
+            UE_height (float): Высота пользовательского оборудования (м).
+
         Returns:
-            PL: Затухание сигнала в дБ для NLOS случая
+            float: Затухание сигнала для NLOS случая (дБ).
+
         """
         if 10 <= d_2D <= 5000:
             PL_LOS = self._calculate_los_path_loss(UE_ID, displacement, channel_condition, 
@@ -407,11 +503,16 @@ class UMaModel(ChannelModel):
     """
     def __init__(self, bs: BaseStation, cond_update_period: float = 0.0, 
                  o2i_model: str = "low"):
-        """Инициализация модели UMa.
-        
+        """
+        Инициализация модели UMa.
+
         Args:
-            bs: Объект базовой станции с параметрами антенны, мощности и частоты.
-            o2i_model: Модель проникновения в здание ('low' или 'high'). 
+            bs (BaseStation): Объект базовой станции.
+            cond_update_period (float, optional): Период обновления состояния 
+                радиоканала (мс). По умолчанию 0.0.
+            o2i_model (str, optional): Модель проникновения в здание ('low' или 'high').
+                По умолчанию "low".
+                
         """
         super().__init__(bs, cond_update_period)
         
@@ -429,13 +530,14 @@ class UMaModel(ChannelModel):
     def _calculate_breakpoint_distance(self, UE_height: float, d_2D: float) -> float:
         """
         Расчет дистанции излома (breakpoint distance).
-    
+
         Args:
-            UE_height: Высота пользовательского оборудования в метрах
-            d_2D: 2D расстояние между БС и UE в метрах
-    
+            UE_height (float): Высота пользовательского оборудования (м). 
+            d_2D (float): 2D расстояние между БС и UE (м).
+
         Returns:
-            d_BP: Дистанция излома в метрах
+            float: Дистанция излома (м).
+
         """
         if UE_height < 13:
             C = 0
@@ -470,14 +572,15 @@ class UMaModel(ChannelModel):
     
     def _calculate_los_probability(self, UE_height: float, d_2D: float) -> float:
         """
-        Расчет вероятности прямой видимости (LOS) между БС и UE.
-    
+        Расчет вероятности прямой видимости (LOS) между UE и базовой станцией.
+
         Args:
-            UE_height: Высота пользовательского оборудования в метрах
-            d_2D: 2D расстояние между БС и UE в метрах
-    
+            UE_height (float): Высота пользовательского оборудования (м).
+            d_2D (float): 2D расстояние между БС и UE (м).
+
         Returns:
-            los_probability: Вероятность LOS в диапазоне [0, 1]
+            float: Вероятность LOS в диапазоне [0, 1]
+
         """
         if d_2D <= 18:
             return 1.0
@@ -498,15 +601,18 @@ class UMaModel(ChannelModel):
                                  d_3D: float, UE_height: float) -> float:
         """
         Расчет затухания сигнала для LOS условий.
-    
+
         Args:
-            d_2D: 2D расстояние между БС и UE в метрах
-            d_3D: 3D расстояние между БС и UE в метрах
-            UE_height: Высота пользовательского оборудования в метрах
-    
+            UE_ID (int): Уникальный идентификатор UE.
+            displacement (float): Смещение UE относительно предыдущего положения (м).
+            channel_condition (str): Состояние радиоканала (LOS/NLOS).
+            d_2D (float): 2D расстояние между БС и UE (м).
+            d_3D (float): 3D расстояние между БС и UE (м).
+            UE_height (float): Высота пользовательского оборудования (м).
+
         Returns:
-            PL1: Затухание сигнала в дБ для LOS случая 1
-            PL2: Затухание сигнала в дБ для LOS случая 2
+            float: Затухание сигнала для LOS случая (дБ).
+
         """
         d_BP = self._calculate_breakpoint_distance(UE_height, d_2D)
         
@@ -529,14 +635,18 @@ class UMaModel(ChannelModel):
                                  d_3D: float, UE_height: float) -> float:
         """
         Расчет затухания сигнала для NLOS условий.
-    
+
         Args:
-            d_2D: 2D расстояние между БС и UE в метрах
-            d_3D: 3D расстояние между БС и UE в метрах
-            UE_height: Высота пользовательского оборудования в метрах
-    
+            UE_ID (int): Уникальный идентификатор UE.
+            displacement (float): Смещение UE относительно предыдущего положения (м).
+            channel_condition (str): Состояние радиоканала (LOS/NLOS).
+            d_2D (float): 2D расстояние между БС и UE (м).
+            d_3D (float): 3D расстояние между БС и UE (м).
+            UE_height (float): Высота пользовательского оборудования (м).
+
         Returns:
-            PL: Затухание сигнала в дБ для NLOS случая
+            float: Затухание сигнала для NLOS случая (дБ).
+
         """
         if 10 <= d_2D <= 5000:
             PL_LOS = self._calculate_los_path_loss(UE_ID, displacement, channel_condition,
@@ -561,10 +671,14 @@ class UMiModel(ChannelModel):
                  o2i_model: str = "low"):
         """
         Инициализация модели UMi.
-        
+
         Args:
-            bs: Объект базовой станции с параметрами антенны, мощности и частоты.
-            o2i_model: Модель проникновения в здание ('low' или 'high'). 
+            bs (BaseStation): Объект базовой станции.
+            cond_update_period (float, optional): Период обновления состояния 
+                радиоканала (мс). По умолчанию 0.0.
+            o2i_model (str, optional): Модель проникновения в здание ('low' или 'high').
+                По умолчанию "low".
+                
         """
         super().__init__(bs, cond_update_period)
         
@@ -582,12 +696,13 @@ class UMiModel(ChannelModel):
     def _calculate_breakpoint_distance(self, UE_height: float) -> float:
         """
         Расчет дистанции излома (breakpoint distance).
-    
+
         Args:
-            UE_height: Высота пользовательского оборудования в метрах
-    
+            UE_height (float): Высота пользовательского оборудования (м). 
+
         Returns:
-            d_BP: Дистанция излома в метрах
+            float: Дистанция излома (м).
+
         """
         h_E = 1.0
         
@@ -599,13 +714,15 @@ class UMiModel(ChannelModel):
     
     def _calculate_los_probability(self, UE_height: float, d_2D: float) -> float:
         """
-        Расчет вероятности прямой видимости (LOS) между БС и UE.
-    
+        Расчет вероятности прямой видимости (LOS) между UE и базовой станцией.
+
         Args:
-            d_2D: 2D расстояние между БС и UE в метрах
-    
+            UE_height (float): Высота пользовательского оборудования (м).
+            d_2D (float): 2D расстояние между БС и UE (м).
+
         Returns:
-            los_probability: Вероятность LOS в диапазоне [0, 1]
+            float: Вероятность LOS в диапазоне [0, 1]
+
         """
         if d_2D <= 18:
             return 1.0
@@ -619,15 +736,18 @@ class UMiModel(ChannelModel):
                                  d_3D: float, UE_height: float) -> float:
         """
         Расчет затухания сигнала для LOS условий.
-    
+
         Args:
-            d_2D: 2D расстояние между БС и UE в метрах
-            d_3D: 3D расстояние между БС и UE в метрах
-            UE_height: Высота пользовательского оборудования в метрах
-    
+            UE_ID (int): Уникальный идентификатор UE.
+            displacement (float): Смещение UE относительно предыдущего положения (м).
+            channel_condition (str): Состояние радиоканала (LOS/NLOS).
+            d_2D (float): 2D расстояние между БС и UE (м).
+            d_3D (float): 3D расстояние между БС и UE (м).
+            UE_height (float): Высота пользовательского оборудования (м).
+
         Returns:
-            PL1: Затухание сигнала в дБ для LOS случая 1
-            PL2: Затухание сигнала в дБ для LOS случая 2
+            float: Затухание сигнала для LOS случая (дБ).
+
         """
         d_BP = self._calculate_breakpoint_distance(UE_height)
         
@@ -650,14 +770,18 @@ class UMiModel(ChannelModel):
                                  d_3D: float, UE_height: float) -> float:
         """
         Расчет затухания сигнала для NLOS условий.
-    
+
         Args:
-            d_2D: 2D расстояние между БС и UE в метрах
-            d_3D: 3D расстояние между БС и UE в метрах
-            UE_height: Высота пользовательского оборудования в метрах
-    
+            UE_ID (int): Уникальный идентификатор UE.
+            displacement (float): Смещение UE относительно предыдущего положения (м).
+            channel_condition (str): Состояние радиоканала (LOS/NLOS).
+            d_2D (float): 2D расстояние между БС и UE (м).
+            d_3D (float): 3D расстояние между БС и UE (м).
+            UE_height (float): Высота пользовательского оборудования (м).
+
         Returns:
-            PL: Затухание сигнала в дБ для NLOS случая
+            float: Затухание сигнала для NLOS случая (дБ).
+
         """
         if 10 <= d_2D <= 5000:
             PL_LOS = self._calculate_los_path_loss(UE_ID, displacement, channel_condition,
