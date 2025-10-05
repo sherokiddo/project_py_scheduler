@@ -1,6 +1,7 @@
 import numpy as np
 import math
 import matplotlib.pyplot as plt
+import GLOBALS
 from UE_MODULE import UserEquipment, UECollection
 from BS_MODULE import BaseStation, Packet
 from RES_GRID import RES_GRID_LTE
@@ -14,11 +15,13 @@ def visualize_users_mobility(ue_collection: UECollection, bs: BaseStation,
     Функция для построения карты передвижения пользователей.
 
     Args:
-        ue_collection: Коллекция пользователей (объект UECollection)
-        x_min: Минимальная граница по оси X
-        x_max: Максимальная граница по оси X
-        y_min: Минимальная граница по оси Y
-        y_max: Максимальная граница по оси Y
+        ue_collection (UECollection): Объект коллекции пользователей.
+        bs (BaseStation): Объект базовой станции.
+        x_min (float): Минимальная граница отображения по оси X.
+        x_max (float): Максимальная граница отображения по оси X.
+        y_min (float): Минимальная граница отображения по оси Y.
+        y_max (float): Максимальная граница отображения по оси Y.
+        
     """
     x_bs, y_bs = bs.position
     
@@ -41,7 +44,15 @@ def visualize_users_mobility(ue_collection: UECollection, bs: BaseStation,
     
 def visualize_users_sinr(ue_collection: UECollection, sim_duration: float,
                             update_interval: float):
-    
+    """
+    Функция для построения графика SINR для всех пользователей.
+
+    Args:
+        ue_collection (UECollection): Объект коллекции пользователей.
+        sim_duration (float): Время симуляции (мс).
+        update_interval (float): Интервал обновления симуляции (мс).
+
+    """
     tti_range = np.arange(0, sim_duration, update_interval)
     
     plt.figure(figsize=(10, 6))
@@ -57,7 +68,16 @@ def visualize_users_sinr(ue_collection: UECollection, sim_duration: float,
     
 def print_users_stats(ue_collection: UECollection, tti: int, bs: BaseStation, 
                       sched_result: dict):
-    
+    """
+    Функция для вывода статистики пользователей в определённом TTI.
+
+    Args:
+        ue_collection (UECollection): Объект коллекции пользователей.
+        tti (int): Номер TTI.
+        bs (BaseStation): Объект базовой станции.
+        sched_result (dict): Результат работы планировщика.
+
+    """
     print(f"\n[TTI {tti}]")
     print("=" * 40)
     
@@ -87,8 +107,12 @@ def print_users_stats(ue_collection: UECollection, tti: int, bs: BaseStation,
         print("-" * 40)
 
 def debug_simulation():
-    """Пример использования разработанных модулей"""
+    """
+    Симуляция, предназначенная для отладки. 
+    Позволяет проверить корректность взаимодействия компонентов системы при 
+    помощи вывода различных графиков и статистики для каждого пользователя.
     
+    """
     sim_duration = 20 # Время симуляции (в мс)
     update_interval = 1 # Интервал обновления параметров пользователя (в мс)
     num_frames = int(np.ceil(sim_duration / 10)) # Кол-во кадров (для ресурсной сетки)
@@ -119,7 +143,7 @@ def debug_simulation():
     ue3.SET_MOBILITY_MODEL(random_waypoint)
     
     # Создание модели радиоканала  
-    uma = UMaModel(bs)
+    uma = UMaModel(bs=bs, cond_update_period=5)
     
     # Назначение пользователям модели радиоканала
     ue1.SET_CH_MODEL(uma)
@@ -149,6 +173,10 @@ def debug_simulation():
 
     # Основной цикл симуляции
     for current_time in range(update_interval, sim_duration + 1, update_interval):
+        
+        # Обновление глобальной переменной текущего времени 
+        # (Временное решение)
+        GLOBALS.CURRENT_TIME = current_time
         
         # Обновление состояния пользователей
         ue_collection.UPDATE_ALL_USERS(time_ms=current_time, 
