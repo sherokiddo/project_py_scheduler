@@ -24,7 +24,6 @@
 
 import time
 import psutil
-import yappi
 from typing import Dict, List, Optional, Union
 import numpy as np
 import math
@@ -41,7 +40,8 @@ from RES_GRID import RES_GRID_LTE
 from SCHEDULER import RoundRobinScheduler, BestCQIScheduler, ProportionalFairScheduler, ProportionalFairScheduler_v2
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel
 from TRAFFIC_MODEL import PoissonModel
-from CHANNEL_MODEL import UMiModel
+from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
+import GLOBALS
 
 class LTEGridVisualizer:
     def __init__(self, lte_grid):
@@ -623,7 +623,7 @@ def test_scheduler_grid():
 def test_scheduler_with_metrics():
     
     sim_duration = 5000 # Время симуляции (в мс)
-    update_interval = 5 # Интервал обновления параметров пользователя (в мс)
+    update_interval = 1 # Интервал обновления параметров пользователя (в мс)
     num_frames = int(np.ceil(sim_duration / 10)) # Кол-во кадров (для ресурсной сетки)
     bandwidth = 10 # Ширина полосы (в МГц)
     inf = math.inf 
@@ -635,14 +635,18 @@ def test_scheduler_with_metrics():
     ue2 = UserEquipment(UE_ID=2, x=500, y=500, ue_class="car")
     ue3 = UserEquipment(UE_ID=3, x=100, y=100, ue_class="car")
     
+    rma = RMaModel(bs)
+    uma = UMaModel(bs)
+    umi = UMiModel(bs)
+    
     ue1.SET_MOBILITY_MODEL(RandomWaypointModel(x_min=0, x_max=2000, y_min=0, y_max=2000, pause_time=10))
-    ue1.SET_CH_MODEL(UMiModel(bs))
+    ue1.SET_CH_MODEL(uma)
     
     ue2.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=2000, y_min=0, y_max=2000))
-    ue2.SET_CH_MODEL(UMiModel(bs))
+    ue2.SET_CH_MODEL(uma)
     
     ue3.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=2000, y_min=0, y_max=2000))
-    ue3.SET_CH_MODEL(UMiModel(bs))
+    ue3.SET_CH_MODEL(uma)
     
     bs.REG_UE(ue1)
     bs.REG_UE(ue2)
@@ -671,6 +675,8 @@ def test_scheduler_with_metrics():
     
     # Основной цикл симуляции (обновление различных параметров у пользователей)
     for current_time in range(update_interval, sim_duration + 1, update_interval):
+        
+        GLOBALS.CURRENT_TIME = current_time
         
         # Обновление состояния пользователей
         ue_collection.UPDATE_ALL_USERS(time_ms=current_time, 

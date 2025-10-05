@@ -1,22 +1,27 @@
 import numpy as np
+import math
 import matplotlib.pyplot as plt
+import GLOBALS
 from UE_MODULE import UserEquipment, UECollection
+from BS_MODULE import BaseStation, Packet
+from RES_GRID import RES_GRID_LTE
+from SCHEDULER import RoundRobinScheduler, BestCQIScheduler, ProportionalFairScheduler
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel
 from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
-from TRAFFIC_MODEL import PoissonModel, OnOffModel, MMPPModel
-from BS_MODULE import BaseStation
 
-def visualize_user_mobility(ue_collection: UECollection, bs: BaseStation,
+def visualize_users_mobility(ue_collection: UECollection, bs: BaseStation,
                             x_min: float, x_max: float, y_min: float, y_max: float):
     """
     Функция для построения карты передвижения пользователей.
 
     Args:
-        ue_collection: Коллекция пользователей (объект UECollection)
-        x_min: Минимальная граница по оси X
-        x_max: Максимальная граница по оси X
-        y_min: Минимальная граница по оси Y
-        y_max: Максимальная граница по оси Y
+        ue_collection (UECollection): Объект коллекции пользователей.
+        bs (BaseStation): Объект базовой станции.
+        x_min (float): Минимальная граница отображения по оси X.
+        x_max (float): Максимальная граница отображения по оси X.
+        y_min (float): Минимальная граница отображения по оси Y.
+        y_max (float): Максимальная граница отображения по оси Y.
+        
     """
     x_bs, y_bs = bs.position
     
@@ -29,107 +34,184 @@ def visualize_user_mobility(ue_collection: UECollection, bs: BaseStation,
     plt.plot(x_bs, y_bs, marker = 'o', label='Base Station')
     
     for ue in ue_collection.GET_ALL_USERS():
-        x_coords = ue.x_coordinates
-        y_coords = ue.y_coordinates
+        x_coords = [x for x, _ in ue.coordinates]
+        y_coords = [y for _, y in ue.coordinates]
         plt.plot(x_coords, y_coords, label=f"UE {ue.UE_ID}")
     
     plt.legend()
     plt.grid(True)
     plt.show()
     
-def visualize_sinr_cqi_user(ue_collection: UECollection, simulation_duration: float,
+def visualize_users_sinr(ue_collection: UECollection, sim_duration: float,
                             update_interval: float):
+    """
+    Функция для построения графика SINR для всех пользователей.
+
+    Args:
+        ue_collection (UECollection): Объект коллекции пользователей.
+        sim_duration (float): Время симуляции (мс).
+        update_interval (float): Интервал обновления симуляции (мс).
+
+    """
+    tti_range = np.arange(0, sim_duration, update_interval)
     
-    time = np.arange(0, simulation_duration, update_interval)
+    plt.figure(figsize=(10, 6))
+    plt.title("График SINR во времени для всех пользователей")
+    plt.xlabel("TTI")
+    plt.ylabel("SINR (dB)")
+    for ue in ue_collection.GET_ALL_USERS():
+        sinr_values = ue.SINR_values
+        plt.plot(tti_range, sinr_values, label=f'UE{ue.UE_ID}')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+    
+def print_users_stats(ue_collection: UECollection, tti: int, bs: BaseStation, 
+                      sched_result: dict):
+    """
+    Функция для вывода статистики пользователей в определённом TTI.
+
+    Args:
+        ue_collection (UECollection): Объект коллекции пользователей.
+        tti (int): Номер TTI.
+        bs (BaseStation): Объект базовой станции.
+        sched_result (dict): Результат работы планировщика.
+
+    """
+    print(f"\n[TTI {tti}]")
+    print("=" * 40)
+    
+    allocation = sched_result["allocation"]
     
     for ue in ue_collection.GET_ALL_USERS():
-        plt.figure(figsize=(10, 6))
-        plt.title(f"График SINR во времени для UE {ue.UE_ID}")
-        plt.xlabel("Время (мс)")
-        plt.ylabel("SINR (dB)")
-        sinr_values = ue.SINR_values
-        plt.plot(time, sinr_values)
-        plt.grid(True)
-        plt.show()
-        
-        plt.figure(figsize=(10, 6))
-        plt.title(f"График CQI во времени для UE {ue.UE_ID}")
-        plt.xlabel("Время (мс)")
-        plt.ylabel("CQI")
-        cqi_values = ue.CQI_values
-        plt.step(time, cqi_values)
-        plt.grid(True)
-        plt.show()
-
-def example_usage_modules():
-    """Пример использования разработанных модулей"""
+        ue_id = ue.UE_ID
+        num_rbs = len(allocation.get(ue_id, []))
     
+        displacement = np.hypot(
+            ue.position[0] - ue.coordinates[-2][0],
+            ue.position[1] - ue.coordinates[-2][1]
+        )
+    
+        print(f"UE {ue_id}:")
+        print(f"\tRBs выделено        : {num_rbs}")
+        print(f"\tТекущая скорость    : {ue.current_dl_throughput} bit/s")
+        print(f"\tСредняя скорость    : {ue.average_throughput:.2f} bit/s")
+        print("\t+" + "-" * 35)
+        print(f"\tSINR                : {ue.SINR:.2f} dB")
+        print(f"\tCQI                 : {ue.cqi}")
+        print(f"\tРазмер буфера       : {bs.ue_buffers[1].sizes[1]} B")
+        print("\t+" + "-" * 35)
+        print(f"\tПред. позиция       : {ue.coordinates[-2]}")
+        print(f"\tТекущая позиция     : {ue.position}")
+        print(f"\tСмещение            : {displacement} m")
+        print("-" * 40)
+
+def debug_simulation():
+    """
+    Симуляция, предназначенная для отладки. 
+    Позволяет проверить корректность взаимодействия компонентов системы при 
+    помощи вывода различных графиков и статистики для каждого пользователя.
+    
+    """
+    sim_duration = 20 # Время симуляции (в мс)
+    update_interval = 1 # Интервал обновления параметров пользователя (в мс)
+    num_frames = int(np.ceil(sim_duration / 10)) # Кол-во кадров (для ресурсной сетки)
+    bandwidth = 10 # Ширина полосы (в МГц)
+    inf = math.inf 
+    
+    # Создание и настройка базовой станции
+    bs = BaseStation(x=0, y=0, bandwidth=bandwidth, global_max=inf, per_ue_max=inf)
+       
     # Создание коллекции пользовательских устройств
     ue_collection = UECollection()
     
-    # Создание объекта базовой станции
-    bs = BaseStation(x=3000, y=3000)
+    # Создание и настройка пользовательских устройств
+    ue1 = UserEquipment(UE_ID=1, x=800, y=800, ue_class="pedestrian")
+    ue2 = UserEquipment(UE_ID=2, x=400, y=-200, ue_class="cyclist")
+    ue3 = UserEquipment(UE_ID=3, x=-500, y=-500, ue_class="car")
     
-    # Создание объектов пользовательских устройств
-    ue1 = UserEquipment(UE_ID=1, x=2300, y=2300, ue_class="indoor")
-    #ue2 = UserEquipment(UE_ID=2, x=2000, y=2000, ue_class="car")
-    
-    # Границы симуляции
-    x_min_global = -5000
-    y_min_global = -5000
-    x_max_global = 5000
-    y_max_global = 5000    
-
-    x_min_h = 2295
-    y_min_h = 2295
-    x_max_h = 2305
-    y_max_h = 2305                      
-
-    # Создание объектов моделей передвижения пользователей
-    gauss_markov_model = GaussMarkovModel(x_min=x_min_global, x_max=x_max_global, 
-                                          y_min=y_min_global, y_max=y_max_global) 
-    
-    random_waypoint_model = RandomWaypointModel(x_min=x_min_h, x_max=x_max_h, 
-                                                y_min=y_min_h, y_max=y_max_h, 
-                                                pause_time=500)
+    # Создание модели передвижения пользователей
+    random_waypoint = RandomWaypointModel(x_min=-1000, 
+                                          x_max=1000, 
+                                          y_min=-1000, 
+                                          y_max=1000, 
+                                          pause_time=0)
   
-    # Создание объекта модели канала  
-    umi_channel_model = UMiModel(bs)  
-
-    # Создание объекта модели генерации трафика
-    #poisson_traffic_model = PoissonModel(packet_rate=500)    
-    #onoff_traffic_model = OnOffModel(duration_on=2, duration_off=3, packet_rate=500)  
-    mmpp_traffic_model = MMPPModel(packet_rates=[50, 200, 500])
+    # Назначение пользователям модели передвижения
+    ue1.SET_MOBILITY_MODEL(random_waypoint)
+    ue2.SET_MOBILITY_MODEL(random_waypoint)
+    ue3.SET_MOBILITY_MODEL(random_waypoint)
     
-    # Установка модели передвижения и модели канала для устройства
-    ue1.SET_MOBILITY_MODEL(random_waypoint_model)
-    #ue2.SET_MOBILITY_MODEL(gauss_markov_model)
+    # Создание модели радиоканала  
+    uma = UMaModel(bs=bs, cond_update_period=5)
     
-    ue1.SET_CH_MODEL(umi_channel_model)
-    #ue2.SET_CH_MODEL(umi_channel_model)
+    # Назначение пользователям модели радиоканала
+    ue1.SET_CH_MODEL(uma)
+    ue2.SET_CH_MODEL(uma)
+    ue3.SET_CH_MODEL(uma)
     
-    ue1.SET_TRAFFIC_MODEL(mmpp_traffic_model)
-    #ue2.SET_TRAFFIC_MODEL(poisson_traffic_model)
+    # Регистрация пользователей в базовой станции
+    bs.REG_UE(ue1)
+    bs.REG_UE(ue2)
+    bs.REG_UE(ue3)
     
     # Добавление пользовательских устройств в коллекцию
     ue_collection.ADD_USER(ue1)
-    #ue_collection.ADD_USER(ue2)
+    ue_collection.ADD_USER(ue2)
+    ue_collection.ADD_USER(ue3)
     
-    # Временные параметры симуляции
-    simulation_duration = 30000
-    update_interval = 250
+    # Имитация Full Buffer 
+    bs.ue_buffers[1].ADD_PACKET(Packet(size=inf, ue_id=1, creation_time=0), current_time=0)
+    bs.ue_buffers[2].ADD_PACKET(Packet(size=inf, ue_id=2, creation_time=0), current_time=0)
+    bs.ue_buffers[3].ADD_PACKET(Packet(size=inf, ue_id=3, creation_time=0), current_time=0)
+
+    # Создание ресурсной сетки
+    lte_grid = RES_GRID_LTE(bandwidth=bandwidth, num_frames=num_frames)
     
-    # Симуляция и визуализация результатов
-    for t in range(update_interval, simulation_duration + 1, update_interval):
-        if t % update_interval == 0:
-            ue_collection.UPDATE_ALL_USERS(time_ms=t, update_interval=update_interval, 
-                                           bs_position=bs.position, bs_height=bs.height, 
-                                           indoor_boundaries=(x_min_h, y_min_h, x_min_h, x_max_h))
+    # Создание планировщика
+    scheduler = ProportionalFairScheduler(lte_grid, bs)
+
+    # Основной цикл симуляции
+    for current_time in range(update_interval, sim_duration + 1, update_interval):
         
-    visualize_user_mobility(ue_collection=ue_collection, bs=bs, 
-                            x_min=1500, x_max=3500, y_min=1500, y_max=3500)
+        # Обновление глобальной переменной текущего времени 
+        # (Временное решение)
+        GLOBALS.CURRENT_TIME = current_time
+        
+        # Обновление состояния пользователей
+        ue_collection.UPDATE_ALL_USERS(time_ms=current_time, 
+                                       update_interval=update_interval, 
+                                       bs_position=bs.position, 
+                                       bs_height=bs.height)
     
-    visualize_sinr_cqi_user(ue_collection, simulation_duration, update_interval)
+        # Цикл для планирования ресурсов (по TTI)
+        for tti in range(current_time - update_interval, current_time):
+            
+            # Подготовка данных для планировщика     
+            users = ue_collection.GET_USERS_FOR_SCHEDULER()
+            
+            # Планирование ресурсов 
+            sched_result = scheduler.schedule(tti, users)
+            
+            # Вывод статистики для каждого пользователя
+            print_users_stats(ue_collection=ue_collection, 
+                              tti=tti, 
+                              bs=bs,
+                              sched_result=sched_result)
+            
+            
+    # Визуализация передвижения пользователей
+    visualize_users_mobility(ue_collection=ue_collection, 
+                            bs=bs, 
+                            x_min=-1000, 
+                            x_max=1000, 
+                            y_min=-1000, 
+                            y_max=1000)
+    
+    # Визуализация SINR пользователей во времени     
+    visualize_users_sinr(ue_collection=ue_collection,
+                            sim_duration=sim_duration, 
+                            update_interval=update_interval)
     
 if __name__ == "__main__":
-    example_usage_modules()
+    debug_simulation()

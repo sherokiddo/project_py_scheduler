@@ -309,8 +309,7 @@ class UserEquipment:
         self.pause_timer = 0.0 # Таймер паузы устройства
         self.is_first_move = True # Флаг первого движения устройства
   
-        self.x_coordinates = [self.position[0]] # Координаты X для карты передвижения
-        self.y_coordinates = [self.position[1]] # Координаты Y для карты передвижения
+        self.coordinates = [self.position] # Координаты
         
         # Буфер данных
         self.buffer = Buffer(buffer_size)
@@ -429,8 +428,7 @@ class UserEquipment:
                 self.position, self.velocity, self.direction, self.mean_velocity, self.mean_direction, time_ms
             )
             
-        self.x_coordinates.append(self.position[0])
-        self.y_coordinates.append(self.position[1])
+        self.coordinates.append(self.position)
         
         # Обновление 2D и 3D расстояний до базовой станции
         if self.is_indoor:
@@ -466,6 +464,9 @@ class UserEquipment:
         # дублировать предыдущий SINR...хотя...зачем тогда модели.
         # вариант чисто на подумать
         
+        displacement = np.hypot(self.position[0] - self.coordinates[-2][0],
+                                self.position[1] - self.coordinates[-2][1])
+        
         if isinstance(self.channel_model, RMaModel):
             if self.UE_height == 0.0:
                 if self.is_indoor == True:
@@ -473,11 +474,7 @@ class UserEquipment:
                 else:
                     self.UE_height = 1.0
             
-            self.SINR = self.channel_model.calculate_SINR(
-                self.dist_to_BS_2D, self.dist_to_BS_2D_in, self.dist_to_BS_3D, self.UE_height, self.ue_class
-            )
-            
-        if isinstance(self.channel_model, UMaModel):
+        if isinstance(self.channel_model, UMaModel) or isinstance(self.channel_model, UMiModel):
             if self.UE_height == 0.0:
                 if self.is_indoor == True:
                     N_fl = np.random.uniform(4, 8)
@@ -486,22 +483,10 @@ class UserEquipment:
                 else:
                     self.UE_height = 1.5
                     
-            self.SINR = self.channel_model.calculate_SINR(
-                self.dist_to_BS_2D, self.dist_to_BS_2D_in, self.dist_to_BS_3D, self.UE_height, self.ue_class
-            )
-            
-        if isinstance(self.channel_model, UMiModel):
-            if self.UE_height == 0.0:
-                if self.is_indoor == True:
-                    N_fl = np.random.uniform(4, 8)
-                    n_fl = np.random.uniform(1, N_fl)
-                    self.UE_height = 3 * (n_fl - 1) + 1.5
-                else:
-                    self.UE_height = 1.5
-                    
-            self.SINR = self.channel_model.calculate_SINR(
-                self.dist_to_BS_2D, self.dist_to_BS_2D_in, self.dist_to_BS_3D, self.UE_height, self.ue_class
-            )
+        self.SINR = self.channel_model.calculate_SINR(
+            self.UE_ID, displacement, self.dist_to_BS_2D, self.dist_to_BS_2D_in, 
+            self.dist_to_BS_3D, self.UE_height, self.ue_class
+        )
         
         self.cqi = self.SINR_TO_CQI(self.SINR)
                 

@@ -437,7 +437,7 @@ class ProportionalFairScheduler(SchedulerInterface):
             PF_metric = instant_throughput / user['ue'].average_throughput
             user['PF_metric'] = PF_metric
             user['ue'].PF_metric = PF_metric
-            print(f"PF metric: UE{user['UE_ID']} = {PF_metric}")
+            # print(f"PF metric: UE{user['UE_ID']} = {PF_metric}")
         return users
             
     def schedule(self, tti: int, users: List[Dict]) -> Dict:
