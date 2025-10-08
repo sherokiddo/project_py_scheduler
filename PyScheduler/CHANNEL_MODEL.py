@@ -17,15 +17,36 @@ import numpy as np
 import GLOBALS
 from BS_MODULE import BaseStation
 
+class ChannelState:
+    """
+    Класс для хранения состояния канала с поддержкой пространственной согласованности.
+    
+    Поддерживает пространственную и временную корреляцию shadow fading и LOS/NLOS состояний.
+    """
+    
+    def __init__(self):
+        """Инициализация состояния канала."""
+        self.last_position: np.ndarray = None
+        self.last_shadow_fading: float = 0.0
+        self.last_los_state: bool = None
+        self.first_call: bool = True
+        self.o2i_building_loss: float = None
+        self.o2i_car_loss: float = None
+        
+    def reset(self):
+        """Сброс состояния канала."""
+        self.__init__()
+        
 class ChannelModel:
     """
-    Базовый класс для моделей радиоканалов.
+    Базовый класс для моделей радиоканалов. Релиз с поддержкой режимов TB/SC
     """
     SHADOW_FADING_INFO = {}
     CHANNEL_COND_INFO = {}
     O2I_INFO = {}
     
-    def __init__(self, bs: BaseStation, cond_update_period: float = 0.0):
+    def __init__(self, bs: BaseStation, cond_update_period: float = 0.0,
+                 spatial_consistency:bool = False):
         """
         Инициализация базового класса моделей радиоканала.
 
@@ -33,10 +54,18 @@ class ChannelModel:
             bs (BaseStation): Объект базовой станции.
             cond_update_period (float, optional): Период обновления состояния 
                 радиоканала (мс) По умолчанию 0.0.
+            spatial_consistency (bool): Включить режим пространственной согласованности.
+                False - time-based режим, True - SC режим.
                 
         """
         self.bs = bs
         self.cond_update_period = cond_update_period
+        self.spatial_consistency = spatial_consistency
+        
+        self.channel_state = ChannelState() if spatial_consistency else None
+        self.sf_correlation_distance_los = 37.0 #default
+        self.sf_correlation_distance_nlos = 50.0 #default
+        self.los_correlation_length = 50.0 #default
         
     def _get_sigma_sf(self, channel_condition: str, d_2D: float = None, 
                       UE_height: float = None) -> float:
@@ -60,16 +89,13 @@ class ChannelModel:
         
         elif channel_condition == "NLOS":
             return getattr(self, "sigma_SF_NLOS", None)
-        
-    def _calculate_path_loss(self, UE_ID: int, displacement: float, d_2D: float, 
-                            d_2D_in: float, d_3D: float, UE_height: float, 
-                            ue_class: str) -> float:
-        """
-        Расчёт значения затухания сигнала между базовой станцией (BS) 
-        и пользовательским оборудованием (UE) с учётом условий канала (LOS/NLOS), 
-        теневого затенения (shadow fading) и проникновения сигнала внутрь 
-        здания или автомобиля (O2I).
 
+    def _calculate_path_loss(self, UE_ID: int, displacement: float, d_2D: float,
+                           d_2D_in: float, d_3D: float, UE_height: float,
+                           ue_class: str, current_position: np.ndarray = None) -> float:
+        """
+        Расчёт значения затухания сигнала между БС и UE с поддержкой обоих режимов.
+        
         Args:
             UE_ID (int): Уникальный идентификатор UE.
             displacement (float): Смещение UE относительно предыдущего положения (м).
@@ -78,12 +104,28 @@ class ChannelModel:
             d_3D (float): 3D расстояние между БС и UE (м).
             UE_height (float): Высота пользовательского оборудования (м).
             ue_class (str): Класс UE.
-
+            current_position (np.ndarray, optional): Текущие координаты UE для SC режима.
+            
         Returns:
             float: Затухание сигнала (дБ).
+        """
+        if self.spatial_consistency:
+            if current_position is None:
+                raise ValueError("current_position требуется для spatial consistency режима")
+            return self._calculate_path_loss_sc(d_2D, d_2D_in, d_3D, UE_height, 
+                                              ue_class, current_position)
+        else:
+            return self._calculate_path_loss_time_based(UE_ID, displacement, d_2D, 
+                                                      d_2D_in, d_3D, UE_height, ue_class)
+        
+    def _calculate_path_loss_time_based(self, UE_ID: int, displacement: float, d_2D: float, 
+                            d_2D_in: float, d_3D: float, UE_height: float, 
+                            ue_class: str, current_position: np.ndarray = None) -> float:
+        """
+        Расчёт значения затухания сигнала на основе Time-based логики
 
         """
-        channel_condition = self._calculate_channel_condition(UE_ID,
+        channel_condition = self._calculate_channel_condition_time_based(UE_ID,
                                                               self.cond_update_period, 
                                                               UE_height, 
                                                               d_2D)
@@ -93,26 +135,26 @@ class ChannelModel:
         correlation_dist = (self.correlation_dist_LOS if channel_condition == "LOS"
                     else self.correlation_dist_NLOS)
         
-        shadow_fading = self._calculate_shadow_fading(UE_ID, 
+        shadow_fading = self._calculate_shadow_fading_time_based(UE_ID, 
                                                      displacement, 
                                                      channel_condition, 
                                                      sigma_sf, 
                                                      correlation_dist)
         
         if channel_condition == "LOS":
-            PL = self._calculate_los_path_loss(UE_ID, displacement, 
+            PL = self._calculate_los_path_loss_time_based(UE_ID, displacement, 
                                                channel_condition, d_2D, d_3D, 
                                                UE_height)
             PL = PL + shadow_fading
         
         elif channel_condition == "NLOS":
-            PL = self._calculate_nlos_path_loss(UE_ID, displacement, 
+            PL = self._calculate_nlos_path_loss_time_based(UE_ID, displacement, 
                                            channel_condition, d_2D, d_3D, 
                                            UE_height)
             PL = PL + shadow_fading
             
         if ue_class == "indoor":
-            o2i_penetration_loss = self._calculate_o2i_building_loss(UE_ID, 
+            o2i_penetration_loss = self._calculate_o2i_building_loss_time_based(UE_ID, 
                                                                     channel_condition,
                                                                     self.o2i_model, 
                                                                     d_2D_in, 
@@ -120,12 +162,108 @@ class ChannelModel:
             PL = PL + o2i_penetration_loss
             
         elif ue_class == "car":
-            o2i_penetration_loss = self._calculate_o2i_car_loss(UE_ID)
+            o2i_penetration_loss = self._calculate_o2i_car_loss_time_based(UE_ID)
             PL = PL + o2i_penetration_loss
             
         return PL
+
+    def _calculate_path_loss_sc(self, d_2D: float, d_2D_in: float, d_3D: float,
+                               UE_height: float, ue_class: str, 
+                               current_position: np.ndarray) -> float:
+        """Расчёт значения затухания сигнала на основе SC логики"""
+        base_los_prob = self._calculate_los_probability(d_2D)
+        is_LOS = self._calculate_spatially_consistent_los(current_position, base_los_prob)
+        
+        if is_LOS:
+            PL = self._calculate_los_path_loss_sc(d_2D, d_3D, UE_height, current_position)
+        else:
+            PL = self._calculate_nlos_path_loss_sc(d_2D, d_3D, UE_height, current_position)
+        
+        # O2I потери для SC режима
+        if ue_class == "indoor":
+            o2i_loss = self._calculate_o2i_building_loss_sc(
+                getattr(self, 'o2i_model', 'low'), d_2D_in, self.bs.frequency_GHz)
+            PL = PL + o2i_loss
+        elif ue_class == "car":
+            o2i_loss = self._calculate_o2i_car_loss_sc()
+            PL = PL + o2i_loss
+        
+        return PL    
+
+    def _calculate_spatially_consistent_los(self, current_position: np.ndarray,
+                                          base_los_prob: float) -> bool:
+        """
+        Расчет пространственно-согласованного состояния LOS/NLOS.
+        
+        Args:
+            current_position: Текущая позиция UE [x, y] в метрах
+            base_los_prob: Базовая вероятность LOS
+            
+        Returns:
+            Состояние канала: True для LOS, False для NLOS
+        """
+        if (self.channel_state.first_call or 
+            self.channel_state.last_position is None or 
+            self.channel_state.last_los_state is None):
+            # Первый вызов - инициализация на основе базовой вероятности
+
+            self.channel_state.last_los_state = base_los_prob > 0.5
+            return self.channel_state.last_los_state
+        
+        delta_d = np.linalg.norm(current_position - self.channel_state.last_position)
+        
+        if delta_d < 0.01: #non-3GPP костыль, но допустимый
+            return self.channel_state.last_los_state
+        
+        state_correlation = np.exp(-delta_d / self.los_correlation_length)
+        
+        if np.random.random() < state_correlation:
+            current_los_state = self.channel_state.last_los_state
+        else:
+            current_los_state = np.random.random() <= base_los_prob
+        
+        self.channel_state.last_los_state = current_los_state
+        self.channel_state.last_position = current_position.copy()
+        
+        return current_los_state
+
+    def _calculate_correlated_shadow_fading_sc(self, current_position: np.ndarray,
+                                             sigma_sf: float, is_los: bool) -> float:
+        """
+        Расчет коррелированного shadow fading для SC режима.
+        
+        Args:
+            current_position: Текущая позиция UE [x, y] в метрах
+            sigma_sf: Стандартное отклонение shadow fading в дБ
+            is_los: Состояние LOS/NLOS канала
+            
+        Returns:
+            Коррелированное значение shadow fading в дБ
+        """
+        correlation_distance = (self.sf_correlation_distance_los if is_los
+                              else self.sf_correlation_distance_nlos)
+        
+        if self.channel_state.last_position is None:
+            self.channel_state.last_shadow_fading = np.random.normal(0, sigma_sf)
+            self.channel_state.last_position = current_position.copy()
+            return self.channel_state.last_shadow_fading
+        
+        delta_d = np.linalg.norm(current_position - self.channel_state.last_position)
+        
+        if delta_d < 0.01:  # Обновлять только при движении > 0.01м, костыль
+            return self.channel_state.last_shadow_fading
+
+        R = np.exp(-delta_d / correlation_distance)
+        
+        new_sf = (R * self.channel_state.last_shadow_fading +
+                  np.sqrt(1 - R**2) * np.random.normal(0, sigma_sf))
+        
+        self.channel_state.last_shadow_fading = new_sf
+        self.channel_state.last_position = current_position.copy()
+        
+        return new_sf
     
-    def _calculate_channel_condition(self, UE_ID: int, cond_update_period: float, 
+    def _calculate_channel_condition_time_based(self, UE_ID: int, cond_update_period: float, 
                                     UE_height: float, d_2D: float) -> str:
         """
         Расчёт состояния радоканала (LOS/NLOS).
@@ -159,16 +297,15 @@ class ChannelModel:
             ue_cond_info = ChannelModel.CHANNEL_COND_INFO[UE_ID]
             
         if not_found or update:
-            los_probability = self._calculate_los_probability(UE_height, d_2D)
+            los_probability = self._calculate_los_probability(d_2D)
             channel_condition = ("LOS" if np.random.random() <= los_probability 
                                  else "NLOS")
-            
             ue_cond_info["cond"] = channel_condition
             ue_cond_info["updated_time"] = GLOBALS.CURRENT_TIME
             
         return channel_condition
     
-    def _calculate_shadow_fading(self, UE_ID: int, displacement: float, 
+    def _calculate_shadow_fading_time_based(self, UE_ID: int, displacement: float, 
                                 channel_condition: str, sigma_SF: float,
                                 correlation_dist: float) -> float:
         """
@@ -210,7 +347,7 @@ class ChannelModel:
         
         return shadow_fading
     
-    def _calculate_o2i_building_loss(self, UE_ID: int, channel_condition: str, 
+    def _calculate_o2i_building_loss_time_based(self, UE_ID: int, channel_condition: str, 
                                     model_type: str, d_2D_in: float, 
                                     fc_GHz: float) -> float:
         """
@@ -265,7 +402,7 @@ class ChannelModel:
         
         return o2i_loss
     
-    def _calculate_o2i_car_loss(self, UE_ID: int) -> float:
+    def _calculate_o2i_car_loss_time_based(self, UE_ID: int) -> float:
         """
         Расчёт значения потерь при проникновении сигнала внутрь автомобиля.
 
@@ -295,12 +432,40 @@ class ChannelModel:
         ue_o2i_info["o2i_loss"] = o2i_loss
         
         return o2i_loss
+
+    def _calculate_o2i_building_loss_sc(self, model_type: str, d_2D_in: float, 
+                                       fc_GHz: float) -> float:
+        """Расчёт O2I потерь для зданий (SC режим)."""
+        if self.channel_state.o2i_building_loss is None:
+            L_concrete = 5 + 4 * fc_GHz
+            
+            if model_type == "low":
+                L_glass = 2 + 0.2 * fc_GHz
+                PL_tw = 5 - 10 * np.log10(0.3 * 10**(-L_glass / 10) + 0.7 * 10**(-L_concrete / 10))
+                sigma_p = 4.4
+            elif model_type == "high":
+                L_IRR_glass = 23 + 0.3 * fc_GHz
+                PL_tw = 5 - 10 * np.log10(0.7 * 10**(-L_IRR_glass / 10) + 0.3 * 10**(-L_concrete/10))
+                sigma_p = 6.5
+            
+            PL_in = 0.5 * d_2D_in
+            random_loss = np.random.normal(0, sigma_p)
+            self.channel_state.o2i_building_loss = PL_tw + PL_in + random_loss
+        
+        return self.channel_state.o2i_building_loss
+    
+    def _calculate_o2i_car_loss_sc(self) -> float:
+        """Расчёт O2I потерь для автомобилей (SC режим)."""
+        if self.channel_state.o2i_car_loss is None:
+            self.channel_state.o2i_car_loss = np.random.normal(9, 5)
+        
+        return self.channel_state.o2i_car_loss
         
     def calculate_SINR(self, UE_ID: int, displacement: float, d_2D: float, 
                        d_2D_in: float, d_3D: float, UE_height: float, 
-                       ue_class: str) -> float:
+                       ue_class: str, current_position: np.ndarray = None) -> float:
         """
-        Расчет отношения сигнал-интерференция-шум (SINR).
+        Расчет отношения сигнал-интерференция-шум (SINR). Поддерживает оба режима.
 
         Args:
             UE_ID (int): Уникальный идентификатор UE.
@@ -315,8 +480,15 @@ class ChannelModel:
             float: Значение SINR (дБ).
 
         """
+        
+        if self.spatial_consistency and current_position is None:
+            raise ValueError("current_position требуется для spatial consistency режима")
+
+        if not self.spatial_consistency and UE_ID is None:
+            raise ValueError("UE_ID требуется для time-based режима")
+        
         path_loss = self._calculate_path_loss(UE_ID, displacement, d_2D, d_2D_in, 
-                                              d_3D, UE_height, ue_class)
+                                              d_3D, UE_height, ue_class, current_position)
         cable_loss = 2
         interference_margin = 2
         
@@ -329,6 +501,37 @@ class ChannelModel:
         
         return SINR
 
+    def reset_channel_state(self):
+        """Сброс состояния канала."""
+        if self.spatial_consistency and self.channel_state:
+            self.channel_state.reset()
+
+    # Абстрактные методы для реализации в дочерних классах
+    def _calculate_los_probability(self, UE_height: float, d_2D: float) -> float:
+        """Расчет вероятности LOS. Должен быть переопределен в дочерних классах."""
+        raise NotImplementedError
+    
+    def _calculate_los_path_loss_time_based(self, UE_ID: int, displacement: float,
+                                          channel_condition: str, d_2D: float,
+                                          d_3D: float, UE_height: float) -> float:
+        """Time-based LOS path loss. Должен быть переопределен в дочерних классах."""
+        raise NotImplementedError
+    
+    def _calculate_nlos_path_loss_time_based(self, UE_ID: int, displacement: float,
+                                           channel_condition: str, d_2D: float,
+                                           d_3D: float, UE_height: float) -> float:
+        """Time-based NLOS path loss. Должен быть переопределен в дочерних классах."""
+        raise NotImplementedError
+    
+    def _calculate_los_path_loss_sc(self, d_2D: float, d_3D: float, 
+                                   UE_height: float, current_position: np.ndarray) -> float:
+        """SC LOS path loss. Должен быть переопределен в дочерних классах."""
+        raise NotImplementedError
+    
+    def _calculate_nlos_path_loss_sc(self, d_2D: float, d_3D: float,
+                                    UE_height: float, current_position: np.ndarray) -> float:
+        """SC NLOS path loss. Должен быть переопределен в дочерних классах."""
+        raise NotImplementedError
 
 class RMaModel(ChannelModel):
     """
@@ -336,7 +539,7 @@ class RMaModel(ChannelModel):
     Реализует расчеты для сценариев макросотового покрытия в сельской местности.
     """
     def __init__(self, bs: BaseStation, W: float = 20.0, h: float = 5.0, 
-                 cond_update_period: float = 0.0):
+                 cond_update_period: float = 0.0, spatial_consistency: bool = True):
         """
         Инициализация модели RMa.
 
@@ -348,7 +551,7 @@ class RMaModel(ChannelModel):
                 радиоканала (мс). По умолчанию 0.0.
                 
         """
-        super().__init__(bs, cond_update_period)
+        super().__init__(bs, cond_update_period, spatial_consistency)
         
         self.W = W
         self.h = h
@@ -360,8 +563,13 @@ class RMaModel(ChannelModel):
         self.sigma_SF_LOS_2 = 6.0
         self.sigma_SF_NLOS = 8.0
         
-        self.correlation_dist_LOS = 37
-        self.correlation_dist_NLOS = 120
+        if spatial_consistency:
+            self.sf_correlation_distance_los = 37.0
+            self.sf_correlation_distance_nlos = 120.0
+            self.los_correlation_length = 60.0
+        else:
+            self.correlation_dist_LOS = 37
+            self.correlation_dist_NLOS = 120
         
         self.o2i_model = "low"
         
@@ -404,7 +612,7 @@ class RMaModel(ChannelModel):
         d_BP = (2 * np.pi * self.bs.height * UE_height * self.bs.frequency_Hz) / 3.0e8
         return d_BP
     
-    def _calculate_los_probability(self, UE_height: float, d_2D: float) -> float:
+    def _calculate_los_probability(self, d_2D):
         """
         Расчет вероятности прямой видимости (LOS) между UE и базовой станцией.
 
@@ -422,7 +630,7 @@ class RMaModel(ChannelModel):
         los_probability = np.exp(-(d_2D - 10) / 1000)
         return los_probability
             
-    def _calculate_los_path_loss(self, UE_ID: int, displacement: float, 
+    def _calculate_los_path_loss_time_based(self, UE_ID: int, displacement: float, 
                                  channel_condition: str, d_2D: float, 
                                  d_3D: float, UE_height: float) -> float:
         """
@@ -460,7 +668,7 @@ class RMaModel(ChannelModel):
         else:
             return 10000.0
         
-    def _calculate_nlos_path_loss(self, UE_ID: int, displacement: float, 
+    def _calculate_nlos_path_loss_time_based(self, UE_ID: int, displacement: float, 
                                  channel_condition: str, d_2D: float, 
                                  d_3D: float, UE_height: float) -> float:
         """
@@ -479,7 +687,7 @@ class RMaModel(ChannelModel):
 
         """
         if 10 <= d_2D <= 5000:
-            PL_LOS = self._calculate_los_path_loss(UE_ID, displacement, channel_condition, 
+            PL_LOS = self._calculate_los_path_loss_time_based(UE_ID, displacement, channel_condition, 
                                                    d_2D, d_3D, UE_height)
             PL_NLOS = (161.04 - 7.1 * np.log10(self.W) + 
                          7.5 * np.log10(self.h) -
@@ -494,7 +702,76 @@ class RMaModel(ChannelModel):
             
         else:
             return 10000.0
+
+    def _calculate_los_path_loss_sc(self, d_2D: float, d_3D: float, 
+                                   UE_height: float, current_position: np.ndarray) -> float:
+        """Расчет затухания сигнала для LOS условий (SC)."""
+        d_BP = self._calculate_breakpoint_distance(UE_height)
         
+        if 10 <= d_2D <= d_BP:
+            PL_base = (20 * np.log10(40 * np.pi * d_3D * self.bs.frequency_GHz / 3.0) +
+                       min(0.03 * self.h**1.72, 10) * np.log10(d_3D) -
+                       min(0.044 * self.h**1.72, 14.77) + 0.002 * np.log10(self.h) * d_3D)
+            
+            # Корреляционный shadow fading
+            shadow_fading = self._calculate_correlated_shadow_fading_sc(
+                current_position, self.sigma_SF_LOS_1, is_los=True)
+            
+            return PL_base + shadow_fading
+            
+        elif d_BP < d_2D <= 10000:
+            PL1_at_dBP = (20 * np.log10(40 * np.pi * d_BP * self.bs.frequency_GHz / 3.0) +
+                          min(0.03 * self.h**1.72, 10) * np.log10(d_BP) -
+                          min(0.044 * self.h**1.72, 14.77) + 0.002 * np.log10(self.h) * d_BP)
+            PL_base = PL1_at_dBP + 40 * np.log10(d_3D / d_BP)
+            
+            # Корреляционный shadow fading
+            shadow_fading = self._calculate_correlated_shadow_fading_sc(
+                current_position, self.sigma_SF_LOS_2, is_los=True)
+            
+            return PL_base + shadow_fading
+        else:
+            return 10000.0
+    
+    def _calculate_nlos_path_loss_sc(self, d_2D: float, d_3D: float,
+                                    UE_height: float, current_position: np.ndarray) -> float:
+        """Расчет затухания сигнала для NLOS условий (SC)."""
+        if 10 <= d_2D <= 5000:
+            # Базовый расчет без shadow fading
+            PL_LOS_base = self._calculate_los_path_loss_base(d_2D, d_3D, UE_height)
+            
+            PL_NLOS_base = (161.04 - 7.1 * np.log10(self.W) +
+                            7.5 * np.log10(self.h) -
+                            (24.37 - 3.7 * (self.h / self.bs.height)**2) * np.log10(self.bs.height) +
+                            (43.42 - 3.1 * np.log10(self.bs.height)) * (np.log10(d_3D) - 3) +
+                            20 * np.log10(self.bs.frequency_GHz) -
+                            (3.2 * (np.log10(11.75 * UE_height))**2 - 4.97))
+            
+            PL_base = max(PL_LOS_base, PL_NLOS_base)
+            
+            # Корреляционный shadow fading
+            shadow_fading = self._calculate_correlated_shadow_fading_sc(
+                current_position, self.sigma_SF_NLOS, is_los=False)
+            
+            return PL_base + shadow_fading
+        else:
+            return 10000.0
+    
+    def _calculate_los_path_loss_base(self, d_2D: float, d_3D: float, UE_height: float) -> float:
+        """Базовый расчет LOS path loss без shadow fading."""
+        d_BP = self._calculate_breakpoint_distance(UE_height)
+        
+        if 10 <= d_2D <= d_BP:
+            return (20 * np.log10(40 * np.pi * d_3D * self.bs.frequency_GHz / 3.0) +
+                    min(0.03 * self.h**1.72, 10) * np.log10(d_3D) -
+                    min(0.044 * self.h**1.72, 14.77) + 0.002 * np.log10(self.h) * d_3D)
+        elif d_BP < d_2D <= 10000:
+            PL1_at_dBP = (20 * np.log10(40 * np.pi * d_BP * self.bs.frequency_GHz / 3.0) +
+                          min(0.03 * self.h**1.72, 10) * np.log10(d_BP) -
+                          min(0.044 * self.h**1.72, 14.77) + 0.002 * np.log10(self.h) * d_BP)
+            return PL1_at_dBP + 40 * np.log10(d_3D / d_BP)
+        else:
+            return 10000.0        
     
 class UMaModel(ChannelModel):
     """
@@ -502,7 +779,7 @@ class UMaModel(ChannelModel):
     Реализует расчеты для сценариев макросотового покрытия в городских условиях.
     """
     def __init__(self, bs: BaseStation, cond_update_period: float = 0.0, 
-                 o2i_model: str = "low"):
+                 o2i_model: str = "low", spatial_consistency: bool = True, UE_height=1.5):
         """
         Инициализация модели UMa.
 
@@ -514,16 +791,23 @@ class UMaModel(ChannelModel):
                 По умолчанию "low".
                 
         """
-        super().__init__(bs, cond_update_period)
+        super().__init__(bs, cond_update_period, spatial_consistency)
         
         self.bs.tx_power = self.bs.MACROCELL_TX_POWER[self.bs.bandwidth]
         self.bs.height = 25.0
+        self.UE_height = UE_height
         
         self.sigma_SF_LOS = 4.0
         self.sigma_SF_NLOS = 6.0
         
-        self.correlation_dist_LOS = 37
-        self.correlation_dist_NLOS = 50
+        # Параметры корреляции
+        if spatial_consistency:
+            self.sf_correlation_distance_los = 37.0
+            self.sf_correlation_distance_nlos = 50.0
+            self.los_correlation_length = 120.0
+        else:
+            self.correlation_dist_LOS = 37
+            self.correlation_dist_NLOS = 50
         
         self.o2i_model = o2i_model
         
@@ -570,7 +854,7 @@ class UMaModel(ChannelModel):
         d_BP = (4 * bs_height_prime * UE_height_prime * self.bs.frequency_Hz) / 3.0e8
         return d_BP    
     
-    def _calculate_los_probability(self, UE_height: float, d_2D: float) -> float:
+    def _calculate_los_probability(self, d_2D: float) -> float:
         """
         Расчет вероятности прямой видимости (LOS) между UE и базовой станцией.
 
@@ -582,6 +866,7 @@ class UMaModel(ChannelModel):
             float: Вероятность LOS в диапазоне [0, 1]
 
         """
+        UE_height = self.UE_height
         if d_2D <= 18:
             return 1.0
         
@@ -596,7 +881,7 @@ class UMaModel(ChannelModel):
         
         return los_probability 
     
-    def _calculate_los_path_loss(self, UE_ID: int, displacement: float, 
+    def _calculate_los_path_loss_time_based(self, UE_ID: int, displacement: float, 
                                  channel_condition: str, d_2D: float, 
                                  d_3D: float, UE_height: float) -> float:
         """
@@ -630,7 +915,7 @@ class UMaModel(ChannelModel):
         else:
             return 10000.0
         
-    def _calculate_nlos_path_loss(self, UE_ID: int, displacement: float, 
+    def _calculate_nlos_path_loss_time_based(self, UE_ID: int, displacement: float, 
                                  channel_condition: str, d_2D: float, 
                                  d_3D: float, UE_height: float) -> float:
         """
@@ -649,7 +934,7 @@ class UMaModel(ChannelModel):
 
         """
         if 10 <= d_2D <= 5000:
-            PL_LOS = self._calculate_los_path_loss(UE_ID, displacement, channel_condition,
+            PL_LOS = self._calculate_los_path_loss_time_based(UE_ID, displacement, channel_condition,
                                                    d_2D, d_3D, UE_height)
             PL_NLOS = (13.54 + 39.08 * np.log10(d_3D) + 20 * np.log10(self.bs.frequency_GHz) -
                        0.6 * (UE_height - 1.5))
@@ -660,7 +945,51 @@ class UMaModel(ChannelModel):
             
         else:
             return 10000.0
+
+    def _calculate_los_path_loss_sc(self, d_2D: float, d_3D: float,
+                                   UE_height: float, current_position: np.ndarray) -> float:
+        """SC LOS path loss для UMa."""
+        d_BP = self._calculate_breakpoint_distance(UE_height, d_2D)
         
+        if 10 <= d_2D <= d_BP:
+            PL_base = 28 + 22 * np.log10(d_3D) + 20 * np.log10(self.bs.frequency_GHz)
+            shadow_fading = self._calculate_correlated_shadow_fading_sc(
+                current_position, self.sigma_SF_LOS, is_los=True)
+            return PL_base + shadow_fading
+            
+        elif d_BP < d_2D <= 5000:
+            PL_base = (28 + 40 * np.log10(d_3D) + 20 * np.log10(self.bs.frequency_GHz) -
+                       9 * np.log10(d_BP**2 + (self.bs.height - UE_height)**2))
+            shadow_fading = self._calculate_correlated_shadow_fading_sc(
+                current_position, self.sigma_SF_LOS, is_los=True)
+            return PL_base + shadow_fading
+        else:
+            return 10000.0
+    
+    def _calculate_nlos_path_loss_sc(self, d_2D: float, d_3D: float,
+                                    UE_height: float, current_position: np.ndarray) -> float:
+        """SC NLOS path loss для UMa."""
+        if 10 <= d_2D <= 5000:
+            # Базовый LOS расчет без shadow fading
+            d_BP = self._calculate_breakpoint_distance(UE_height, d_2D)
+            
+            if 10 <= d_2D <= d_BP:
+                PL_LOS_base = 28 + 22 * np.log10(d_3D) + 20 * np.log10(self.bs.frequency_GHz)
+            else:
+                PL_LOS_base = (28 + 40 * np.log10(d_3D) + 20 * np.log10(self.bs.frequency_GHz) -
+                               9 * np.log10(d_BP**2 + (self.bs.height - UE_height)**2))
+            
+            PL_NLOS_base = (13.54 + 39.08 * np.log10(d_3D) + 20 * np.log10(self.bs.frequency_GHz) -
+                            0.6 * (UE_height - 1.5))
+            
+            PL_base = max(PL_LOS_base, PL_NLOS_base)
+            
+            shadow_fading = self._calculate_correlated_shadow_fading_sc(
+                current_position, self.sigma_SF_NLOS, is_los=False)
+            
+            return PL_base + shadow_fading
+        else:
+            return 10000.0        
     
 class UMiModel(ChannelModel):
     """
@@ -668,7 +997,7 @@ class UMiModel(ChannelModel):
     Реализует расчеты для сценариев микросотового покрытия в городских условиях.
     """
     def __init__(self, bs: BaseStation, cond_update_period: float = 0.0, 
-                 o2i_model: str = "low"):
+                 o2i_model: str = "low", spatial_consistency: bool = True, UE_height=1.5):
         """
         Инициализация модели UMi.
 
@@ -680,16 +1009,22 @@ class UMiModel(ChannelModel):
                 По умолчанию "low".
                 
         """
-        super().__init__(bs, cond_update_period)
+        super().__init__(bs, cond_update_period, spatial_consistency)
         
         self.bs.tx_power = self.bs.MICROCELL_TX_POWER[self.bs.bandwidth]
         self.bs.height = 10.0
+        self.UE_height = UE_height
         
         self.sigma_SF_LOS = 4.0
         self.sigma_SF_NLOS = 7.82
         
-        self.correlation_dist_LOS = 10
-        self.correlation_dist_NLOS = 13
+        if spatial_consistency:
+            self.sf_correlation_distance_los = 10.0
+            self.sf_correlation_distance_nlos = 13.0
+            self.los_correlation_length = 50.0
+        else:
+            self.correlation_dist_LOS = 10
+            self.correlation_dist_NLOS = 13
         
         self.o2i_model = o2i_model
         
@@ -712,7 +1047,7 @@ class UMiModel(ChannelModel):
         d_BP = (4 * bs_height_prime * UE_height_prime * self.bs.frequency_Hz) / 3.0e8
         return d_BP
     
-    def _calculate_los_probability(self, UE_height: float, d_2D: float) -> float:
+    def _calculate_los_probability(self, d_2D: float) -> float:
         """
         Расчет вероятности прямой видимости (LOS) между UE и базовой станцией.
 
@@ -724,6 +1059,7 @@ class UMiModel(ChannelModel):
             float: Вероятность LOS в диапазоне [0, 1]
 
         """
+        UE_height = getattr(self, 'UE_height')
         if d_2D <= 18:
             return 1.0
         
@@ -731,7 +1067,7 @@ class UMiModel(ChannelModel):
         
         return los_probability
     
-    def _calculate_los_path_loss(self, UE_ID: int, displacement: float, 
+    def _calculate_los_path_loss_time_based(self, UE_ID: int, displacement: float, 
                                  channel_condition: str, d_2D: float, 
                                  d_3D: float, UE_height: float) -> float:
         """
@@ -765,7 +1101,7 @@ class UMiModel(ChannelModel):
         else:
             return 10000.0
         
-    def _calculate_nlos_path_loss(self, UE_ID: int, displacement: float, 
+    def _calculate_nlos_path_loss_time_based(self, UE_ID: int, displacement: float, 
                                  channel_condition: str, d_2D: float, 
                                  d_3D: float, UE_height: float) -> float:
         """
@@ -784,7 +1120,7 @@ class UMiModel(ChannelModel):
 
         """
         if 10 <= d_2D <= 5000:
-            PL_LOS = self._calculate_los_path_loss(UE_ID, displacement, channel_condition,
+            PL_LOS = self._calculate_los_path_loss_time_based(UE_ID, displacement, channel_condition,
                                                    d_2D, d_3D, UE_height)
             PL_NLOS = (35.3 * np.log10(d_3D) + 22.4 + 21.3 * np.log10(self.bs.frequency_GHz) -
                        0.3 * (UE_height - 1.5))
@@ -794,4 +1130,49 @@ class UMiModel(ChannelModel):
             return PL
             
         else:
-            return 10000.0   
+            return 10000.0
+        
+    def _calculate_los_path_loss_sc(self, d_2D: float, d_3D: float,
+                                   UE_height: float, current_position: np.ndarray) -> float:
+        """SC LOS path loss для UMi."""
+        d_BP = self._calculate_breakpoint_distance(UE_height)
+        
+        if 10 <= d_2D <= d_BP:
+            PL_base = 32.4 + 21 * np.log10(d_3D) + 20 * np.log10(self.bs.frequency_GHz)
+            shadow_fading = self._calculate_correlated_shadow_fading_sc(
+                current_position, self.sigma_SF_LOS, is_los=True)
+            return PL_base + shadow_fading
+            
+        elif d_BP < d_2D <= 5000:
+            PL_base = (32.4 + 40 * np.log10(d_3D) + 20 * np.log10(self.bs.frequency_GHz) -
+                       9.5 * np.log10(d_BP**2 + (self.bs.height - UE_height)**2))
+            shadow_fading = self._calculate_correlated_shadow_fading_sc(
+                current_position, self.sigma_SF_LOS, is_los=True)
+            return PL_base + shadow_fading
+        else:
+            return 10000.0
+    
+    def _calculate_nlos_path_loss_sc(self, d_2D: float, d_3D: float,
+                                    UE_height: float, current_position: np.ndarray) -> float:
+        """SC NLOS path loss для UMi."""
+        if 10 <= d_2D <= 5000:
+            # Базовый LOS расчет без shadow fading
+            d_BP = self._calculate_breakpoint_distance(UE_height)
+            
+            if 10 <= d_2D <= d_BP:
+                PL_LOS_base = 32.4 + 21 * np.log10(d_3D) + 20 * np.log10(self.bs.frequency_GHz)
+            else:
+                PL_LOS_base = (32.4 + 40 * np.log10(d_3D) + 20 * np.log10(self.bs.frequency_GHz) -
+                               9.5 * np.log10(d_BP**2 + (self.bs.height - UE_height)**2))
+            
+            PL_NLOS_base = (35.3 * np.log10(d_3D) + 22.4 + 21.3 * np.log10(self.bs.frequency_GHz) -
+                            0.3 * (UE_height - 1.5))
+            
+            PL_base = max(PL_LOS_base, PL_NLOS_base)
+            
+            shadow_fading = self._calculate_correlated_shadow_fading_sc(
+                current_position, self.sigma_SF_NLOS, is_los=False)
+            
+            return PL_base + shadow_fading
+        else:
+            return 10000.0

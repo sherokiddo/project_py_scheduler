@@ -622,7 +622,7 @@ def test_scheduler_grid():
 
 def test_scheduler_with_metrics():
     
-    sim_duration = 5000 # Время симуляции (в мс)
+    sim_duration = 50000 # Время симуляции (в мс)
     update_interval = 1 # Интервал обновления параметров пользователя (в мс)
     num_frames = int(np.ceil(sim_duration / 10)) # Кол-во кадров (для ресурсной сетки)
     bandwidth = 10 # Ширина полосы (в МГц)
@@ -635,18 +635,21 @@ def test_scheduler_with_metrics():
     ue2 = UserEquipment(UE_ID=2, x=500, y=500, ue_class="car")
     ue3 = UserEquipment(UE_ID=3, x=100, y=100, ue_class="car")
     
-    rma = RMaModel(bs)
-    uma = UMaModel(bs)
-    umi = UMiModel(bs)
+    rma = RMaModel(bs, spatial_consistency=False)
+    uma = UMaModel(bs, spatial_consistency=False)
+    umi = UMiModel(bs, spatial_consistency=False)
+
+    for ue in (ue1, ue2, ue3):
+        ue.SET_CH_MODEL(UMiModel(bs, spatial_consistency=True))
     
     ue1.SET_MOBILITY_MODEL(RandomWaypointModel(x_min=0, x_max=2000, y_min=0, y_max=2000, pause_time=10))
-    ue1.SET_CH_MODEL(uma)
+    #ue1.SET_CH_MODEL(rma)
     
     ue2.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=2000, y_min=0, y_max=2000))
-    ue2.SET_CH_MODEL(uma)
-    
+    #ue2.SET_CH_MODEL(rma)
+
     ue3.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=2000, y_min=0, y_max=2000))
-    ue3.SET_CH_MODEL(uma)
+    #ue3.SET_CH_MODEL(rma)
     
     bs.REG_UE(ue1)
     bs.REG_UE(ue2)

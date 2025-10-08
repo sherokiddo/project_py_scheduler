@@ -456,6 +456,9 @@ class UserEquipment:
         if not self.channel_model:
             raise ValueError("Ошибка! Модель канала не определена! {}".format(self.UE_ID))
             
+        if len(self.coordinates) < 2:
+            raise ValueError(f"UE_ID {self.UE_ID}: вызов UPD_POSITION обязателен перед UPD_CH_QUALITY")
+            
         # @shrokiddo: "Добавил валидацию назначения модели, а то небыло"
         # рекомендую сделать валидацию вызова UPD_POSITION, потому что он
         # должен вызываться раньше UPD_CH_QUALITY 
@@ -482,14 +485,48 @@ class UserEquipment:
                     self.UE_height = 3 * (n_fl - 1) + 1.5
                 else:
                     self.UE_height = 1.5
-                    
-        self.SINR = self.channel_model.calculate_SINR(
-            self.UE_ID, displacement, self.dist_to_BS_2D, self.dist_to_BS_2D_in, 
-            self.dist_to_BS_3D, self.UE_height, self.ue_class
-        )
+        
+        use_sc = getattr(self.channel_model, 'spatial_consistency', False)
+        print(f"[DEBUG] UE {self.UE_ID}: spatial_consistency = {use_sc}")
+        try:
+            if use_sc:
+                # Spatial consistency режим: передаём текущие координаты
+                current_position = np.array(self.position, dtype=np.ndarray)
+                self.SINR = self.channel_model.calculate_SINR(
+                    UE_ID=self.UE_ID,
+                    displacement=displacement,
+                    d_2D=self.dist_to_BS_2D,
+                    d_2D_in=self.dist_to_BS_2D_in,
+                    d_3D=self.dist_to_BS_3D,
+                    UE_height=self.UE_height,
+                    ue_class=self.ue_class,
+                    current_position=current_position
+                )
+            else:
+                # Time-based режим: передаём UE_ID и displacement
+                self.SINR = self.channel_model.calculate_SINR(
+                    UE_ID=self.UE_ID,
+                    displacement=displacement,
+                    d_2D=self.dist_to_BS_2D,
+                    d_2D_in=self.dist_to_BS_2D_in,
+                    d_3D=self.dist_to_BS_3D,
+                    UE_height=self.UE_height,
+                    ue_class=self.ue_class,
+                    current_position=None
+                )
+        except Exception as e:
+            mode_str = "SC" if use_sc else "Time-based"
+            print(f"[DEBUG] Exception: {e}")
+            print(f"ОШИБКА UPD_CH_QUALITY UE {self.UE_ID} (режим: {mode_str}):")
+            print(f"  Position: {self.position}")
+            print(f"  Distances: 2D={self.dist_to_BS_2D:.2f}m, 3D={self.dist_to_BS_3D:.2f}m")
+            print(f"  UE_height: {self.UE_height}, ue_class: {self.ue_class}")
+            print(f"  Displacement: {displacement:.2f}m")
+            if use_sc:
+                print(f"  Current_position: {current_position}")
+            raise
         
         self.cqi = self.SINR_TO_CQI(self.SINR)
-                
         self.SINR_values.append(self.SINR)
         self.CQI_values.append(self.cqi)
         
