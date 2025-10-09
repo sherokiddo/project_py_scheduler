@@ -635,9 +635,9 @@ def test_scheduler_with_metrics():
     ue2 = UserEquipment(UE_ID=2, x=500, y=500, ue_class="car")
     ue3 = UserEquipment(UE_ID=3, x=100, y=100, ue_class="car")
     
-    rma = RMaModel(bs, spatial_consistency=False)
-    uma = UMaModel(bs, spatial_consistency=False)
-    umi = UMiModel(bs, spatial_consistency=False)
+    rma = RMaModel(bs, spatial_consistency=True)
+    uma = UMaModel(bs, spatial_consistency=True)
+    umi = UMiModel(bs, spatial_consistency=True)
 
     for ue in (ue1, ue2, ue3):
         ue.SET_CH_MODEL(UMiModel(bs, spatial_consistency=True))

@@ -113,7 +113,7 @@ def debug_simulation():
     помощи вывода различных графиков и статистики для каждого пользователя.
     
     """
-    sim_duration = 20 # Время симуляции (в мс)
+    sim_duration = 500000 # Время симуляции (в мс)
     update_interval = 1 # Интервал обновления параметров пользователя (в мс)
     num_frames = int(np.ceil(sim_duration / 10)) # Кол-во кадров (для ресурсной сетки)
     bandwidth = 10 # Ширина полосы (в МГц)
@@ -143,9 +143,11 @@ def debug_simulation():
     ue3.SET_MOBILITY_MODEL(random_waypoint)
     
     # Создание модели радиоканала  
-    uma = UMaModel(bs=bs, cond_update_period=5)
+    uma = UMaModel(bs=bs,spatial_consistency=False, cond_update_period=5000)
     
     # Назначение пользователям модели радиоканала
+    # for ue in (ue1, ue2, ue3):
+    #     ue.SET_CH_MODEL(RMaModel(bs, spatial_consistency=True))
     ue1.SET_CH_MODEL(uma)
     ue2.SET_CH_MODEL(uma)
     ue3.SET_CH_MODEL(uma)
