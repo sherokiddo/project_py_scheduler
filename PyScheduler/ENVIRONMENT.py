@@ -225,7 +225,7 @@ def save_scheduler_efficiency(scheduler_name, num_users, mean_elapsed_time_array
 def test_visualize_lte_timeline():
     """Тестовая функция для проверки корректной визуализации слотов по временной оси"""
     print("Создание ресурсной сетки LTE...")
-    lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=2)
+    lte_grid = RES_GRID_LTE(bandwidth=3, num_frames=2)
     
     # Выделение различных ресурсных блоков
     # TTI 0
@@ -437,7 +437,7 @@ def test_scheduler_grid():
     lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=2)  # 1 фрейм = 10 TTI
     visualizer = LTEGridVisualizer(lte_grid)
     bs = BaseStation(x=0, y=0, height=25.0, bandwidth=10)
-    scheduler = ProportionalFairScheduler(lte_grid, bs)
+    scheduler = ProportionalFairScheduler(lte_grid, bs, max_dl_ue_tti=3)
     current_time = 0
 
     # Шаг 2: Создание пользователей
@@ -888,8 +888,8 @@ def test_scheduler_efficiency():
 if __name__ == "__main__":
     #test_scheduler_with_buffer()
     #test_visualize_lte_timeline()
-    #test_scheduler_grid()
-    test_scheduler_with_metrics()
+    test_scheduler_grid()
+    #test_scheduler_with_metrics()
     #test_scheduler_efficiency()
     
     print("Все тесты успешно пройдены!")
