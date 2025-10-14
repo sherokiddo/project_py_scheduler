@@ -591,7 +591,7 @@ class SchedulerInterface:
     Интерфейс для планировщиков ресурсов.
     Все планировщики должны наследоваться от этого класса и реализовывать метод schedule.
     """
-    def __init__(self, lte_grid: RES_GRID_LTE):
+    def __init__(self, lte_grid: RES_GRID_LTE, max_dl_ue_tti: Optional[int] = None):
         """
         Инициализация интерфейса планировщика.
         
@@ -599,6 +599,13 @@ class SchedulerInterface:
             lte_grid: Объект RES_GRID_LTE для работы с ресурсной сеткой
         """
         self.lte_grid = lte_grid
+        if max_dl_ue_tti is not None:
+            if not isinstance(max_dl_ue_tti, int):
+                raise TypeError(f"max_dl_ue_tti должен быть целым числом или None, получено: {type(max_dl_ue_tti)}")
+            if max_dl_ue_tti <= 0:
+                raise ValueError(f"max_dl_ue_tti должен быть положительным числом, получено: {max_dl_ue_tti}")
+        
+        self.max_dl_ue_tti = max_dl_ue_tti
     
     def schedule(self, tti: int, 
             users: List[Dict], 
