@@ -1,1 +1,3 @@
 CURRENT_TIME = 0.0
+
+SEED = None

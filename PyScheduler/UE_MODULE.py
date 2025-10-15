@@ -63,6 +63,7 @@
 #------------------------------------------------------------------------------
 """
 import numpy as np
+import GLOBALS
 from collections import deque
 from typing import Dict, List, Optional, Union, Tuple
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel
@@ -275,16 +276,21 @@ class UserEquipment:
     Класс, представляющий пользовательское устройство (UE) в сети LTE.
     """
     def __init__(self, UE_ID: int, x: float = 0.0, y: float = 0.0,
-                 buffer_size: int = 1048576, ue_class: str = "pedestrian"):
+                 buffer_size: int = 1048576, ue_class: str = "pedestrian",
+                 indoor_boundaries: Tuple[float, float, float, float] = (0, 0, 0, 0)):
         """
         Инициализация пользовательского устройства.
-        
+
         Args:
-            UE_ID: Уникальный идентификатор пользователя
-            x: Начальная координата X (м)
-            y: Начальная координата Y (м)
-            buffer_size: Размер буфера в байтах
-            ue_class: Класс пользователя (стационарный, пешеход, машина, поезд)
+            UE_ID (int): Уникальный идентификатор пользователя.
+            x (float, optional): Начальная координата X (м). По умолчанию 0.0.
+            y (float, optional): Начальная координата Y (м). По умолчанию 0.0.
+            buffer_size (int, optional): Размер буфера (байты). По умолчанию 1048576.
+            ue_class (str, optional): Класс UE. По умолчанию "pedestrian".
+            indoor_boundaries (Tuple[float, float, float, float], optional): Границы
+            помещения, в котором находится UE (при классе UE "indoor"). 
+                По умолчанию (0, 0, 0, 0).
+
         """
         self.UE_ID = UE_ID
         self.position = (x, y)  # Координаты (x, y) в метрах
@@ -297,7 +303,10 @@ class UserEquipment:
         self.mean_direction = 0.0 # Среднее направление (Для Gauss-Markov)
         #@sherokiddo пишет: "В рамках рефакторинга выпилить mean_velocity и mean_direction из атрибутов юзера
         #пусть живут в модели Гаусс-Маркова"
+        
         self.is_indoor = False # Находится ли UE в помещении
+        self.indoor_boundaries = indoor_boundaries # Границы помещения
+        
         self._set_scenario_parameters()
         
         self.mobility_model = None  # Установить позже
@@ -351,88 +360,110 @@ class UserEquipment:
         self.total_dropped_dl_packets = 0
 
 
-    def PROCESS_DCI(self, tti: int, bitmap: List[int]):
-        """Обработка Downlink Control Information (имитация)"""
+    def PROCESS_DCI(self, tti: int, bitmap: List[int]) -> None:
+        """
+        Обработка Downlink Control Information (имитация).
+
+        Args:
+            tti (int): Значение TTI.
+            bitmap (List[int]): Распределение RBG для пользователя.
+
+        """
         self.allocated_rbg = [
             rbg_idx for rbg_idx, bit in enumerate(bitmap) 
             if bit == 1
         ]
         print(f"UE{self.id} получил DCI (TTI {tti}): RBG {self.allocated_rbg}")
     
-    def SET_MOBILITY_MODEL(self, model):
+    def SET_MOBILITY_MODEL(self, model) -> None:
         """
-        Установить модель движения пользователя. Метод можно будет вызвать
-        глобально и по конкретному UE_ID
-        
+        Установить модель передвижения для пользователя.
+
         Args:
-            model: Объект модели движения
+            model (MobilityModel): Модель передвижения.
+
         """
+        if not isinstance(model, (RandomWalkModel, RandomWaypointModel,
+                                  RandomDirectionModel, GaussMarkovModel)):
+            raise TypeError(f"Некорректный тип модели передвижения: {type(model).__name__}")
+        
         self.mobility_model = model
         
-        #@sherokiddo: "А вот как валидировать метод, по корректному model...
-        # если у нас нет единого парента для всех моделей...?"
+        # @IvanNoritsin: Нужен базовый класс для моделей передвижения для более
+        # корректной валидации.
     
-    def SET_CH_MODEL(self, model):
+    def SET_CH_MODEL(self, model) -> None:
         """
-        Установить модель канала связи.
-        
+        Установить модель радиоканала для пользователя.
+
         Args:
-            model: Объект модели канала
+            model (ChannelModel): Модель радиоканала.
+
         """
+        from CHANNEL_MODEL import ChannelModel
+        
+        if not isinstance(model, ChannelModel):
+            raise TypeError(f"Некорректный тип модели канала: {type(model).__name__}")
+        
         self.channel_model = model
-        
-        #@sherokiddo: "Абаюнда тому что в SET_MOBILITY_MODEL"
     
-    def SET_TRAFFIC_MODEL(self, model):
+    def SET_TRAFFIC_MODEL(self, model) -> None:
         """
-        Установить модель генерации трафика.
-        
+        Установить модель генерации трафика для пользователя.
+
         Args:
-            model: Объект модели трафика
+            model (TrafficModel): Модель генерации трафика.
+
         """
+        if not isinstance(model, (PoissonModel, OnOffModel, MMPPModel)):
+            raise TypeError(f"Некорректный тип модели трафика: {type(model).__name__}")
+            
         self.traffic_model = model
         
-        #@sherokiddo: "Предусмотреть валидацию"
+        # @IvanNoritsin: Нужен базовый класс для моделей трафика для более
+        # корректной валидации.
     
-    def UPD_POSITION(self, time_ms: int, bs_position: Tuple[float, float], bs_height: float,
-                     indoor_boundaries: Tuple[float, float, float, float] = (0, 0, 0, 0)):
+    def UPD_POSITION(self, current_time: int, bs_position: Tuple[float, float], 
+                     bs_height: float) -> None:
         """
-        Обновить позицию пользователя согласно модели движения.
-        
+        Обновить позицию пользователя согласно модели передвижения.
+
         Args:
-            time_ms: Текущее время в миллисекундах
-            bs_position: Координаты базовой станции (x, y) в метрах
-        """       
+            current_time (int): Текущее время симуляции (мс).
+            bs_position (Tuple[float, float]): Координаты базовой станции.
+            bs_height (float): Высота антенны базовой станции (м).
+
+        """      
         # Вызов функции update для модели Random Walk:
         if isinstance(self.mobility_model, RandomWalkModel):
             self.position, self.velocity, self.direction, self.is_first_move = self.mobility_model.update(
-                self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction, self.is_first_move, time_ms
+                self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction, self.is_first_move, current_time
             )
         
         # Вызов функции update для модели Random Waypoint:
         if isinstance(self.mobility_model, RandomWaypointModel):
             self.position, self.velocity, self.direction, self.destination, self.is_paused, self.pause_timer = self.mobility_model.update(
                 self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction,
-                self.destination, self.is_paused, self.pause_timer, time_ms
+                self.destination, self.is_paused, self.pause_timer, current_time
             )
             
         # Вызов функции update для модели Random Direction:
         if isinstance(self.mobility_model, RandomDirectionModel):
             self.position, self.velocity, self.direction, self.destination, self.is_paused, self.pause_timer, self.is_first_move = self.mobility_model.update(
                 self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction,
-                self.destination, self.is_paused, self.pause_timer, self.is_first_move, time_ms
+                self.destination, self.is_paused, self.pause_timer, self.is_first_move, current_time
             )   
             
         if isinstance(self.mobility_model, GaussMarkovModel):
             self.position, self.velocity, self.direction, self.mean_direction = self.mobility_model.update(
-                self.position, self.velocity, self.direction, self.mean_velocity, self.mean_direction, time_ms
+                self.position, self.velocity, self.direction, self.mean_velocity, self.mean_direction, current_time
             )
             
         self.coordinates.append(self.position)
         
         # Обновление 2D и 3D расстояний до базовой станции
         if self.is_indoor:
-            self._calculate_distances_to_BS(bs_position, bs_height, indoor_boundaries)
+            self._calculate_distances_to_BS(bs_position, bs_height)
             
         else:
             self.dist_to_BS_2D = np.hypot(self.position[0] - bs_position[0],
@@ -443,26 +474,15 @@ class UserEquipment:
             self.dist_to_BS_3D = np.hypot(self.dist_to_BS_2D, bs_height - self.UE_height)
             
     
-    def UPD_CH_QUALITY(self):
+    def UPD_CH_QUALITY(self) -> None:
         """
-        Обновить качество канала согласно модели распространения.
+        Обновить качество канала связи согласно модели распространения сигнала.
         
-        Args:
-            time_ms: Текущее время в миллисекундах
-            bs_position: Координаты базовой станции (x, y) в метрах
         """
         from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
-
+        
         if not self.channel_model:
             raise ValueError("Ошибка! Модель канала не определена! {}".format(self.UE_ID))
-            
-        # @shrokiddo: "Добавил валидацию назначения модели, а то небыло"
-        # рекомендую сделать валидацию вызова UPD_POSITION, потому что он
-        # должен вызываться раньше UPD_CH_QUALITY 
-        # (сначала получаем координаты а потом качество канала), а это неявно
-        # а если вдруг координаты не менялись, можно упростить расчеты и просто
-        # дублировать предыдущий SINR...хотя...зачем тогда модели.
-        # вариант чисто на подумать
         
         displacement = np.hypot(self.position[0] - self.coordinates[-2][0],
                                 self.position[1] - self.coordinates[-2][1])
@@ -474,7 +494,7 @@ class UserEquipment:
                 else:
                     self.UE_height = 1.0
             
-        if isinstance(self.channel_model, UMaModel) or isinstance(self.channel_model, UMiModel):
+        if isinstance(self.channel_model, (UMaModel, UMiModel)):
             if self.UE_height == 0.0:
                 if self.is_indoor == True:
                     N_fl = np.random.uniform(4, 8)
@@ -482,7 +502,7 @@ class UserEquipment:
                     self.UE_height = 3 * (n_fl - 1) + 1.5
                 else:
                     self.UE_height = 1.5
-                    
+                  
         self.SINR = self.channel_model.calculate_SINR(
             self.UE_ID, displacement, self.dist_to_BS_2D, self.dist_to_BS_2D_in, 
             self.dist_to_BS_3D, self.UE_height, self.ue_class
@@ -492,20 +512,16 @@ class UserEquipment:
                 
         self.SINR_values.append(self.SINR)
         self.CQI_values.append(self.cqi)
-        
-        #@sherokiddo пишет: "Ваня, я понимаю, что в моделях передвижения юзеров разные вводы и выводы.
-        # Но блин тут то для всех моделей одинаково всё! Не по чистокоду. В рамках рефакторинга
-        # сделай единый метод вызова для любой модели (желательно в MOBILITY_MODEL)
-        # тут же столько оптимизировать можно...Подумай на досуге в общем"
     
     def GEN_TRFFC(self, current_time: int, update_interval: int) -> None:
         """
-        Генерирует трафик и добавляет пакет в буфер с автоматической очисткой старых пакетов.
-        
+        Сгенерировать пакеты трафика согласно модели и добавить их в буфер.
+
         Args:
-            current_time: Текущее время в мс (используется для TTL)
+            current_time (int): Текущее время симуляции (мс).
+            update_interval (int): Интервал обновления состояния UE (мс).
+
         """
-        
         if not self.traffic_model:
             raise ValueError("Ошибка! Модель генерации трафика не определена! {}".format(self.UE_ID))
         
@@ -544,10 +560,11 @@ class UserEquipment:
     def UPD_THROUGHPUT(self, bits_transmitted: int, time_interval_ms: int):
         """
         Обновить статистику пропускной способности.
-        
+
         Args:
-            bits_transmitted: Количество переданных бит
-            time_interval_ms: Интервал времени в мс
+            bits_transmitted (int): Количество переданных бит.
+            time_interval_ms (int): Интервал времени (мс).
+
         """
         # Текущая пропускная способность в бит/с
         self.current_throughput = (bits_transmitted * 1000) / time_interval_ms if time_interval_ms > 0 else 0
@@ -557,11 +574,12 @@ class UserEquipment:
         
     def UPD_DL_THROUGHPUT(self, bits_dl_transmitted: int, time_interval_ms: int):
         """
-        Обновить статистику пропускной способности в DL
-        
+        Обновить статистику пропускной способности в DL.
+
         Args:
-            bits_dl_transmitted: Количество переданных бит
-            time_interval_ms: Интервал времени в мс
+            bits_dl_transmitted (int): Количество переданных бит в DL.
+            time_interval_ms (int): Интервал времени (мс).
+
         """
         # Текущая пропускная способность в бит/с
         self.current_dl_throughput = (bits_dl_transmitted * 1000) / time_interval_ms if time_interval_ms > 0 else 0
@@ -583,21 +601,23 @@ class UserEquipment:
     def GET_BUFFER_STATUS(self, current_time: int) -> Dict:
         """
         Получить текущий статус буфера.
-        
+
         Args:
-            current_time: Текущее время в мс
-            
+            current_time (int): Текущее время симуляции (мс).
+
         Returns:
-            Dict: Статус буфера
+            Dict: Статус буфера.
+
         """
         return self.buffer.GET_STATUS(current_time)
     
     def GET_CH_QUALITY(self) -> Dict:
         """
         Получить текущее качество канала.
-        
+
         Returns:
-            Dict: Параметры качества канала
+            Dict: Параметры качества канала.
+
         """
         return {
             'cqi': self.cqi,
@@ -608,14 +628,13 @@ class UserEquipment:
     def SINR_TO_CQI(self, SINR: float) -> int:
         """
         Преобразовать SINR в CQI согласно спецификации LTE.
-        Решил сделать не через множество elif, чтобы сократить код.
-        Но можно вернуть твой метод.
-        
+
         Args:
-            SINR: Отношение сигнал/шум+помехи в dB
-            
+            SINR (float): Отношение сигнал/шум+помехи (дБ).
+
         Returns:
-            int: Значение CQI (1-15)
+            int: Значение CQI (1-15).
+
         """
         if SINR <= -6.934:
             return 1
@@ -626,18 +645,19 @@ class UserEquipment:
             step = (22.976 + 6.934) / 14
             return int(1 + (SINR + 6.934) / step)
         
-    def _calculate_distances_to_BS(self, bs_position: Tuple[float, float], bs_height: float,
-                                   indoor_boundaries: Tuple[float, float, float, float]) -> None:
+    def _calculate_distances_to_BS(self, bs_position: Tuple[float, float], 
+                                   bs_height: float) -> None:
         """
-        Вычисляет расстояние от пользователя до базовой станции с учетом нахождения внутри здания.
-        Разделяет расстояние на часть внутри здания (indoor) и снаружи (outdoor).
-    
+        Вычисляет расстояние от пользователя до базовой станции с учетом 
+        нахождения внутри здания. Разделяет расстояние на часть внутри здания 
+        (indoor) и снаружи (outdoor).
+
         Args:
-            bs_position: Координаты базовой станции (x, y) в метрах.
-            bs_height: Высота антенны базовой станции над землёй в метрах.
-            indoor_boundaries: Границы здания в формате (x_min, y_min, x_max, y_max).
+            bs_position (Tuple[float, float]): Координаты базовой станции.
+            bs_height (float): Высота антенны базовой станции (м).
+
         """
-        x_min, y_min, x_max, y_max = indoor_boundaries
+        x_min, x_max, y_min, y_max = self.indoor_boundaries
         
         ue_x, ue_y = self.position
         bs_x, bs_y = bs_position
@@ -687,41 +707,30 @@ class UserEquipment:
         self.dist_to_BS_3D = np.hypot(self.dist_to_BS_2D, bs_height - self.UE_height)
 
     def _set_scenario_parameters(self):
+        """
+        Установка параметров в зависимости от класса UE.
         
-        if self.ue_class == "indoor":
-            self.velocity_min = 0.0
-            self.velocity_max = 1.0
-            self.mean_velocity = 0.5
-            self.mean_direction = np.random.randint(0, 360)
-            self.is_indoor = True
+        """
+        self.mean_direction = np.random.randint(0, 360)
+        self.is_indoor = (self.ue_class == "indoor")
         
-        elif self.ue_class == "pedestrian":
-            self.velocity_min = 0.5
-            self.velocity_max = 1.7
-            self.mean_velocity = 1.2
-            self.mean_direction = np.random.randint(0, 360)
-            self.is_indoor = False
-            
-        elif self.ue_class == "cyclist":
-            self.velocity_min = 2.0
-            self.velocity_max = 5.5
-            self.mean_velocity = 3.9
-            self.mean_direction = np.random.randint(0, 360)
-            self.is_indoor = False
-            
-        elif self.ue_class == "car":
-            self.velocity_min = 0.0
-            self.velocity_max = 16.7
-            self.mean_velocity = 11.1
-            self.mean_direction = np.random.randint(0, 360)
-            self.is_indoor = False
-            
-        else:
-            raise ValueError("Недопустимое значение типа передвижения устройства!")
-        # @sherokiddo пишет: "В рамках рефакторинга выпилить mean_velocity и mean_direction из атрибутов юзера
-        # пусть живут в модели Гаусс-Маркова.
-        # атрибут self.mean_direction = np.random.randint(0, 360) сделать глобальным, чего тут его дублировать
-        # можно было сделать через словари, но так тоже лаконично. с точки зрения оптимизации еще вариантов не знаю"
+        params = {
+            "indoor": (0.0, 1.0, 0.5),
+            "pedestrian": (0.5, 1.7, 1.2),
+            "cyclist": (2.0, 5.5, 3.9),
+            "car": (0.0, 16.7, 11.1)
+        }
+        
+        if self.ue_class not in params:
+            raise ValueError(f"Недопустимое значение типа передвижения устройства: {self.ue_class}")
+        
+        self.velocity_min, self.velocity_max, self.mean_velocity = params[self.ue_class]
+        
+        # Значение границ помещения по умолчанию, если параметр не был задан
+        if self.is_indoor and self.indoor_boundaries == (0, 0, 0, 0):
+            x, y = self.position
+            self.indoor_boundaries = (x - 10, x + 10, y - 10, y + 10)
+    
         
 class UECollection:
     """
@@ -732,20 +741,19 @@ class UECollection:
         """
         Инициализация коллекции UE.
         
-        Args:
-            bs_position: Координаты базовой станции (x, y) в метрах
         """
         self.users = {}  # Словарь {UE_ID: UserEquipment}
     
     def ADD_USER(self, ue: UserEquipment) -> bool:
         """
         Добавить пользователя в коллекцию.
-        
+
         Args:
-            ue: Объект пользовательского устройства
-            
+            ue (UserEquipment): Объект пользовательского устройства.
+
         Returns:
-            bool: True, если пользователь добавлен, False если уже существует
+            bool: True, если пользователь добавлен, False если уже существует.
+
         """
         if ue.UE_ID in self.users:
             return False
@@ -756,12 +764,13 @@ class UECollection:
     def REMOVE_USER(self, UE_ID: int) -> bool:
         """
         Удалить пользователя из коллекции.
-        
+
         Args:
-            UE_ID: Идентификатор пользователя
-            
+            UE_ID (int): Идентификатор пользователя.
+
         Returns:
-            bool: True, если пользователь удален, False если не найден
+            bool: True, если пользователь удален, False если не найден.
+
         """
         if UE_ID in self.users:
             del self.users[UE_ID]
@@ -771,101 +780,182 @@ class UECollection:
     def GET_USER(self, UE_ID: int) -> Optional[UserEquipment]:
         """
         Получить пользователя по ID.
-        
+
         Args:
-            UE_ID: Идентификатор пользователя
-            
+            UE_ID (int): Идентификатор пользователя.
+
         Returns:
-            UserEquipment или None, если пользователь не найден
+            Optional[UserEquipment]: UserEquipment или None, если пользователь 
+            не найден.
+
         """
         return self.users.get(UE_ID)
     
     def GET_ALL_USERS(self) -> List[UserEquipment]:
         """
         Получить список всех пользователей.
-        
+
         Returns:
-            List[UserEquipment]: Список всех пользователей
+            List[UserEquipment]: Список всех пользователей.
+
         """
         return list(self.users.values())
     
-    def UPDATE_ALL_USERS(self, time_ms: int, update_interval: int, 
-                         bs_position: Tuple[float, float], bs_height: float, 
-                         indoor_boundaries: Tuple[float, float, float, float] = (0, 0, 0, 0)):
+    def UPDATE_ALL_USERS(self, current_time: int, update_interval: int, 
+                         bs_position: Tuple[float, float], bs_height: float):
         """
-        Обновить состояние всех пользователей.
-        
+        Обновить состояние всех пользователей в коллекции.
+
         Args:
-            time_ms: Текущее время в миллисекундах
+            current_time (int): Текущее время симуляции (мс).
+            update_interval (int): Интервал обновления состояния UE (мс).
+            bs_position (Tuple[float, float]): Координаты базовой станции.
+            bs_height (float): Высота антенны базовой станции (м).
+
         """
         for ue in self.users.values():
+            
             # Обновление позиции
-            ue.UPD_POSITION(update_interval, bs_position, bs_height, indoor_boundaries)
+            ue.UPD_POSITION(update_interval, bs_position, bs_height)
             
             # Обновление качества канала
             ue.UPD_CH_QUALITY()
-            
-            # Генерация нового трафика
-            # Пока что закрыто на ремонт
-# =============================================================================
-#             ue.GEN_TRFFC(time_ms, update_interval)
-# =============================================================================
     
     def GET_ACTIVE_USERS(self) -> List[UserEquipment]:
         """
         Получить список активных пользователей (с данными в буфере).
-        
+
         Returns:
-            List[UserEquipment]: Список активных пользователей
+            List[UserEquipment]: Список активных пользователей.
+
         """
         return [ue for ue in self.users.values() 
                 if ue.buffer.GET_STATUS(0)['size'] > 0]
     
-    def GET_USERS_FOR_SCHEDULER(self):
-        
+    def GET_USERS_FOR_SCHEDULER(self) -> List:
+        """
+        Получить данные о пользователях для планировщика.
+
+        Returns:
+            List: Список с данными о пользователях.
+
+        """
         users_data = []
-        for user in self.users.values():
+        for ue in self.users.values():
             users_data.append({
-                'UE_ID': user.UE_ID,
-                'cqi': user.cqi,
-                'ue': user,
+                'UE_ID': ue.UE_ID,
+                'cqi': ue.cqi,
+                'ue': ue,
                 })
         
         return users_data
+    
+    def ADD_RANDOM_USERS(self, num_ue: int, x_min: float = -1000, 
+                         x_max: float = 1000, y_min: float = -1000, 
+                         y_max: float = 1000, ue_class: str = "random"):
+        """
+        Добавить указанное количество пользовательских устройств (UE) в 
+        коллекцтю со случайными координатами и классом пользователя. Если класс
+        UE указан как "random" то каждому UE случайно присваивается один из 
+        доступных классов (кроме "indoor"). В противном случае всем UE назначается 
+        указанный класс. Генерируемые значения могут быть зафиксированы при помощи
+        указания сида в симуляции.
+        
+        Args:
+            num_ue (int): Количество UE для добавления.
+            x_min (float, optional): Минимальная координата по оси X. 
+                По умолчанию -1000.
+            x_max (float, optional): Максимальная координата по оси X.
+                По умолчанию 1000.
+            y_min (float, optional): Минимальная координата по оси Y.
+                По умолчанию -1000.
+            y_max (float, optional): Максимальная координата по оси Y.
+                По умолчанию 1000.
+            ue_class (str, optional): Класс UE. По умолчанию "random".
 
-def prepare_users_for_scheduler(ue_collection: UECollection, time_ms: int) -> List[Dict]:
-    """
-    Подготовить данные о пользователях для планировщика.Пока пример функции.
-    Я не представляю, какой коннектор мы будем делать, но скорее всего он будет
-    жить в коллекции пользователей. А коллекцию вынесем в ENVIRONMENT.
+        """
+        rng = np.random.default_rng(GLOBALS.SEED)
+
+        if ue_class == "random":
+            available_classes = ["pedestrian", "cyclist", "car"]
+            ue_classes = rng.choice(available_classes, size=num_ue, replace=True)
+        else:
+            ue_classes = [ue_class] * num_ue
     
-    Args:
-        ue_collection: Коллекция пользователей
-        time_ms: Текущее время в миллисекундах
+        start_id = max(self.users.keys(), default=0) + 1
+    
+        for i in range(num_ue):
+            ue_id = start_id + i
+            x_position = rng.uniform(x_min, x_max)
+            y_position = rng.uniform(y_min, y_max)
+    
+            self.users[ue_id] = UserEquipment(
+                UE_ID=ue_id,
+                x=x_position,
+                y=y_position,
+                ue_class=ue_classes[i]
+            )
         
-    Returns:
-        List[Dict]: Список словарей с данными о пользователях
-    """
-    users_data = []
+    def SET_MOBILITY_MODEL(self, model, ue_ids: List[int] = None):
+        """
+        Установить модель передвижения пользователей в коллекции. Если ue_ids
+        задан как None, то модель применится ко всем UE в коллекции. 
+
+        Args:
+            model (MobilityModel): Модель передвижения.
+            ue_ids (List[int], optional): Список ID пользователей, к которым
+            необходимо применить модель. По умолчанию None.
+
+        """
+        for ue in self.users.values():
+            if ue_ids is None or ue.UE_ID in ue_ids:
+                ue.SET_MOBILITY_MODEL(model)
+                
+    def SET_CH_MODEL(self, model, ue_ids: List[int] = None):
+        """
+        Установить модель радиоканала для пользователей в коллекции. Если ue_ids
+        задан как None, то модель применится ко всем UE в коллекции. 
+
+        Args:
+            model (ChannelModel): Модель радиоканала.
+            ue_ids (List[int], optional): Список ID пользователей, к которым
+            необходимо применить модель. По умолчанию None.
+
+        """
+        for ue in self.users.values():
+            if ue_ids is None or ue.UE_ID in ue_ids:
+                ue.SET_CH_MODEL(model)
+                
+        # @IvanNoritsin: Пока что у нас модель трафика задаётся для каждого
+        # пользователя, а не для БС. Как только данный момент будет исправлен,
+        # надобность в этой функции исчезнет и её нужно будет удалить.
+               
+    def SET_TRAFFIC_MODEL(self, model, ue_ids: List[int] = None):
+        """
+        Установить модель генерации трафика для пользователей в коллекции. Если 
+        ue_ids задан как None, то модель применится ко всем UE в коллекции. 
+
+        Args:
+            model (TrafficModel): Модель генерации трафика.
+            ue_ids (List[int], optional): Список ID пользователей, к которым
+            необходимо применить модель. По умолчанию None.
+
+        """
+        for ue in self.users.values():
+            if ue_ids is None or ue.UE_ID in ue_ids:
+                ue.SET_TRAFFIC_MODEL(model)
     
-    for ue in ue_collection.GET_ACTIVE_USERS():
-        buffer_status = ue.GET_BUFFER_STATUS(time_ms)
-        channel_quality = ue.GET_CH_QUALITY()
-        
-        users_data.append({
-            'UE_ID': ue.UE_ID,
-            'buffer_size': buffer_status['size'],
-            'packet_count': buffer_status['packet_count'],
-            'oldest_packet_delay': buffer_status['oldest_packet_delay'],
-            'cqi': channel_quality['cqi'],
-            'SINR': channel_quality['SINR'],
-            'distance': channel_quality['distance'],
-            'current_throughput': ue.current_throughput,
-            'average_throughput': ue.average_throughput,
-            'pf_metric': ue.CALC_PF_METRIC()
-        })
-    
-    return users_data
+    def REG_USERS_TO_BS(self, bs):
+        """
+        Регистрация всех пользователей коллекции в базовой станции.
+
+        Args:
+            bs (BaseStation): Объект базовой станции.
+
+        """
+        for ue in self.users.values():
+            bs.REG_UE(ue)
+
 
 # Далее тесты для проверки работоспособности буфера и примеры работы с ним. 
 # Можно удалить или закомментить после того, как будут сделаны генераторы трафика.

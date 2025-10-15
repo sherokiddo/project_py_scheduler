@@ -692,7 +692,7 @@ def test_scheduler_with_metrics():
         GLOBALS.CURRENT_TIME = current_time
         
         # Обновление состояния пользователей
-        ue_collection.UPDATE_ALL_USERS(time_ms=current_time, 
+        ue_collection.UPDATE_ALL_USERS(current_time=current_time, 
                                        update_interval=update_interval, 
                                        bs_position=bs.position, 
                                        bs_height=bs.height)
@@ -848,7 +848,7 @@ def test_scheduler_efficiency_simulation():
     for current_time in range(update_interval, sim_duration + 1, update_interval):
         
         # Обновление состояния пользователей
-        ue_collection.UPDATE_ALL_USERS(time_ms=current_time, 
+        ue_collection.UPDATE_ALL_USERS(current_time=current_time, 
                                        update_interval=update_interval, 
                                        bs_position=bs.position, 
                                        bs_height=bs.height)
