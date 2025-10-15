@@ -519,7 +519,7 @@ class ProportionalFairScheduler(SchedulerInterface):
             scheduled_count = min(self.max_dl_ue_tti, len(active_users))
             scheduled_users =  active_users[:scheduled_count]
         else:
-            scheduled_count = active_users
+            scheduled_users = active_users
         
         # 3. Расчет параметров планирования и инициализация структур
         rbg_size = self.lte_grid.GET_RBG_SIZE()
