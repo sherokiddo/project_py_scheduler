@@ -46,6 +46,16 @@ from typing import Dict, List, Optional, Union, Tuple
 from RES_GRID import RES_GRID_LTE, SchedulerInterface
 from BS_MODULE import BaseStation
 
+#==============================================================================
+#                              ЛОГИКА PDCCH
+#==============================================================================
+
+
+
+#==============================================================================
+#                               ЛОГИКА AMC
+#==============================================================================
+
 class AdaptiveModulationAndCoding:
     """
     Класс для преобразования CQI в MCS и расчета бит на ресурсный блок.
@@ -145,10 +155,14 @@ class AdaptiveModulationAndCoding:
         stats['total_effective_bits'] = total_effective_bits
         return stats
 
+#==============================================================================
+#                              ЛОГИКА SCHEDULER
+#==============================================================================
+
 class RoundRobinScheduler(SchedulerInterface):
     
-    def __init__(self, lte_grid: RES_GRID_LTE, bs: BaseStation):
-        super().__init__(lte_grid)
+    def __init__(self, lte_grid: RES_GRID_LTE, bs: BaseStation, max_dl_ue_tti: Optional[int] = None):
+        super().__init__(lte_grid, max_dl_ue_tti)
         self.lte_grid = lte_grid
         self.lte_grid.SET_BS(bs)
         self.last_served_ue_id = None 
@@ -174,7 +188,7 @@ class RoundRobinScheduler(SchedulerInterface):
             for user in users:
                 user['ue'].current_dl_throughput = 0
             
-            # 1. Фильтрация активных пользователей через буфер BS
+            # 1. Фильтрация активных пользователей по буферу BS
             active_users = []
             for user in users:
                 ue_id = user['UE_ID']
@@ -192,15 +206,11 @@ class RoundRobinScheduler(SchedulerInterface):
             if not active_users:
                 return {'allocation': {}, 'statistics': {}, 'bitmap': {}}
         
-            # 2. Расчет параметров RBG
-            rbg_size = self.lte_grid.GET_RBG_SIZE()
-            total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size
         
-            # 3. Инициализация структур данных
-            allocation = {user['UE_ID']: [] for user in active_users}
+            # 2. Определение стартового индекса планирования
             if self.last_served_ue_id is None:
                 # Первый запуск, начинаем с 0
-                current_idx = 0
+                start_idx = 0
             else:
                 # Ищем последнего обслуженного пользователя в новом списке активных
                 found_idx = -1
@@ -212,15 +222,30 @@ class RoundRobinScheduler(SchedulerInterface):
                 # Начинаем со следующего пользователя после последнего обслуженного
                 if found_idx == -1:
                     # Если не нашли пользователя, начинаем с 0
-                    current_idx = 0
+                    start_idx = 0
                 else:
                     # Если нашли, берем следующего
-                    current_idx = (found_idx + 1) % len(active_users)
-            
-            #4. Определение количества бит на передачу каждому пользователю
-            remaining_buffer = {user['UE_ID']: user['bs_buffer_size'] * 8 for user in active_users}
-            
+                    start_idx = (found_idx + 1) % len(active_users)
+
+            # 3. Создание списка пользователей для планирования с учетом лимитов
+            if self.max_dl_ue_tti is not None:
+                scheduled_count = min(self.max_dl_ue_tti, len(active_users))
+                scheduled_users = []
+                idx = start_idx
+                for _ in range(scheduled_count):
+                    scheduled_users.append(active_users[idx])
+                    idx = (idx + 1) % len(active_users)
+            else:
+                scheduled_users = active_users
+                    
+            # 4. Расчет параметров планирования и инициализация структур
+            rbg_size = self.lte_grid.GET_RBG_SIZE()
+            total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size            
+
+            allocation = {user['UE_ID']: [] for user in active_users}
+            remaining_buffer = {user['UE_ID']: user['bs_buffer_size'] * 8 for user in scheduled_users} 
             last_allocated_ue_id = None
+            current_idx = 0
 
             for rbg_idx in range(total_rbg):
                 if all(v <= 0 for v in remaining_buffer.values()):
@@ -228,13 +253,13 @@ class RoundRobinScheduler(SchedulerInterface):
         
                 # 5. Поиск следующего пользователя с данными
                 initial_idx = current_idx
-                while remaining_buffer[active_users[current_idx]['UE_ID']] <= 0:
-                    current_idx = (current_idx + 1) % len(active_users)
+                while remaining_buffer[scheduled_users[current_idx]['UE_ID']] <= 0:
+                    current_idx = (current_idx + 1) % len(scheduled_users)
                     if current_idx == initial_idx:
                         break
                 
                 # Получаем текущего пользователя и выделяем RBG
-                user = active_users[current_idx]
+                user = scheduled_users[current_idx]
                 ue_id = user['UE_ID']
                 
                 # 6. Основной цикл распределения RBG только если в буфере еще есть данные
@@ -251,7 +276,7 @@ class RoundRobinScheduler(SchedulerInterface):
                         remaining_buffer[ue_id] -= min(remaining_buffer[ue_id], rbg_capacity)
 
                 # 7. Переход к следующему пользователю
-                current_idx = (current_idx + 1) % len(active_users)
+                current_idx = (current_idx + 1) % len(scheduled_users)
                 
                 # 8. Обновление индекса последнего обслуженного UE
             if last_allocated_ue_id is not None:
@@ -261,10 +286,10 @@ class RoundRobinScheduler(SchedulerInterface):
             for user in users:
                 ue = user['ue']
                 ue_id = user['UE_ID'] #да, эта часть кода странная, но только после этого все заработало
-                bs_buffer = self.lte_grid.bs.ue_buffers.get(ue_id)
-                
+                bs_buffer = self.lte_grid.bs.ue_buffers.get(ue_id)                
                 if not bs_buffer:
                     continue
+                
                 allocated_rb = len(allocation.get(user['UE_ID'], [])) * 2
                 bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
                 max_bytes = (allocated_rb * bits_per_rb) // 8  #rbg_capacity // 8??
@@ -295,8 +320,8 @@ class RoundRobinScheduler(SchedulerInterface):
 
 class BestCQIScheduler(SchedulerInterface):
     
-    def __init__(self, lte_grid: RES_GRID_LTE, bs: BaseStation):
-        super().__init__(lte_grid)
+    def __init__(self, lte_grid: RES_GRID_LTE, bs: BaseStation, max_dl_ue_tti: Optional[int] = None):
+        super().__init__(lte_grid, max_dl_ue_tti)
         self.lte_grid = lte_grid
         self.lte_grid.SET_BS(bs)
         self.amc = AdaptiveModulationAndCoding() 
@@ -319,7 +344,7 @@ class BestCQIScheduler(SchedulerInterface):
         for user in users:
             user['ue'].current_dl_throughput = 0
         
-        # Фильтрация активных пользователей
+        # 1. Фильтрация активных пользователей
         active_users = []
         for user in users:
             ue_id = user['UE_ID']
@@ -335,30 +360,41 @@ class BestCQIScheduler(SchedulerInterface):
         if not active_users:
             return {'allocation': {}, 'statistics': {}, 'bitmap': {}}
 
-        # 2. Расчет RBG
+        # 2. Сортируем список по CQI
+        active_users.sort(key=lambda u: u['cqi'], reverse=True)
+
+        # 3. Создание списка пользователей для планирования с учетом лимитов
+        if self.max_dl_ue_tti is not None:
+            scheduled_count = min(self.max_dl_ue_tti, len(active_users))
+            scheduled_users = active_users[:scheduled_count]
+        else:
+            scheduled_users = active_users
+
+        # 4. Расчет параметров планирования и инициализация структур
         rbg_size = self.lte_grid.GET_RBG_SIZE()
         total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size
 
-        # 3. Инициализация структур данных
         allocation = {user['UE_ID']: [] for user in active_users}
-       
-        # 4. Определение количества бит на передачу каждому пользователю
         remaining_buffer = {user['UE_ID']: user['bs_buffer_size'] * 8 for user in active_users}
 
+        # 5. Основной цикл распределения RBG
         for rbg_idx in range(total_rbg):
             if all(v <= 0 for v in remaining_buffer.values()):
                 break
-            #фильтрация пользователей с данными в буфере
-            users_with_data = [u for u in active_users if remaining_buffer[u['UE_ID']] > 0]
-            if not users_with_data:
+            
+            # фильтрация пользователей с данными в буфере (удалена лишняя сортировка по CQI)
+            best_user = None
+            for user in scheduled_users:
+                if remaining_buffer[user['UE_ID']] > 0:
+                    best_user = user
+                    break
+            
+            if best_user is None:
                 break
 
-            # 5. Сортировка по CQI для выбора лучшего
-            users_with_data.sort(key=lambda u: u['cqi'], reverse=True)
-            best_user = users_with_data[0]  # Пользователь с наивысшим CQI
             ue_id = best_user['UE_ID']
             
-            # 6. Основной цикл распределение RBG
+            # выделение RBG
             if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, ue_id):
                 rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
                 allocation[ue_id].extend(rb_indices)
@@ -406,8 +442,8 @@ class BestCQIScheduler(SchedulerInterface):
 
 class ProportionalFairScheduler(SchedulerInterface):
     
-    def __init__(self, lte_grid: RES_GRID_LTE, bs: BaseStation):
-        super().__init__(lte_grid)
+    def __init__(self, lte_grid: RES_GRID_LTE, bs: BaseStation, max_dl_ue_tti: Optional[int] = None):
+        super().__init__(lte_grid, max_dl_ue_tti)
         self.lte_grid = lte_grid
         self.lte_grid.SET_BS(bs)
         self.amc = AdaptiveModulationAndCoding()
@@ -438,6 +474,7 @@ class ProportionalFairScheduler(SchedulerInterface):
             user['PF_metric'] = PF_metric
             user['ue'].PF_metric = PF_metric
             # print(f"PF metric: UE{user['UE_ID']} = {PF_metric}")
+            
         return users
             
     def schedule(self, tti: int, users: List[Dict]) -> Dict:
@@ -458,7 +495,7 @@ class ProportionalFairScheduler(SchedulerInterface):
         for user in users:
             user['ue'].current_dl_throughput = 0
             
-        # 1. Фильтрация активных пользователей
+        # 1. Фильтрация активных пользователей по буферу
         active_users = []
         for user in users:
             ue_id = user['UE_ID']
@@ -474,33 +511,41 @@ class ProportionalFairScheduler(SchedulerInterface):
         if not active_users:
             return {'allocation': {}, 'statistics': {}, 'bitmap': {}}
         
-        # 2. Расчёт PF-метрики для каждого пользователя
+        # 2. Расчёт и сортировка UE согласно PF-метрики
         active_users = self.calculate_pf_metric(active_users)
+        active_users.sort(key=lambda u: u['PF_metric'], reverse=True)
         
-        # 3. Расчет RBG
+        if self.max_dl_ue_tti is not None:
+            scheduled_count = min(self.max_dl_ue_tti, len(active_users))
+            scheduled_users =  active_users[:scheduled_count]
+        else:
+            scheduled_count = active_users
+        
+        # 3. Расчет параметров планирования и инициализация структур
         rbg_size = self.lte_grid.GET_RBG_SIZE()
         total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size
         
-        # 4. Инициализация структур данных
         allocation = {user['UE_ID']: [] for user in active_users}
+        remaining_buffer = {user['UE_ID']: user['bs_buffer_size'] * 8 for user in scheduled_users}
         
-        # 5. Определение количества бит на передачу каждому пользователю
-        remaining_buffer = {user['UE_ID']: user['bs_buffer_size'] * 8 for user in active_users}
-        
+        # 4. Основной цикл распределения RBG
         for rbg_idx in range(total_rbg):
             if all(v <= 0 for v in remaining_buffer.values()):
                 break
-            #фильтрация пользователей с данными в буфере
-            users_with_data = [u for u in active_users if remaining_buffer[u['UE_ID']] > 0]
-            if not users_with_data:
+            
+            # фильтрация пользователей с данными в буфере (по PF-метрике)
+            best_user = None
+            for user in scheduled_users:
+                if remaining_buffer[user['UE_ID']] > 0:
+                    best_user = user
+                    break
+            
+            if best_user is None:
                 break
-                
-            # 7. Сортировка по PF-метрике для выбора лучшего
-            users_with_data.sort(key=lambda u: u['PF_metric'], reverse=True)
-            best_user = users_with_data[0]  # Пользователь с наивысшей PF-метрикой
+
             ue_id = best_user['UE_ID']
             
-            # 8. Выделение RBG
+            # 5. Выделение RBG
             if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, ue_id):
                 rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
                 allocation[ue_id].extend(rb_indices)
