@@ -434,7 +434,7 @@ class BaseStation:
     
         # Генерация сырых данных через модель трафика
         
-            raw_data = model.generate(
+            raw_data = model.generate_traffic(
                 current_time=current_time,
                 update_interval=update_interval
             )
