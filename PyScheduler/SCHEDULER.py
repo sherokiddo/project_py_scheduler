@@ -617,6 +617,10 @@ class AdaptiveModulationAndCoding:
 #                              ЛОГИКА SCHEDULER
 #==============================================================================
 
+#==============================================================================
+#                              ЛОГИКА SCHEDULER
+#==============================================================================
+
 class RoundRobinScheduler(SchedulerInterface):
     
     def __init__(self, lte_grid: RES_GRID_LTE, bs: BaseStation, 
