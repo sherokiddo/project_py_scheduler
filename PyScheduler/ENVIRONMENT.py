@@ -37,7 +37,7 @@ from matplotlib.lines import Line2D
 from UE_MODULE import UECollection, UserEquipment
 from BS_MODULE import BaseStation, Buffer, Packet
 from RES_GRID import RES_GRID_LTE
-from SCHEDULER import RoundRobinScheduler, BestCQIScheduler, ProportionalFairScheduler, ProportionalFairScheduler_v2
+from SCHEDULER import RoundRobinScheduler, BestCQIScheduler, ProportionalFairScheduler
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel
 from TRAFFIC_MODEL import PoissonModel
 from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
@@ -437,36 +437,36 @@ def test_scheduler_grid():
     lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=2)  # 1 фрейм = 10 TTI
     visualizer = LTEGridVisualizer(lte_grid)
     bs = BaseStation(x=0, y=0, height=25.0, bandwidth=10)
-    scheduler = ProportionalFairScheduler(lte_grid, bs, max_dl_ue_tti=3)
+    scheduler = ProportionalFairScheduler(lte_grid, bs,
+                                    max_dl_ue_tti=5,
+                                    pcfich=2,
+                                    max_dl_cce_allowance=None,
+                                    verbose_pdcch=True)
     current_time = 0
 
     # Шаг 2: Создание пользователей
     ue1 = UserEquipment(UE_ID=1, x=300, y=300, ue_class="pedestrian")
     ue2 = UserEquipment(UE_ID=2, x=700, y=700, ue_class="car")
     ue3 = UserEquipment(UE_ID=3, x=100, y=200, ue_class="car")
+    ue4 = UserEquipment(UE_ID=4, x=500, y=500, ue_class="pedestrian")
+    ue5 = UserEquipment(UE_ID=5, x=900, y=900, ue_class="car")
 
     # Настройка моделей
-    ue1.SET_MOBILITY_MODEL(RandomWaypointModel(x_min=0, x_max=1000, y_min=0, y_max=1000, pause_time=10))
-    ue1.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=1000))
-    ue1.SET_CH_MODEL(UMiModel(bs))
+    for ue in [ue1, ue2, ue3, ue4, ue5]:
+        ue.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=1000, y_min=0, y_max=1000))
+        ue.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=5000))
+        ue.SET_CH_MODEL(UMiModel(bs))
+        bs.REG_UE(ue)
+        bs.ue_buffers[ue.UE_ID].ADD_PACKET(
+            Packet(size=50000, ue_id=ue.UE_ID, creation_time=current_time), 
+            current_time=current_time
+        )
     
-    ue2.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=1000, y_min=0, y_max=1000))
-    ue2.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=10000))
-    ue2.SET_CH_MODEL(UMiModel(bs))
-    
-    ue3.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=1000, y_min=0, y_max=1000))
-    ue3.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=1000))
-    ue3.SET_CH_MODEL(UMiModel(bs))
-    
-    bs.REG_UE(ue1)
-    bs.REG_UE(ue2)
-    bs.REG_UE(ue3)
-    
-    bs.ue_buffers[1].ADD_PACKET(Packet(size=50, ue_id=1, creation_time=current_time), current_time=current_time)
-    bs.ue_buffers[2].ADD_PACKET(Packet(size=10000, ue_id=2, creation_time=current_time), current_time=current_time)
-    bs.ue_buffers[1].ADD_PACKET(Packet(size=2000, ue_id=1, creation_time=current_time), current_time=current_time)
-    bs.ue_buffers[2].ADD_PACKET(Packet(size=3000, ue_id=2, creation_time=current_time), current_time=current_time)
-    bs.ue_buffers[3].ADD_PACKET(Packet(size=30000, ue_id=3, creation_time=current_time), current_time=current_time)
+    # bs.ue_buffers[1].ADD_PACKET(Packet(size=50, ue_id=1, creation_time=current_time), current_time=current_time)
+    # bs.ue_buffers[2].ADD_PACKET(Packet(size=10000, ue_id=2, creation_time=current_time), current_time=current_time)
+    # bs.ue_buffers[1].ADD_PACKET(Packet(size=2000, ue_id=1, creation_time=current_time), current_time=current_time)
+    # bs.ue_buffers[2].ADD_PACKET(Packet(size=3000, ue_id=2, creation_time=current_time), current_time=current_time)
+    # bs.ue_buffers[3].ADD_PACKET(Packet(size=30000, ue_id=3, creation_time=current_time), current_time=current_time)
 
     sim_duration = 20 # Время симуляции (в мс)
     update_interval = 1 # Интервал обновления параметров пользователя (в мс)
@@ -474,11 +474,16 @@ def test_scheduler_grid():
     cqi_history = {
         1: [],
         2: [],
-        3: []
+        3: [],
+        4: [],
+        5: []
     } 
 
     # Шаг 3: Основной цикл симуляции 
     for current_time in range(update_interval, sim_duration + 1, update_interval):  # 0-9 TTI (полный фрейм)
+        for ue in [ue1, ue2, ue3, ue4, ue5]:
+            ue.UPD_POSITION(update_interval, bs.position, bs.height)
+            ue.UPD_CH_QUALITY()
     
         # Генерация трафика
 # =============================================================================
@@ -489,18 +494,12 @@ def test_scheduler_grid():
 #         print("===================================")
 # =============================================================================
         
-        # Обновление состояния
-        ue1.UPD_POSITION(update_interval, bs.position, bs.height)
-        ue2.UPD_POSITION(update_interval, bs.position, bs.height)
-        ue3.UPD_POSITION(update_interval, bs.position, bs.height)
-        ue1.UPD_CH_QUALITY()
-        ue2.UPD_CH_QUALITY()
-        ue3.UPD_CH_QUALITY()
-        
         # Логирование CQI
         cqi_history[1].append(ue1.cqi)
         cqi_history[2].append(ue2.cqi)
         cqi_history[3].append(ue3.cqi)
+        cqi_history[4].append(ue4.cqi)
+        cqi_history[5].append(ue5.cqi)
         
         # Цикл по каждому TTI
         for tti in range(current_time - update_interval, current_time):
@@ -523,13 +522,25 @@ def test_scheduler_grid():
                     'buffer_size': bs.ue_buffers[3].sizes[3],
                     'cqi': ue3.cqi,
                     'ue': ue3
+                },
+                {
+                    'UE_ID': 4,
+                    'buffer_size': bs.ue_buffers[4].sizes[4],
+                    'cqi': ue4.cqi,
+                    'ue': ue4
+                },
+                {
+                    'UE_ID': 5,
+                    'buffer_size': bs.ue_buffers[5].sizes[5],
+                    'cqi': ue5.cqi,
+                    'ue': ue5
                 }
             ]
             
             
             # Вывод параметров для каждого TTI
             print(f"\n[TTI {tti}]")
-            print(f"CQI: UE1={ue1.cqi}, UE2={ue2.cqi}, UE3={ue3.cqi}")
+            print(f"CQI: UE1={ue1.cqi}, UE2={ue2.cqi}, UE3={ue3.cqi}, UE4={ue4.cqi}, UE5={ue5.cqi}")
             print(f"Buffer Size: UE1={bs.ue_buffers[1].sizes[1]}B, UE2={bs.ue_buffers[2].sizes[2]}B, UE3={bs.ue_buffers[3].sizes[3]}B")
             
             # Запуск планировщика
@@ -549,6 +560,8 @@ def test_scheduler_grid():
         f"UE1: Средний CQI={np.mean(ue1.CQI_values):.1f}\n"
         f"UE2: Средний CQI={np.mean(ue2.CQI_values):.1f}"
         f"UE3: Средний CQI={np.mean(ue3.CQI_values):.1f}"
+        f"UE4: Средний CQI={np.mean(ue4.CQI_values):.1f}"
+        f"UE5: Средний CQI={np.mean(ue5.CQI_values):.1f}"
     )
     
     # Легенда
