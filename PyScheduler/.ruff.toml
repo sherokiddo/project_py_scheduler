@@ -1,0 +1,7 @@
+line-length = 100
+target-version = "py310"
+
+select = ["E", "F", "W", "I", "N", "B"]
+ignore = ["E501"]    # длинные строки
+
+per-file-ignores = { "*.py" = ["E402"] }
