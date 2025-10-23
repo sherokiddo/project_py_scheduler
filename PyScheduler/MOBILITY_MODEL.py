@@ -98,16 +98,7 @@ class RandomWalkModel:
         self.y_min = y_min
         self.y_max = y_max
 
-    def update(
-        self,
-        current_position: Tuple[float, float],
-        current_velocity: float,
-        velocity_min: float,
-        velocity_max: float,
-        current_direction: float,
-        is_first_move: bool,
-        time_ms: int,
-    ) -> Tuple[Tuple[float, float], float, float]:
+    def update(self, current_position: Tuple[float, float], current_velocity: float, velocity_min: float, velocity_max: float, current_direction: float, is_first_move: bool, time_ms: int) -> Tuple[Tuple[float, float], float, float]:
         """
         Обновляет позицию, скорость и направление устройства на основе модели случайного блуждания.
 
@@ -180,12 +171,7 @@ class RandomWaypointModel:
         self.y_max = y_max
         self.pause_time = pause_time
 
-    def _choose_new_destination(
-        self,
-        current_position: Tuple[float, float],
-        velocity_min: float,
-        velocity_max: float,
-    ) -> Tuple[Tuple[float, float], float, float, bool]:
+    def _choose_new_destination(self, current_position: Tuple[float, float], velocity_min: float, velocity_max: float) -> Tuple[Tuple[float, float], float, float, bool]:
         """
         Выбирает новую точку назначения, скорость и направление для устройства.
 
@@ -200,10 +186,7 @@ class RandomWaypointModel:
             new_direction: Новое направление движения (радианы)
             is_paused: Флаг, указывающий, находится ли устройство в режиме паузы
         """
-        new_destination = (
-            np.random.uniform(self.x_min, self.x_max),
-            np.random.uniform(self.y_min, self.y_max),
-        )
+        new_destination = (np.random.uniform(self.x_min, self.x_max), np.random.uniform(self.y_min, self.y_max))
 
         new_velocity = np.random.uniform(velocity_min, velocity_max)
 
@@ -213,18 +196,7 @@ class RandomWaypointModel:
 
         return new_destination, new_velocity, new_direction, False
 
-    def update(
-        self,
-        current_position: Tuple[float, float],
-        current_velocity: float,
-        velocity_min: float,
-        velocity_max: float,
-        current_direction: float,
-        destination: Tuple[float, float],
-        is_paused: bool,
-        pause_timer: float,
-        time_ms: int,
-    ) -> Tuple[Tuple[float, float], float, float, Tuple[float, float], bool, float]:
+    def update(self, current_position: Tuple[float, float], current_velocity: float, velocity_min: float, velocity_max: float, current_direction: float, destination: Tuple[float, float], is_paused: bool, pause_timer: float, time_ms: int) -> Tuple[Tuple[float, float], float, float, Tuple[float, float], bool, float]:
         """
         Обновляет позицию, скорость, направление и состояние устройства на основе модели Random Waypoint.
 
@@ -252,26 +224,10 @@ class RandomWaypointModel:
         if is_paused:
             pause_timer += time_ms
             if pause_timer >= self.pause_time:
-                new_destination, new_velocity, new_direction, is_paused = (
-                    self._choose_new_destination(current_position, velocity_min, velocity_max)
-                )
+                new_destination, new_velocity, new_direction, is_paused = self._choose_new_destination(current_position, velocity_min, velocity_max)
                 pause_timer = 0.0
-                return (
-                    current_position,
-                    new_velocity,
-                    new_direction,
-                    new_destination,
-                    is_paused,
-                    pause_timer,
-                )
-            return (
-                current_position,
-                0.0,
-                current_direction,
-                destination,
-                is_paused,
-                pause_timer,
-            )
+                return current_position, new_velocity, new_direction, new_destination, is_paused, pause_timer
+            return current_position, 0.0, current_direction, destination, is_paused, pause_timer
 
         delta_x = destination[0] - current_position[0]
         delta_y = destination[1] - current_position[1]
@@ -280,26 +236,12 @@ class RandomWaypointModel:
         if distance <= current_velocity * time_s:
             new_position = destination
             is_paused = True
-            return (
-                new_position,
-                0.0,
-                current_direction,
-                destination,
-                is_paused,
-                pause_timer,
-            )
+            return new_position, 0.0, current_direction, destination, is_paused, pause_timer
         else:
             new_x = current_position[0] + current_velocity * np.cos(current_direction) * time_s
             new_y = current_position[1] + current_velocity * np.sin(current_direction) * time_s
             new_position = (new_x, new_y)
-            return (
-                new_position,
-                current_velocity,
-                current_direction,
-                destination,
-                is_paused,
-                pause_timer,
-            )
+            return new_position, current_velocity, current_direction, destination, is_paused, pause_timer
 
 
 class RandomDirectionModel:
@@ -326,13 +268,7 @@ class RandomDirectionModel:
         self.y_max = y_max
         self.pause_time = pause_time
 
-    def _choose_new_direction(
-        self,
-        current_position: Tuple[float, float],
-        velocity_min: float,
-        velocity_max: float,
-        is_first_move: bool,
-    ) -> Tuple[Tuple[float, float], float, float, bool, bool]:
+    def _choose_new_direction(self, current_position: Tuple[float, float], velocity_min: float, velocity_max: float, is_first_move: bool) -> Tuple[Tuple[float, float], float, float, bool, bool]:
         """
         Выбирает новое случайное направление и вычисляет точку на границе области моделирования.
 
@@ -358,10 +294,7 @@ class RandomDirectionModel:
         new_destination = self._calculate_boundary_point(current_position, new_direction)
 
         # Жесточайший костыль, но что поделать, пока будет так
-        while not (
-            self.x_min <= new_destination[0] <= self.x_max
-            and self.y_min <= new_destination[1] <= self.y_max
-        ):
+        while not (self.x_min <= new_destination[0] <= self.x_max and self.y_min <= new_destination[1] <= self.y_max):
             new_direction = np.random.uniform(0, 2 * np.pi)
             new_destination = self._calculate_boundary_point(current_position, new_direction)
 
@@ -369,9 +302,7 @@ class RandomDirectionModel:
 
         return new_destination, new_velocity, new_direction, False, is_first_move
 
-    def _calculate_boundary_point(
-        self, current_position: Tuple[float, float], direction: float
-    ) -> Tuple[float, float]:
+    def _calculate_boundary_point(self, current_position: Tuple[float, float], direction: float) -> Tuple[float, float]:
         """
         Вычисляет точку на границе области моделирования, в которую движется устройство.
 
@@ -404,19 +335,7 @@ class RandomDirectionModel:
 
         return boundary_x, boundary_y
 
-    def update(
-        self,
-        current_position: Tuple[float, float],
-        current_velocity: float,
-        velocity_min: float,
-        velocity_max: float,
-        current_direction: float,
-        destination: Tuple[float, float],
-        is_paused: bool,
-        pause_timer: float,
-        is_first_move: bool,
-        time_ms: int,
-    ) -> Tuple[Tuple[float, float], float, float, Tuple[float, float], bool, float, bool]:
+    def update(self, current_position: Tuple[float, float], current_velocity: float, velocity_min: float, velocity_max: float, current_direction: float, destination: Tuple[float, float], is_paused: bool, pause_timer: float, is_first_move: bool, time_ms: int) -> Tuple[Tuple[float, float], float, float, Tuple[float, float], bool, float, bool]:
         """
         Обновляет позицию, скорость, направление и состояние устройства на основе модели Random Direction.
 
@@ -446,33 +365,10 @@ class RandomDirectionModel:
         if is_paused:
             pause_timer += time_ms
             if pause_timer >= self.pause_time:
-                (
-                    new_destination,
-                    new_velocity,
-                    new_direction,
-                    is_paused,
-                    is_first_move,
-                ) = self._choose_new_direction(
-                    current_position, velocity_min, velocity_max, is_first_move
-                )
+                new_destination, new_velocity, new_direction, is_paused, is_first_move = self._choose_new_direction(current_position, velocity_min, velocity_max, is_first_move)
                 pause_timer = 0.0
-                return (
-                    current_position,
-                    new_velocity,
-                    new_direction,
-                    new_destination,
-                    is_paused,
-                    pause_timer,
-                    is_first_move,
-                )
-            return (
-                current_position,
-                0.0,
-                current_direction,
-                destination,
-                is_paused,
-                is_first_move,
-            )
+                return current_position, new_velocity, new_direction, new_destination, is_paused, pause_timer, is_first_move
+            return current_position, 0.0, current_direction, destination, is_paused, is_first_move
 
         delta_x = destination[0] - current_position[0]
         delta_y = destination[1] - current_position[1]
@@ -481,28 +377,12 @@ class RandomDirectionModel:
         if distance <= current_velocity * time_s:
             new_position = destination
             is_paused = True
-            return (
-                new_position,
-                0.0,
-                current_direction,
-                destination,
-                is_paused,
-                pause_timer,
-                is_first_move,
-            )
+            return new_position, 0.0, current_direction, destination, is_paused, pause_timer, is_first_move
         else:
             new_x = current_position[0] + current_velocity * np.cos(current_direction) * time_s
             new_y = current_position[1] + current_velocity * np.sin(current_direction) * time_s
             new_position = (new_x, new_y)
-            return (
-                new_position,
-                current_velocity,
-                current_direction,
-                destination,
-                is_paused,
-                pause_timer,
-                is_first_move,
-            )
+            return new_position, current_velocity, current_direction, destination, is_paused, pause_timer, is_first_move
 
 
 class GaussMarkovModel:
@@ -513,15 +393,7 @@ class GaussMarkovModel:
     области моделирования направление корректируется для предотвращения выхода за пределы.
     """
 
-    def __init__(
-        self,
-        x_min: float,
-        x_max: float,
-        y_min: float,
-        y_max: float,
-        alpha: float = 0.75,
-        boundary_threshold: float = 5.0,
-    ):
+    def __init__(self, x_min: float, x_max: float, y_min: float, y_max: float, alpha: float = 0.75, boundary_threshold: float = 5.0):
         """
         Инициализация модели Gauss-Markov.
 
@@ -540,15 +412,7 @@ class GaussMarkovModel:
         self.alpha = alpha
         self.boundary_threshold = boundary_threshold
 
-    def update(
-        self,
-        current_position: Tuple[float, float],
-        current_velocity: float,
-        current_direction: float,
-        mean_velocity: float,
-        mean_direction: float,
-        time_ms: int,
-    ) -> Tuple[Tuple[float, float], float, float, float]:
+    def update(self, current_position: Tuple[float, float], current_velocity: float, current_direction: float, mean_velocity: float, mean_direction: float, time_ms: int) -> Tuple[Tuple[float, float], float, float, float]:
         """
         Обновляет позицию, скорость и направление устройства на основе модели Gauss-Markov.
 
@@ -590,17 +454,9 @@ class GaussMarkovModel:
         elif y > self.y_max - self.boundary_threshold:
             mean_direction = np.deg2rad(270)
 
-        new_velocity = (
-            self.alpha * current_velocity
-            + (1 - self.alpha) * mean_velocity
-            + np.sqrt(1 - self.alpha**2) * np.random.normal(0, 1)
-        )
+        new_velocity = self.alpha * current_velocity + (1 - self.alpha) * mean_velocity + np.sqrt(1 - self.alpha**2) * np.random.normal(0, 1)
 
-        new_direction = (
-            self.alpha * current_direction
-            + (1 - self.alpha) * mean_direction
-            + np.sqrt(1 - self.alpha**2) * np.random.normal(0, 1)
-        )
+        new_direction = self.alpha * current_direction + (1 - self.alpha) * mean_direction + np.sqrt(1 - self.alpha**2) * np.random.normal(0, 1)
 
         new_x = current_position[0] + new_velocity * np.cos(new_direction) * time_s
         new_y = current_position[1] + new_velocity * np.sin(new_direction) * time_s

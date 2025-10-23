@@ -69,13 +69,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 import GLOBALS
-from MOBILITY_MODEL import (
-    DiagonalWalkModel,
-    GaussMarkovModel,
-    RandomDirectionModel,
-    RandomWalkModel,
-    RandomWaypointModel,
-)
+from MOBILITY_MODEL import DiagonalWalkModel, GaussMarkovModel, RandomDirectionModel, RandomWalkModel, RandomWaypointModel
 from TRAFFIC_MODEL import MMPPModel, OnOffModel, PoissonModel
 
 
@@ -123,14 +117,7 @@ class Buffer:
         self.expired_packets = 0  # Для TTL
         self.dropped_info = []  # Параметры отброшенных пакетов
 
-    def ADD_PACKET(
-        self,
-        packet_size: int,
-        creation_time: int,
-        current_time: int,
-        priority: int = 0,
-        ttl_ms: int = 1000,
-    ) -> bool:
+    def ADD_PACKET(self, packet_size: int, creation_time: int, current_time: int, priority: int = 0, ttl_ms: int = 1000) -> bool:
         """
         Добавить пакет в буфер. Пока я понятия не имею, по каким моделям мы
         будем генерировать трафик и каким макаром, но сделал такую заглушку
@@ -150,20 +137,11 @@ class Buffer:
         # Шаг 2: Проверка на переполнение после очистки
         if self.current_size + packet_size > self.max_size:
             self.dropped_packets += 1
-            self.dropped_info.append(
-                {
-                    "size": packet_size,
-                    "creation_time": creation_time,
-                    "priority": priority,
-                    "reason": "overflow",
-                }
-            )
+            self.dropped_info.append({"size": packet_size, "creation_time": creation_time, "priority": priority, "reason": "overflow"})
             return False
 
         # Шаг 3: Добавление нового пакета
-        self.queue.append(
-            {"size": packet_size, "creation_time": creation_time, "priority": priority}
-        )
+        self.queue.append({"size": packet_size, "creation_time": creation_time, "priority": priority})
         self.current_size += packet_size
         return True
 
@@ -173,9 +151,7 @@ class Buffer:
         # а также, добавить возможность менять приоритет пакета через метод
         # а напоследок, метод для получения пакетов определенного приоритета GET_PCKT_BY_PR"
 
-    def GET_PACKETS(
-        self, max_bytes: int, bits_per_rb: int, current_time: int, ttl_ms: int = 1000
-    ) -> Tuple[List[Dict], int]:
+    def GET_PACKETS(self, max_bytes: int, bits_per_rb: int, current_time: int, ttl_ms: int = 1000) -> Tuple[List[Dict], int]:
         """
         Извлечение данных из буфера с фрагментацией.
 
@@ -226,12 +202,7 @@ class Buffer:
                 self.current_size -= selected_packet["size"]
             else:
                 # Создание фрагмента
-                fragment = {
-                    "size": fragment_size,
-                    "creation_time": packet["creation_time"],
-                    "priority": packet["priority"],
-                    "parent_id": id(packet),
-                }
+                fragment = {"size": fragment_size, "creation_time": packet["creation_time"], "priority": packet["priority"], "parent_id": id(packet)}
                 selected.append(fragment)
                 total_bits += fragment_bits
 
@@ -255,22 +226,10 @@ class Buffer:
             Dict: Статистика буфера
         """
         if not self.queue:
-            return {
-                "size": 0,
-                "packet_count": 0,
-                "oldest_packet_delay": 0,
-                "average_delay": 0.0,
-                "utilization": 0.0,
-            }
+            return {"size": 0, "packet_count": 0, "oldest_packet_delay": 0, "average_delay": 0.0, "utilization": 0.0}
 
         delays = [current_time - p["creation_time"] for p in self.queue]
-        return {
-            "size": self.current_size,
-            "packet_count": len(self.queue),
-            "oldest_packet_delay": max(delays),
-            "average_delay": sum(delays) / len(delays),
-            "utilization": (self.current_size / self.max_size) * 100,
-        }
+        return {"size": self.current_size, "packet_count": len(self.queue), "oldest_packet_delay": max(delays), "average_delay": sum(delays) / len(delays), "utilization": (self.current_size / self.max_size) * 100}
 
     def DESTROY_BUFFER(self):
         """
@@ -294,15 +253,7 @@ class UserEquipment:
     Класс, представляющий пользовательское устройство (UE) в сети LTE.
     """
 
-    def __init__(
-        self,
-        UE_ID: int,
-        x: float = 0.0,
-        y: float = 0.0,
-        buffer_size: int = 1048576,
-        ue_class: str = "pedestrian",
-        indoor_boundaries: Tuple[float, float, float, float] = (0, 0, 0, 0),
-    ):
+    def __init__(self, UE_ID: int, x: float = 0.0, y: float = 0.0, buffer_size: int = 1048576, ue_class: str = "pedestrian", indoor_boundaries: Tuple[float, float, float, float] = (0, 0, 0, 0)):
         """
         Инициализация пользовательского устройства.
 
@@ -404,16 +355,7 @@ class UserEquipment:
             model (MobilityModel): Модель передвижения.
 
         """
-        if not isinstance(
-            model,
-            (
-                RandomWalkModel,
-                RandomWaypointModel,
-                RandomDirectionModel,
-                GaussMarkovModel,
-                DiagonalWalkModel,
-            ),
-        ):
+        if not isinstance(model, (RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel)):
             raise TypeError(f"Некорректный тип модели передвижения: {type(model).__name__}")
 
         self.mobility_model = model
@@ -452,9 +394,7 @@ class UserEquipment:
         # @IvanNoritsin: Нужен базовый класс для моделей трафика для более
         # корректной валидации.
 
-    def UPD_POSITION(
-        self, current_time: int, bs_position: Tuple[float, float], bs_height: float
-    ) -> None:
+    def UPD_POSITION(self, current_time: int, bs_position: Tuple[float, float], bs_height: float) -> None:
         """
         Обновить позицию пользователя согласно модели передвижения.
 
@@ -466,88 +406,21 @@ class UserEquipment:
         """
         # Вызов функции update для модели Random Walk:
         if isinstance(self.mobility_model, RandomWalkModel):
-            self.position, self.velocity, self.direction, self.is_first_move = (
-                self.mobility_model.update(
-                    self.position,
-                    self.velocity,
-                    self.velocity_min,
-                    self.velocity_max,
-                    self.direction,
-                    self.is_first_move,
-                    current_time,
-                )
-            )
+            self.position, self.velocity, self.direction, self.is_first_move = self.mobility_model.update(self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction, self.is_first_move, current_time)
 
         # Вызов функции update для модели Random Waypoint:
         if isinstance(self.mobility_model, RandomWaypointModel):
-            (
-                self.position,
-                self.velocity,
-                self.direction,
-                self.destination,
-                self.is_paused,
-                self.pause_timer,
-            ) = self.mobility_model.update(
-                self.position,
-                self.velocity,
-                self.velocity_min,
-                self.velocity_max,
-                self.direction,
-                self.destination,
-                self.is_paused,
-                self.pause_timer,
-                current_time,
-            )
+            self.position, self.velocity, self.direction, self.destination, self.is_paused, self.pause_timer = self.mobility_model.update(self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction, self.destination, self.is_paused, self.pause_timer, current_time)
 
         # Вызов функции update для модели Random Direction:
         if isinstance(self.mobility_model, RandomDirectionModel):
-            (
-                self.position,
-                self.velocity,
-                self.direction,
-                self.destination,
-                self.is_paused,
-                self.pause_timer,
-                self.is_first_move,
-            ) = self.mobility_model.update(
-                self.position,
-                self.velocity,
-                self.velocity_min,
-                self.velocity_max,
-                self.direction,
-                self.destination,
-                self.is_paused,
-                self.pause_timer,
-                self.is_first_move,
-                current_time,
-            )
+            self.position, self.velocity, self.direction, self.destination, self.is_paused, self.pause_timer, self.is_first_move = self.mobility_model.update(self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction, self.destination, self.is_paused, self.pause_timer, self.is_first_move, current_time)
 
         if isinstance(self.mobility_model, GaussMarkovModel):
-            self.position, self.velocity, self.direction, self.mean_direction = (
-                self.mobility_model.update(
-                    self.position,
-                    self.velocity,
-                    self.direction,
-                    self.mean_velocity,
-                    self.mean_direction,
-                    current_time,
-                )
-            )
+            self.position, self.velocity, self.direction, self.mean_direction = self.mobility_model.update(self.position, self.velocity, self.direction, self.mean_velocity, self.mean_direction, current_time)
+
         if isinstance(self.mobility_model, DiagonalWalkModel):
-            (
-                self.position,
-                self.velocity,
-                self.direction,
-                self.mean_velocity,
-                self.mean_direction,
-            ) = self.mobility_model.update(
-                self.position,
-                self.velocity,
-                self.direction,
-                self.mean_velocity,
-                self.mean_direction,
-                current_time,
-            )
+            self.position, self.velocity, self.direction, self.mean_direction = self.mobility_model.update(self.position, self.velocity, self.direction, self.mean_velocity, self.mean_direction, current_time)
 
         self.coordinates.append(self.position)
 
@@ -556,9 +429,7 @@ class UserEquipment:
             self._calculate_distances_to_BS(bs_position, bs_height)
 
         else:
-            self.dist_to_BS_2D = np.hypot(
-                self.position[0] - bs_position[0], self.position[1] - bs_position[1]
-            )
+            self.dist_to_BS_2D = np.hypot(self.position[0] - bs_position[0], self.position[1] - bs_position[1])
 
             self.dist_to_BS_2D_out = self.dist_to_BS_2D
 
@@ -574,36 +445,25 @@ class UserEquipment:
         if not self.channel_model:
             raise ValueError("Ошибка! Модель канала не определена! {}".format(self.UE_ID))
 
-        displacement = np.hypot(
-            self.position[0] - self.coordinates[-2][0],
-            self.position[1] - self.coordinates[-2][1],
-        )
+        displacement = np.hypot(self.position[0] - self.coordinates[-2][0], self.position[1] - self.coordinates[-2][1])
 
         if isinstance(self.channel_model, RMaModel):
             if self.UE_height == 0.0:
-                if self.is_indoor:
+                if self.is_indoor == True:
                     self.UE_height = np.random.uniform(1, 10)
                 else:
                     self.UE_height = 1.0
 
         if isinstance(self.channel_model, (UMaModel, UMiModel)):
             if self.UE_height == 0.0:
-                if self.is_indoor:
+                if self.is_indoor == True:
                     N_fl = np.random.uniform(4, 8)
                     n_fl = np.random.uniform(1, N_fl)
                     self.UE_height = 3 * (n_fl - 1) + 1.5
                 else:
                     self.UE_height = 1.5
 
-        self.SINR = self.channel_model.calculate_SINR(
-            self.UE_ID,
-            displacement,
-            self.dist_to_BS_2D,
-            self.dist_to_BS_2D_in,
-            self.dist_to_BS_3D,
-            self.UE_height,
-            self.ue_class,
-        )
+        self.SINR = self.channel_model.calculate_SINR(self.UE_ID, displacement, self.dist_to_BS_2D, self.dist_to_BS_2D_in, self.dist_to_BS_3D, self.UE_height, self.ue_class)
 
         self.cqi = self.SINR_TO_CQI(self.SINR)
 
@@ -620,9 +480,7 @@ class UserEquipment:
 
         """
         if not self.traffic_model:
-            raise ValueError(
-                "Ошибка! Модель генерации трафика не определена! {}".format(self.UE_ID)
-            )
+            raise ValueError("Ошибка! Модель генерации трафика не определена! {}".format(self.UE_ID))
 
         if isinstance(self.traffic_model, PoissonModel):
             packets = self.traffic_model.generate_traffic(current_time, update_interval)
@@ -637,20 +495,12 @@ class UserEquipment:
         bitrate = total_bits / interval_seconds if interval_seconds > 0 else 0
 
         for packet in packets:
-            if not self.buffer.ADD_PACKET(
-                packet_size=packet["size"],
-                creation_time=packet["creation_time"],
-                current_time=current_time,
-                priority=packet["priority"],
-                ttl_ms=1000,
-            ):
+            if not self.buffer.ADD_PACKET(packet_size=packet["size"], creation_time=packet["creation_time"], current_time=current_time, priority=packet["priority"], ttl_ms=1000):
                 self.total_dropped_packets += 1
                 print(f"UE {self.UE_ID}: Пакет {packet['size']}B отброшен (буфер полный)")
 
         status = self.buffer.GET_STATUS(current_time)
-        print(
-            f"Интервал [{current_time - update_interval}-{current_time} ms]: Создано {len(packets)} пакетов"
-        )
+        print(f"Интервал [{current_time - update_interval}-{current_time} ms]: Создано {len(packets)} пакетов")
         print(f"Скорость поступления: {bitrate:.2f} бит/с")
         print(f"Статус буфера: {status}")
 
@@ -664,9 +514,7 @@ class UserEquipment:
 
         """
         # Текущая пропускная способность в бит/с
-        self.current_throughput = (
-            (bits_transmitted * 1000) / time_interval_ms if time_interval_ms > 0 else 0
-        )
+        self.current_throughput = (bits_transmitted * 1000) / time_interval_ms if time_interval_ms > 0 else 0
 
         # Обновление общей статистики
         self.total_transmitted_bits += bits_transmitted
@@ -681,9 +529,7 @@ class UserEquipment:
 
         """
         # Текущая пропускная способность в бит/с
-        self.current_dl_throughput = (
-            (bits_dl_transmitted * 1000) / time_interval_ms if time_interval_ms > 0 else 0
-        )
+        self.current_dl_throughput = (bits_dl_transmitted * 1000) / time_interval_ms if time_interval_ms > 0 else 0
 
         # Обновление общей статистики
         self.total_dl_transmitted_bits += bits_dl_transmitted
@@ -743,9 +589,7 @@ class UserEquipment:
             step = (22.976 + 6.934) / 14
             return int(1 + (SINR + 6.934) / step)
 
-    def _calculate_distances_to_BS(
-        self, bs_position: Tuple[float, float], bs_height: float
-    ) -> None:
+    def _calculate_distances_to_BS(self, bs_position: Tuple[float, float], bs_height: float) -> None:
         """
         Вычисляет расстояние от пользователя до базовой станции с учетом
         нахождения внутри здания. Разделяет расстояние на часть внутри здания
@@ -813,12 +657,7 @@ class UserEquipment:
         self.mean_direction = np.random.randint(0, 360)
         self.is_indoor = self.ue_class == "indoor"
 
-        params = {
-            "indoor": (0.0, 1.0, 0.5),
-            "pedestrian": (0.5, 1.7, 1.2),
-            "cyclist": (2.0, 5.5, 3.9),
-            "car": (0.0, 16.7, 11.1),
-        }
+        params = {"indoor": (0.0, 1.0, 0.5), "pedestrian": (0.5, 1.7, 1.2), "cyclist": (2.0, 5.5, 3.9), "car": (0.0, 16.7, 11.1)}
 
         if self.ue_class not in params:
             raise ValueError(f"Недопустимое значение типа передвижения устройства: {self.ue_class}")
@@ -901,13 +740,7 @@ class UECollection:
         """
         return list(self.users.values())
 
-    def UPDATE_ALL_USERS(
-        self,
-        current_time: int,
-        update_interval: int,
-        bs_position: Tuple[float, float],
-        bs_height: float,
-    ):
+    def UPDATE_ALL_USERS(self, current_time: int, update_interval: int, bs_position: Tuple[float, float], bs_height: float):
         """
         Обновить состояние всех пользователей в коллекции.
 
@@ -955,15 +788,7 @@ class UECollection:
 
         return users_data
 
-    def ADD_RANDOM_USERS(
-        self,
-        num_ue: int,
-        x_min: float = -1000,
-        x_max: float = 1000,
-        y_min: float = -1000,
-        y_max: float = 1000,
-        ue_class: str = "random",
-    ):
+    def ADD_RANDOM_USERS(self, num_ue: int, x_min: float = -1000, x_max: float = 1000, y_min: float = -1000, y_max: float = 1000, ue_class: str = "random"):
         """
         Добавить указанное количество пользовательских устройств (UE) в
         коллекцтю со случайными координатами и классом пользователя. Если класс
@@ -1000,9 +825,7 @@ class UECollection:
             x_position = rng.uniform(x_min, x_max)
             y_position = rng.uniform(y_min, y_max)
 
-            self.users[ue_id] = UserEquipment(
-                UE_ID=ue_id, x=x_position, y=y_position, ue_class=ue_classes[i]
-            )
+            self.users[ue_id] = UserEquipment(UE_ID=ue_id, x=x_position, y=y_position, ue_class=ue_classes[i])
 
     def SET_MOBILITY_MODEL(self, model, ue_ids: List[int] = None):
         """
