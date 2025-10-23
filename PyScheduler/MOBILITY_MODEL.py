@@ -431,3 +431,6 @@ class GaussMarkovModel:
         new_position = (new_x, new_y)
         
         return new_position, new_velocity, new_direction, mean_direction
+    
+    
+    #testtest
