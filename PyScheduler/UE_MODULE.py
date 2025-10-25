@@ -66,7 +66,7 @@ import numpy as np
 import GLOBALS
 from collections import deque
 from typing import Dict, List, Optional, Union, Tuple
-from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel
+from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel, DiagonalWalkModel
 from TRAFFIC_MODEL import PoissonModel, OnOffModel, MMPPModel
 
 class Packet:
@@ -384,7 +384,7 @@ class UserEquipment:
 
         """
         if not isinstance(model, (RandomWalkModel, RandomWaypointModel,
-                                  RandomDirectionModel, GaussMarkovModel)):
+                                  RandomDirectionModel, GaussMarkovModel, DiagonalWalkModel)):
             raise TypeError(f"Некорректный тип модели передвижения: {type(model).__name__}")
         
         self.mobility_model = model
@@ -458,7 +458,13 @@ class UserEquipment:
             self.position, self.velocity, self.direction, self.mean_direction = self.mobility_model.update(
                 self.position, self.velocity, self.direction, self.mean_velocity, self.mean_direction, current_time
             )
-            
+
+        if isinstance(self.mobility_model, DiagonalWalkModel):
+            self.position, self.velocity, self.direction, self.destination, self.is_paused, self.pause_timer = self.mobility_model.update(
+                self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction,
+                self.destination, self.is_paused, self.pause_timer, current_time
+            )
+
         self.coordinates.append(self.position)
         
         # Обновление 2D и 3D расстояний до базовой станции

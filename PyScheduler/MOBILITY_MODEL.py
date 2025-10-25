@@ -13,8 +13,128 @@
 # Версия Python Kernel: 3.12.9
 #------------------------------------------------------------------------------
 """
-import numpy as np
 from typing import Tuple
+
+import numpy as np
+
+
+class DiagonalWalkModel:
+    def __init__(self, bs_x: float, bs_y: float, pause_time: int):
+        self.bs_x = bs_x
+        self.bs_y = bs_y
+        self.pause_time = pause_time 
+
+    def _choose_new_destination(self, current_position: Tuple[float, float], velocity_min: float,
+                                velocity_max: float, is_first_move: bool, initial_angle: float = 0.0,
+                                initial_distance: float = 0.0) -> Tuple[Tuple[float, float], float, 
+                                                                        float, bool, float, float]:
+        """
+        Выбирает новую точку назначения, скорость и направление для устройства.
+
+        Args:
+            current_position: Текущие координаты устройства (x, y)
+            velocity_min: Минимальная скорость устройства (м/с)
+            velocity_max: Максимальная скорость устройства (м/с)
+            is_first_move: Флаг первого шага
+            initial_angle: Угол от пользователя до станции (используется при повторных вызовах)
+            initial_distance: Расстояние от пользователя до станции (используется при повторных вызовах)
+
+        Returns:
+            new_destination: Новые координаты точки назначения (x, y)
+            new_velocity: Новая скорость устройства (м/с)
+            new_direction: Новое направление движения (радианы)
+            is_paused: Флаг, указывающий, находится ли устройство в режиме паузы
+            out_angle: Угол для передачи на следующую итерацию
+            out_distance: Расстояние для передачи на следующую итерацию
+        """
+        delta_x = current_position[0] - self.bs_x
+        delta_y = current_position[1] - self.bs_y
+        dist = np.hypot(delta_x, delta_y)
+
+        if is_first_move:
+            out_angle = np.arctan2(delta_y, delta_x)
+            out_distance = dist
+        else:
+            out_angle = initial_angle
+            out_distance = 2*initial_distance
+
+        if dist < 1e-6:
+            opposite_angle = out_angle + np.pi
+            new_destination = (
+                self.bs_x + out_distance * np.cos(opposite_angle),
+                self.bs_y + out_distance * np.sin(opposite_angle),
+            )
+            new_direction = opposite_angle
+        else:
+            vec_x = delta_x / dist
+            vec_y = delta_y / dist
+
+            new_destination = (
+                current_position[0] - 2*(vec_x * dist),
+                current_position[1] - 2*(vec_y * dist),
+            )
+
+            delta_x_dest = new_destination[0] - current_position[0]
+            delta_y_dest = new_destination[1] - current_position[1]
+            new_direction = np.arctan2(delta_y_dest, delta_x_dest)
+
+        new_velocity = velocity_max
+
+        return new_destination, new_velocity, new_direction, False, out_angle, out_distance
+
+        
+    
+    def update(self, current_position: Tuple[float, float], current_velocity: float,
+           velocity_min: float, velocity_max: float, current_direction: float, 
+           destination: Tuple[float, float], is_paused: bool, pause_timer: float, 
+           time_ms: int) -> Tuple[Tuple[float, float], float, float, 
+                                  Tuple[float, float], bool, float]:
+        """
+        Обновляет позицию, скорость, направление и состояние устройства на основе модели Random Waypoint.
+
+        Args:
+            current_position: Текущие координаты устройства (x, y)
+            current_velocity: Текущая скорость устройства (м/с)
+            velocity_min: Минимальная скорость устройства (м/с)
+            velocity_max: Максимальная скорость устройства (м/с)
+            current_direction: Текущее направление движения (радианы)
+            destination: Текущая точка назначения (x, y)
+            is_paused: Флаг, указывающий, находится ли устройство в режиме паузы
+            pause_timer: Текущее время, прошедшее в режиме паузы (мс)
+            time_ms: Время, прошедшее с последнего обновления (миллисекунды)
+
+        Returns:
+            new_position: Новые координаты устройства (x, y)
+            new_velocity: Новая скорость устройства (м/с)
+            new_direction: Новое направление движения (радианы)
+            destination: Текущая точка назначения (x, y)
+            is_paused: Флаг, указывающий, находится ли устройство в режиме паузы
+            pause_timer: Обновленное время, прошедшее в режиме паузы (мс)
+        """
+        time_s = time_ms / 1000.0
+        
+        if is_paused:
+            pause_timer += time_ms
+            if pause_timer >= self.pause_time:
+                new_destination, new_velocity, new_direction, is_paused, _, _ = self._choose_new_destination(
+                    current_position, velocity_min, velocity_max, True)
+                pause_timer = 0.0
+                return current_position, new_velocity, new_direction, new_destination, is_paused, pause_timer
+            return current_position, 0.0, current_direction, destination, is_paused, pause_timer
+        
+        delta_x = destination[0] - current_position[0]
+        delta_y = destination[1] - current_position[1]
+        distance = np.sqrt(delta_x**2 + delta_y**2)
+        
+        if distance <= current_velocity * time_s:
+            new_position = destination
+            return new_position, 0.0, current_direction, destination, is_paused, pause_timer
+        else:
+            new_x = current_position[0] + current_velocity * np.cos(current_direction) * time_s
+            new_y = current_position[1] + current_velocity * np.sin(current_direction) * time_s
+            new_position = (new_x, new_y)
+            return new_position, current_velocity, current_direction, destination, is_paused, pause_timer
+
 
 class RandomWalkModel:
     """
