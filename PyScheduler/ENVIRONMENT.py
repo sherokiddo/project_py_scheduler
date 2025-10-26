@@ -37,11 +37,7 @@ from matplotlib.lines import Line2D
 from UE_MODULE import UECollection, UserEquipment
 from BS_MODULE import BaseStation, Buffer, Packet
 from RES_GRID import RES_GRID_LTE
-<<<<<<< HEAD
 from SCHEDULER import SchedulerInterface
-=======
-from SCHEDULER import RoundRobinScheduler, BestCQIScheduler, ProportionalFairScheduler
->>>>>>> 4b6e64c (PDCCH logic added)
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel
 from TRAFFIC_MODEL import PoissonModel
 from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
@@ -441,7 +437,6 @@ def test_scheduler_grid():
     lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=2)  # 1 фрейм = 10 TTI
     visualizer = LTEGridVisualizer(lte_grid)
     bs = BaseStation(x=0, y=0, height=25.0, bandwidth=10)
-<<<<<<< HEAD
     scheduler = SchedulerInterface.create('ProportionalFair', lte_grid, bs, 
                                           max_dl_ue_tti=5,
                                           pcfich=2,
@@ -451,13 +446,7 @@ def test_scheduler_grid():
                                           enable_window=True,
                                           verbose=True)
     
-=======
-    scheduler = ProportionalFairScheduler(lte_grid, bs,
-                                    max_dl_ue_tti=5,
-                                    pcfich=2,
-                                    max_dl_cce_allowance=None,
-                                    verbose_pdcch=True)
->>>>>>> 4b6e64c (PDCCH logic added)
+
     current_time = 0
 
     # Шаг 2: Создание пользователей
