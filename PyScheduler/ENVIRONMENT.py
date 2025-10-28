@@ -446,7 +446,6 @@ def test_scheduler_grid():
                                           enable_window=True,
                                           verbose=True)
     
-
     current_time = 0
 
     # Шаг 2: Создание пользователей
