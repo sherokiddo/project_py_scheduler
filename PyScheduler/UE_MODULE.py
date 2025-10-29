@@ -359,6 +359,8 @@ class UserEquipment:
         self.total_transmitted_dl_packets = 0
         self.total_dropped_dl_packets = 0
 
+        
+
 
     def PROCESS_DCI(self, tti: int, bitmap: List[int]) -> None:
         """
@@ -383,11 +385,18 @@ class UserEquipment:
             model (MobilityModel): Модель передвижения.
 
         """
-        if not isinstance(model, (RandomWalkModel, RandomWaypointModel,
-                                  RandomDirectionModel, GaussMarkovModel)):
-            raise TypeError(f"Некорректный тип модели передвижения: {type(model).__name__}")
-        
         self.mobility_model = model
+        
+        # Инициализируем все параметры для моделей
+        self.is_first_move = True
+        self.destination = (
+            np.random.uniform(model.x_min, model.x_max),
+            np.random.uniform(model.y_min, model.y_max)
+        )
+        self.is_paused = False
+        self.pause_timer = 0.0
+        self.mean_velocity = 5.0
+        self.mean_direction = 0.0
         
         # @IvanNoritsin: Нужен базовый класс для моделей передвижения для более
         # корректной валидации.
@@ -424,55 +433,42 @@ class UserEquipment:
         # корректной валидации.
     
     def UPD_POSITION(self, current_time: int, bs_position: Tuple[float, float], 
-                     bs_height: float) -> None:
-        """
-        Обновить позицию пользователя согласно модели передвижения.
-
-        Args:
-            current_time (int): Текущее время симуляции (мс).
-            bs_position (Tuple[float, float]): Координаты базовой станции.
-            bs_height (float): Высота антенны базовой станции (м).
-
-        """      
-        # Вызов функции update для модели Random Walk:
-        if isinstance(self.mobility_model, RandomWalkModel):
-            self.position, self.velocity, self.direction, self.is_first_move = self.mobility_model.update(
-                self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction, self.is_first_move, current_time
-            )
+                 bs_height: float) -> None:
+        """Обновить позицию пользователя согласно модели передвижения."""
         
-        # Вызов функции update для модели Random Waypoint:
-        if isinstance(self.mobility_model, RandomWaypointModel):
-            self.position, self.velocity, self.direction, self.destination, self.is_paused, self.pause_timer = self.mobility_model.update(
-                self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction,
-                self.destination, self.is_paused, self.pause_timer, current_time
-            )
-            
-        # Вызов функции update для модели Random Direction:
-        if isinstance(self.mobility_model, RandomDirectionModel):
-            self.position, self.velocity, self.direction, self.destination, self.is_paused, self.pause_timer, self.is_first_move = self.mobility_model.update(
-                self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction,
-                self.destination, self.is_paused, self.pause_timer, self.is_first_move, current_time
-            )   
-            
-        if isinstance(self.mobility_model, GaussMarkovModel):
-            self.position, self.velocity, self.direction, self.mean_direction = self.mobility_model.update(
-                self.position, self.velocity, self.direction, self.mean_velocity, self.mean_direction, current_time
-            )
-            
+        result = self.mobility_model.update(
+            current_position=self.position,
+            current_velocity=self.velocity,
+            velocity_min=self.velocity_min,
+            velocity_max=self.velocity_max,
+            current_direction=self.direction,
+            time_ms=current_time,
+            is_first_move=self.is_first_move,
+            destination=self.destination,
+            is_paused=self.is_paused,
+            pause_timer=self.pause_timer,
+            mean_velocity=self.mean_velocity,
+            mean_direction=self.mean_direction,
+        )
+        
+        # Распаковываем результат обратно в self
+        result_names = ['position', 'velocity', 'direction', 'destination', 
+                        'is_paused', 'pause_timer', 'is_first_move', 'mean_direction']
+        
+        for i, value in enumerate(result):
+            if i < len(result_names):
+                setattr(self, result_names[i], value)
+        
         self.coordinates.append(self.position)
         
-        # Обновление 2D и 3D расстояний до базовой станции
         if self.is_indoor:
             self._calculate_distances_to_BS(bs_position, bs_height)
-            
         else:
             self.dist_to_BS_2D = np.hypot(self.position[0] - bs_position[0],
-                                          self.position[1] - bs_position[1])
-            
+                                        self.position[1] - bs_position[1])
             self.dist_to_BS_2D_out = self.dist_to_BS_2D
-            
             self.dist_to_BS_3D = np.hypot(self.dist_to_BS_2D, bs_height - self.UE_height)
-            
+
     
     def UPD_CH_QUALITY(self) -> None:
         """

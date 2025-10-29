@@ -6,7 +6,7 @@ from UE_MODULE import UserEquipment, UECollection
 from BS_MODULE import BaseStation, Packet
 from RES_GRID import RES_GRID_LTE
 from SCHEDULER import RoundRobinScheduler, BestCQIScheduler, ProportionalFairScheduler
-from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel
+from MOBILITY_MODEL import MovementInterface
 from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
 
 def visualize_users_mobility(ue_collection: UECollection, bs: BaseStation,
@@ -113,8 +113,8 @@ def debug_simulation():
     помощи вывода различных графиков и статистики для каждого пользователя.
     
     """
-    sim_duration = 20 # Время симуляции (в мс)
-    update_interval = 1 # Интервал обновления параметров пользователя (в мс)
+    sim_duration = 30000 # Время симуляции (в мс)
+    update_interval = 1000 # Интервал обновления параметров пользователя (в мс)
     num_frames = int(np.ceil(sim_duration / 10)) # Кол-во кадров (для ресурсной сетки)
     bandwidth = 10 # Ширина полосы (в МГц)
     inf = math.inf 
@@ -126,21 +126,23 @@ def debug_simulation():
     ue_collection = UECollection()
     
     # Создание и настройка пользовательских устройств
-    ue1 = UserEquipment(UE_ID=1, x=800, y=800, ue_class="pedestrian")
-    ue2 = UserEquipment(UE_ID=2, x=400, y=-200, ue_class="cyclist")
-    ue3 = UserEquipment(UE_ID=3, x=-500, y=-500, ue_class="car")
+    ue1 = UserEquipment(UE_ID=1, x=80, y=80, ue_class="pedestrian")
+    ue2 = UserEquipment(UE_ID=2, x=40, y=-20, ue_class="cyclist")
+    ue3 = UserEquipment(UE_ID=3, x=-50, y=-50, ue_class="car")
     
     # Создание модели передвижения пользователей
-    random_waypoint = RandomWaypointModel(x_min=-1000, 
-                                          x_max=1000, 
-                                          y_min=-1000, 
-                                          y_max=1000, 
-                                          pause_time=0)
+    movement_model = MovementInterface.set('GaussMarkov', 
+                                           x_min=-100, 
+                                           x_max=100, 
+                                           y_min=-100, 
+                                           y_max=100, 
+                                           alpha=0.25,
+                                           boundary_threshold=5.0)
   
     # Назначение пользователям модели передвижения
-    ue1.SET_MOBILITY_MODEL(random_waypoint)
-    ue2.SET_MOBILITY_MODEL(random_waypoint)
-    ue3.SET_MOBILITY_MODEL(random_waypoint)
+    ue1.SET_MOBILITY_MODEL(movement_model)
+    ue2.SET_MOBILITY_MODEL(movement_model)
+    ue3.SET_MOBILITY_MODEL(movement_model)
     
     # Создание модели радиоканала  
     uma = UMaModel(bs=bs, cond_update_period=5)
@@ -218,8 +220,8 @@ def sim_with_ue_collection():
     Пример сценария с использованием коллекций UE.
 
     """
-    sim_duration = 20 # Время симуляции (в мс)
-    update_interval = 1 # Интервал обновления параметров пользователя (в мс)
+    sim_duration = 2000 # Время симуляции (в мс)
+    update_interval = 100 # Интервал обновления параметров пользователя (в мс)
     num_frames = int(np.ceil(sim_duration / 10)) # Кол-во кадров (для ресурсной сетки)
     bandwidth = 10 # Ширина полосы (в МГц)
     inf = math.inf 

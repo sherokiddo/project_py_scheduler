@@ -14,14 +14,54 @@
 #------------------------------------------------------------------------------
 """
 import numpy as np
-from typing import Tuple
+from typing import Tuple, Any
 
-class RandomWalkModel:
+class MovementInterface:
+    @staticmethod
+    def set(model: str, x_min: float, x_max: float, y_min: float, y_max: float, 
+            **kwargs):
+        models = {
+            'RandomWalk': RandomWalkModel,
+            'RandomWaypoint': RandomWaypointModel,
+            'RandomDirection': RandomDirectionModel,
+            'GaussMarkov': GaussMarkovModel}
+        
+        if model not in models:
+            valid = ', '.join(models.keys())
+            raise ValueError(
+                f"Unknown model '{model}'. "
+                f"Valid models: {valid}")
+        
+        call_model = models[model]
+        return call_model(x_min, x_max, y_min, y_max, **kwargs)
+    
+    @staticmethod
+    def availavle_models():
+        return ['RandomWalk', 'RandomWaypoint', 'RandomDirection', 'GaussMarkov']
+    
+    def __init__(self, x_min: float, x_max: float, y_min: float, y_max: float,
+                 **kwargs):
+        self.x_min = x_min
+        self.x_max = x_max
+        self.y_min = y_min
+        self.y_max = y_max
+        self.pause_time = kwargs.get('pause_time')
+        self.alpha = kwargs.get('alpha')
+        self.boundary_threshold = kwargs.get('boundary_threshold')
+
+    def update(self, current_position: Tuple[float, float], current_velocity: float,
+               velocity_min: float, velocity_max: float, current_direction: float,
+               time_ms: int,
+               **kwargs) -> Any:
+        pass
+
+class RandomWalkModel(MovementInterface):
     """
     Модель передвижения Random Walk для пользовательского устройства (UE).
     Устройство движется в случайном направлении в пределах заданных границ.
     """
-    def __init__(self, x_min: float, x_max: float, y_min: float, y_max: float):
+    def __init__(self, x_min: float, x_max: float, y_min: float, y_max: float, 
+                 **kwargs):
         """
         Инициализация модели случайного блуждания.
 
@@ -31,14 +71,11 @@ class RandomWalkModel:
             y_min: Минимальная граница по оси Y
             y_max: Максимальная граница по оси Y
         """
-        self.x_min = x_min
-        self.x_max = x_max
-        self.y_min = y_min
-        self.y_max = y_max
+        super().__init__(x_min, x_max, y_min, y_max)
         
     def update(self, current_position: Tuple[float, float], current_velocity: float,
                velocity_min: float, velocity_max: float, current_direction: float, 
-               is_first_move: bool, time_ms: int) -> Tuple[Tuple[float, float], float, float]:
+               time_ms: int, **kwargs) -> Tuple[Tuple[float, float], float, float, bool]:
         """
         Обновляет позицию, скорость и направление устройства на основе модели случайного блуждания.
     
@@ -57,6 +94,7 @@ class RandomWalkModel:
             new_direction: Новое направление движения (радианы).
             is_first_move: Обновленный флаг, указывающий, завершено ли первое движение.
         """
+        is_first_move = kwargs.get('is_first_move', False)
         time_s = time_ms / 1000.0
         
         if is_first_move:
@@ -87,12 +125,13 @@ class RandomWalkModel:
         
         return new_position, new_velocity, new_direction, is_first_move
     
-class RandomWaypointModel:
+class RandomWaypointModel(MovementInterface):
     """
     Модель передвижения Random Waypoint для пользовательского устройства (UE).
     Устройство движется к случайным пунктам назначения с паузами между движениями.
     """
-    def __init__(self, x_min: float, x_max: float, y_min: float, y_max: float, pause_time: float):
+    def __init__(self, x_min: float, x_max: float, y_min: float, y_max: float, pause_time: float, 
+                 **kwargs):
         """
         Инициализация модели Random Waypoint.
 
@@ -103,12 +142,9 @@ class RandomWaypointModel:
             y_max: Максимальная граница по оси Y
             pause_time: Время паузы между движениями (в мс)
         """
-        self.x_min = x_min
-        self.x_max = x_max
-        self.y_min = y_min
-        self.y_max = y_max
-        self.pause_time = pause_time 
-    
+        super().__init__(x_min, x_max, y_min, y_max, **kwargs)
+        self.pause_time = pause_time
+            
     def _choose_new_destination(self, current_position: Tuple[float, float], 
                                 velocity_min: float, velocity_max: float) -> Tuple[Tuple[float, float], 
                                                                                    float, float, bool]:
@@ -142,8 +178,7 @@ class RandomWaypointModel:
     
     def update(self, current_position: Tuple[float, float], current_velocity: float,
                velocity_min: float, velocity_max: float, current_direction: float, 
-               destination: Tuple[float, float], is_paused: bool, pause_timer: float, 
-               time_ms: int) -> Tuple[Tuple[float, float], float, float, 
+               time_ms: int, **kwargs) -> Tuple[Tuple[float, float], float, float, 
                                       Tuple[float, float], bool, float]:
         """
         Обновляет позицию, скорость, направление и состояние устройства на основе модели Random Waypoint.
@@ -167,6 +202,9 @@ class RandomWaypointModel:
             is_paused: Флаг, указывающий, находится ли устройство в режиме паузы
             pause_timer: Обновленное время, прошедшее в режиме паузы (мс)
         """
+        destination = kwargs.get('destination')
+        is_paused = kwargs.get('is_paused', False)
+        pause_timer = kwargs.get('pause_timer', 0.0)
         time_s = time_ms / 1000.0
         
         if is_paused:
@@ -192,13 +230,14 @@ class RandomWaypointModel:
             new_position = (new_x, new_y)
             return new_position, current_velocity, current_direction, destination, is_paused, pause_timer
 
-class RandomDirectionModel:
+class RandomDirectionModel(MovementInterface):
     """
     Модель передвижения Random Direction для пользовательского устройства (UE).
     Устройство движется к границе области моделирования в случайном направлении,
     делает паузу, а затем выбирает новое направление.
     """
-    def __init__(self, x_min: float, x_max: float, y_min: float, y_max: float, pause_time: float):
+    def __init__(self, x_min: float, x_max: float, y_min: float, y_max: float, pause_time: float, 
+                 **kwargs):
         """
         Инициализация модели Random Direction.
 
@@ -209,11 +248,8 @@ class RandomDirectionModel:
             y_max: Максимальная граница по оси Y
             pause_time: Время паузы между движениями (в мс)
         """
-        self.x_min = x_min
-        self.x_max = x_max
-        self.y_min = y_min
-        self.y_max = y_max
-        self.pause_time = pause_time 
+        super().__init__(x_min, x_max, y_min, y_max, **kwargs)
+        self.pause_time = pause_time
         
     def _choose_new_direction(self, current_position: Tuple[float, float], velocity_min: float, 
                               velocity_max: float, is_first_move: bool) -> Tuple[Tuple[float, float], 
@@ -287,9 +323,8 @@ class RandomDirectionModel:
         
     def update(self, current_position: Tuple[float, float], current_velocity: float,
                velocity_min: float, velocity_max: float, current_direction: float, 
-               destination: Tuple[float, float], is_paused: bool, pause_timer: float, 
-               is_first_move: bool, time_ms: int) -> Tuple[Tuple[float, float], float, float, 
-                                                           Tuple[float, float], bool, float, bool]:
+               time_ms: int, **kwargs) -> Tuple[Tuple[float, float], float, float, 
+                                                Tuple[float, float], bool, float, bool]:
         """
         Обновляет позицию, скорость, направление и состояние устройства на основе модели Random Direction.
     
@@ -314,6 +349,10 @@ class RandomDirectionModel:
             pause_timer: Обновленное время, прошедшее в режиме паузы (мс).
             is_first_move: Обновленный флаг, указывающий, завершено ли первое движение.
         """
+        destination = kwargs.get('destination')
+        is_paused = kwargs.get('is_paused', False)
+        pause_timer = kwargs.get('pause_timer', 0.0)
+        is_first_move = kwargs.get('is_first_move', False)
         time_s = time_ms / 1000.0
         
         if is_paused:
@@ -339,7 +378,7 @@ class RandomDirectionModel:
             new_position = (new_x, new_y)
             return new_position, current_velocity, current_direction, destination, is_paused, pause_timer, is_first_move
 
-class GaussMarkovModel:
+class GaussMarkovModel(MovementInterface):
     """
     Модель передвижения Gauss-Markov для пользовательского устройства (UE).
     Устройство движется в соответствии с моделью Гаусса-Маркова, где скорость и направление
@@ -347,7 +386,8 @@ class GaussMarkovModel:
     области моделирования направление корректируется для предотвращения выхода за пределы.
     """
     def __init__(self, x_min: float, x_max: float, y_min: float, y_max: float,
-                 alpha: float = 0.75, boundary_threshold: float = 5.0):
+                 alpha: float = 0.75, boundary_threshold: float = 5.0, 
+                 **kwargs):
         """
         Инициализация модели Gauss-Markov.
 
@@ -359,16 +399,13 @@ class GaussMarkovModel:
             alpha: Параметр памяти модели (влияет на зависимость текущих значений от предыдущих).
             boundary_threshold: Расстояние до границы, при котором начинается корректировка направления.
         """
-        self.x_min = x_min
-        self.x_max = x_max
-        self.y_min = y_min
-        self.y_max = y_max
+        super().__init__(x_min, x_max, y_min, y_max, **kwargs)
         self.alpha = alpha
-        self.boundary_threshold = boundary_threshold
+        self.boundary_threshold = boundary_threshold 
         
     def update(self, current_position: Tuple[float, float], current_velocity: float,
-               current_direction: float, mean_velocity: float, mean_direction: float,
-               time_ms: int) -> Tuple[Tuple[float, float], float, float, float]:
+               velocity_min: float, velocity_max: float, current_direction: float,
+               time_ms: int, **kwargs) -> Tuple[Tuple[float, float], float, float, float]:
         """
         Обновляет позицию, скорость и направление устройства на основе модели Gauss-Markov.
 
@@ -386,6 +423,8 @@ class GaussMarkovModel:
             new_direction: Новое направление движения (радианы).
             mean_direction: Обновленное среднее направление движения (радианы).
         """
+        mean_velocity = kwargs.get('mean_velocity', current_velocity)
+        mean_direction = kwargs.get('mean_direction', current_direction)
         time_s = time_ms / 1000.0
         
         x, y = current_position
