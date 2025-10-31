@@ -8,6 +8,8 @@ from RES_GRID import RES_GRID_LTE
 from SCHEDULER import RoundRobinScheduler, BestCQIScheduler, ProportionalFairScheduler
 from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel
 from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
+from TRAFFIC_MODEL import PoissonModel
+from SIMULATION_MANAGER import SimulationManager
 
 def visualize_users_mobility(ue_collection: UECollection, bs: BaseStation,
                             x_min: float, x_max: float, y_min: float, y_max: float):
@@ -313,8 +315,85 @@ def sim_with_ue_collection():
                             sim_duration=sim_duration, 
                             update_interval=update_interval)
     
+def sim_with_manager():
+    """
+    Пример запуска симуляции с использованием менеджера.
+
+    """    
+# =============================================================================
+#             НАСТРОЙКА БАЗОВОЙ СТАНЦИИ И КОЛЛЕКЦИИ ПОЛЬЗОВАТЕЛЕЙ                
+# =============================================================================
+    
+    # Создание и настройка базовой станции
+    bs = BaseStation(x=0, y=0, bandwidth=10)
+    
+    # Создание коллекции пользовательских устройств
+    ue_collection = UECollection()
+    
+    # Установка сида
+    GLOBALS.SEED = 42
+    
+    # Генерация заданного числа UE в коллекцию
+    ue_collection.ADD_RANDOM_USERS(num_ue=3)    
+    
+    # Создание модели передвижения пользователей
+    random_waypoint = RandomWaypointModel(x_min=-1000, 
+                                          x_max=1000, 
+                                          y_min=-1000, 
+                                          y_max=1000, 
+                                          pause_time=0)
+    
+    # Установка модели передвижения для всех пользователей коллекции
+    ue_collection.SET_MOBILITY_MODEL(random_waypoint)    
+    
+    # Создание модели радиоканала  
+    uma = UMaModel(bs=bs, cond_update_period=5)
+    
+    # Установка модели радиоканала для всех пользователей коллекции
+    ue_collection.SET_CH_MODEL(uma)
+    
+    # Создание модели генерации трафика
+    poisson = PoissonModel(packet_rate=1000)
+    
+    # Установка модели генерации трафика для всех пользователей коллекции
+    ue_collection.SET_TRAFFIC_MODEL(poisson)
+    
+    # Регистрация всех пользователей коллекции в базовой станции
+    ue_collection.REG_USERS_TO_BS(bs)
+    
+# =============================================================================
+#                        НАСТРОЙКА МЕНЕДЖЕРА СИМУЛЯЦИИ                
+# =============================================================================
+    
+    # Создание менеджера симуляции
+    sim = SimulationManager()
+    
+    # Установка базовой станции
+    sim.set_base_station(bs)
+    
+    # Установка коллекции пользователей
+    sim.set_ue_collection(ue_collection)
+    
+    # Установка планировщика. Можно передвать параметры, которые 
+    # поддерживает SchedulerInterface.
+    sim.set_scheduler(algorithm="RoundRobin")
+    
+    # Установка длительности симуляции
+    sim.set_sim_duration(5000)
+    
+    # Включение verbose логирования. Для вывода всех логов в файл нужно
+    # поставить флаг to_file=True.
+    sim.enable_verbose_log()
+    
+    # Включение логирования статистики в CSV-файл
+    sim.enable_stats_log()
+    
+    # Запуск симуляции
+    sim.start_simulation()
+    
     
 if __name__ == "__main__":
-    debug_simulation()
+    # debug_simulation()
     # sim_with_ue_collection()
+    sim_with_manager()
     
