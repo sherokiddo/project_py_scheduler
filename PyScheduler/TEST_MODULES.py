@@ -182,9 +182,7 @@ def debug_simulation():
 
         # Обновление состояния пользователей
         ue_collection.UPDATE_ALL_USERS(current_time=current_time,
-                                       update_interval=update_interval,
-                                       bs_position=bs.position,
-                                       bs_height=bs.height)
+                                       update_interval=update_interval)
 
         # Цикл для планирования ресурсов (по TTI)
         for tti in range(current_time - update_interval, current_time):
@@ -227,7 +225,10 @@ def sim_with_ue_collection():
     inf = math.inf
 
     # Создание и настройка базовой станции
-    bs = BaseStation(x=0, y=0, bandwidth=bandwidth, global_max=inf, per_ue_max=inf)
+    bs = BaseStation(
+        x=0, y=0, bandwidth=bandwidth, global_max=inf, 
+        per_ue_max=inf, ch_model_type="UMa", ch_model_params={"cond_update_period": 5}
+    )
 
     # Создание коллекции пользовательских устройств
     ue_collection = UECollection()
@@ -241,22 +242,13 @@ def sim_with_ue_collection():
     ue_collection.ADD_RANDOM_USERS(num_ue=3)
 
     # Создание модели передвижения пользователей
-    diagonalwalk = DiagonalWalkModel(x_min=-1000,
-                                          x_max=1000,
-                                          y_min=-1000,
-                                          y_max=1000,
-                                          pause_time=0)
+    diagonalwalk = DiagonalWalkModel(bs.position[0], 
+                                     bs.position[1], 
+                                     pause_time=0)
 
     # Установка модели передвижения для всех пользователей коллекции.
     # Есть возможность задавать для отдельных пользователей при помощи параметра ue_ids
     ue_collection.SET_MOBILITY_MODEL(diagonalwalk)
-
-    # Создание модели радиоканала
-    uma = UMaModel(bs=bs, cond_update_period=5)
-
-    # Установка модели радиоканала для всех пользователей коллекции.
-    # Есть возможность задавать для отдельных пользователей при помощи параметра ue_ids
-    ue_collection.SET_CH_MODEL(uma)
 
     # Регистрация всех пользователей коллекции в базовой станции.
     ue_collection.REG_USERS_TO_BS(bs)
@@ -282,9 +274,7 @@ def sim_with_ue_collection():
 
         # Обновление состояния пользователей
         ue_collection.UPDATE_ALL_USERS(current_time=current_time,
-                                       update_interval=update_interval,
-                                       bs_position=bs.position,
-                                       bs_height=bs.height)
+                                       update_interval=update_interval)
 
         # Цикл для планирования ресурсов (по TTI)
         for tti in range(current_time - update_interval, current_time):
@@ -325,7 +315,7 @@ def sim_with_manager():
 # =============================================================================
     
     # Создание и настройка базовой станции
-    bs = BaseStation(x=0, y=0, bandwidth=10)
+    bs = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMa")
     
     # Создание коллекции пользовательских устройств
     ue_collection = UECollection()
@@ -345,12 +335,6 @@ def sim_with_manager():
     
     # Установка модели передвижения для всех пользователей коллекции
     ue_collection.SET_MOBILITY_MODEL(random_waypoint)    
-    
-    # Создание модели радиоканала  
-    uma = UMaModel(bs=bs, cond_update_period=5)
-    
-    # Установка модели радиоканала для всех пользователей коллекции
-    ue_collection.SET_CH_MODEL(uma)
     
     # Создание модели генерации трафика
     poisson = PoissonModel(packet_rate=1000)
@@ -394,6 +378,6 @@ def sim_with_manager():
     
 if __name__ == "__main__":
     # debug_simulation()
-    # sim_with_ue_collection()
-    sim_with_manager()
+    sim_with_ue_collection()
+    # sim_with_manager()
     

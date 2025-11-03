@@ -285,19 +285,8 @@ class SimulationManager:
                     # Обновление состояния пользователей
                     self.ue_collection.UPDATE_ALL_USERS(
                         current_time=tti, 
-                        update_interval=self.sim_config.update_interval, 
-                        bs_position=self.base_station.position, 
-                        bs_height=self.base_station.height
+                        update_interval=self.sim_config.update_interval
                     )
-                    
-                    # Генерация трафика для UE, если задана модель
-                    for ue in self.ue_collection.GET_ALL_USERS():
-                        if ue.traffic_model is not None:
-                            self.base_station.GEN_TRFFC(
-                                current_time=tti, 
-                                update_interval=self.sim_config.update_interval,
-                                ue_id=ue.UE_ID
-                            )
                             
                 # Подготовка данных для планировщика  
                 users = self.ue_collection.GET_USERS_FOR_SCHEDULER()

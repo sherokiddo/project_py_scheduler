@@ -423,61 +423,64 @@ class UserEquipment:
         # @IvanNoritsin: Нужен базовый класс для моделей трафика для более
         # корректной валидации.
     
-    def UPD_POSITION(self, current_time: int, bs_position: Tuple[float, float], 
-                     bs_height: float) -> None:
+    def UPD_POSITION(self, update_interval: int) -> None:
         """
         Обновить позицию пользователя согласно модели передвижения.
 
         Args:
-            current_time (int): Текущее время симуляции (мс).
-            bs_position (Tuple[float, float]): Координаты базовой станции.
-            bs_height (float): Высота антенны базовой станции (м).
+            update_interval (int): Интервал обновления состояния UE (мс).
 
         """      
         # Вызов функции update для модели Random Walk:
         if isinstance(self.mobility_model, RandomWalkModel):
             self.position, self.velocity, self.direction, self.is_first_move = self.mobility_model.update(
-                self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction, self.is_first_move, current_time
+                self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction, self.is_first_move, update_interval
             )
         
         # Вызов функции update для модели Random Waypoint:
         if isinstance(self.mobility_model, RandomWaypointModel):
             self.position, self.velocity, self.direction, self.destination, self.is_paused, self.pause_timer = self.mobility_model.update(
                 self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction,
-                self.destination, self.is_paused, self.pause_timer, current_time
+                self.destination, self.is_paused, self.pause_timer, update_interval
             )
             
         # Вызов функции update для модели Random Direction:
         if isinstance(self.mobility_model, RandomDirectionModel):
             self.position, self.velocity, self.direction, self.destination, self.is_paused, self.pause_timer, self.is_first_move = self.mobility_model.update(
                 self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction,
-                self.destination, self.is_paused, self.pause_timer, self.is_first_move, current_time
+                self.destination, self.is_paused, self.pause_timer, self.is_first_move, update_interval
             )   
             
         if isinstance(self.mobility_model, GaussMarkovModel):
             self.position, self.velocity, self.direction, self.mean_direction = self.mobility_model.update(
-                self.position, self.velocity, self.direction, self.mean_velocity, self.mean_direction, current_time
+                self.position, self.velocity, self.direction, self.mean_velocity, self.mean_direction, update_interval
             )
 
         if isinstance(self.mobility_model, DiagonalWalkModel):
             self.position, self.velocity, self.direction, self.destination, self.is_paused, self.pause_timer = self.mobility_model.update(
                 self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction,
-                self.destination, self.is_paused, self.pause_timer, current_time
+                self.destination, self.is_paused, self.pause_timer, update_interval
             )
 
         self.coordinates.append(self.position)
         
         # Обновление 2D и 3D расстояний до базовой станции
         if self.is_indoor:
-            self._calculate_distances_to_BS(bs_position, bs_height)
+            self._calculate_distances_to_BS(self.serving_bs.position, 
+                                            self.serving_bs.height) 
             
         else:
-            self.dist_to_BS_2D = np.hypot(self.position[0] - bs_position[0],
-                                          self.position[1] - bs_position[1])
+            self.dist_to_BS_2D = np.hypot(
+                self.position[0] - self.serving_bs.position[0],
+                self.position[1] - self.serving_bs.position[1]
+            )
             
             self.dist_to_BS_2D_out = self.dist_to_BS_2D
             
-            self.dist_to_BS_3D = np.hypot(self.dist_to_BS_2D, bs_height - self.UE_height)
+            self.dist_to_BS_3D = np.hypot(
+                self.dist_to_BS_2D, 
+                self.serving_bs.height - self.UE_height
+            )
             
     
     def UPD_CH_QUALITY(self) -> None:
@@ -653,22 +656,17 @@ class UserEquipment:
             step = (22.976 + 6.934) / 14
             return int(1 + (SINR + 6.934) / step)
         
-    def _calculate_distances_to_BS(self, bs_position: Tuple[float, float], 
-                                   bs_height: float) -> None:
+    def _calculate_distances_to_BS(self) -> None:
         """
         Вычисляет расстояние от пользователя до базовой станции с учетом 
         нахождения внутри здания. Разделяет расстояние на часть внутри здания 
         (indoor) и снаружи (outdoor).
 
-        Args:
-            bs_position (Tuple[float, float]): Координаты базовой станции.
-            bs_height (float): Высота антенны базовой станции (м).
-
         """
         x_min, x_max, y_min, y_max = self.indoor_boundaries
         
         ue_x, ue_y = self.position
-        bs_x, bs_y = bs_position
+        bs_x, bs_y = self.serving_bs.position
         
         if (x_min <= bs_x <= x_max) and (y_min <= bs_y <= y_max):
             distance = np.hypot(bs_x - ue_x, bs_y - ue_y)
@@ -712,7 +710,10 @@ class UserEquipment:
         self.dist_to_BS_2D = d_total
         self.dist_to_BS_2D_in = d_in
         self.dist_to_BS_2D_out = d_out
-        self.dist_to_BS_3D = np.hypot(self.dist_to_BS_2D, bs_height - self.UE_height)
+        self.dist_to_BS_3D = np.hypot(
+            self.dist_to_BS_2D, 
+            self.serving_bs.height - self.UE_height
+        )
 
     def _set_scenario_parameters(self):
         """
@@ -809,25 +810,30 @@ class UECollection:
         """
         return list(self.users.values())
     
-    def UPDATE_ALL_USERS(self, current_time: int, update_interval: int, 
-                         bs_position: Tuple[float, float], bs_height: float):
+    def UPDATE_ALL_USERS(self, current_time: int, update_interval: int):
         """
         Обновить состояние всех пользователей в коллекции.
 
         Args:
             current_time (int): Текущее время симуляции (мс).
             update_interval (int): Интервал обновления состояния UE (мс).
-            bs_position (Tuple[float, float]): Координаты базовой станции.
-            bs_height (float): Высота антенны базовой станции (м).
 
         """
         for ue in self.users.values():
             
             # Обновление позиции
-            ue.UPD_POSITION(update_interval, bs_position, bs_height)
+            ue.UPD_POSITION(update_interval)
             
             # Обновление качества канала
             ue.UPD_CH_QUALITY()
+            
+            # Генерация DL трафика, если задана модель
+            if ue.traffic_model is not None: 
+                ue.serving_bs.GEN_TRFFC(
+                    current_time=current_time, 
+                    update_interval=update_interval,
+                    ue_id=ue.UE_ID
+                )
     
     def GET_ACTIVE_USERS(self) -> List[UserEquipment]:
         """
