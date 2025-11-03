@@ -66,7 +66,7 @@ import numpy as np
 import GLOBALS
 from collections import deque
 from typing import Dict, List, Optional, Union, Tuple
-from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel
+from MOBILITY_MODEL import RandomWalkModel, RandomWaypointModel, RandomDirectionModel, GaussMarkovModel, DiagonalWalkModel
 from TRAFFIC_MODEL import PoissonModel, OnOffModel, MMPPModel
 
 class Packet:
@@ -327,7 +327,7 @@ class UserEquipment:
         self.traffic_model = None  # Установить позже
         
         # Параметры канала связи
-        self.channel_model = None  # Установить позже
+        self.serving_bs = None  # Установить позже
         self.cqi = 1  # Текущий CQI (1-15)
         self.SINR = 0.0  # Текущее отношение сигнал/шум+помехи в dB
         
@@ -384,7 +384,7 @@ class UserEquipment:
 
         """
         if not isinstance(model, (RandomWalkModel, RandomWaypointModel,
-                                  RandomDirectionModel, GaussMarkovModel)):
+                                  RandomDirectionModel, GaussMarkovModel, DiagonalWalkModel)):
             raise TypeError(f"Некорректный тип модели передвижения: {type(model).__name__}")
         
         self.mobility_model = model
@@ -392,20 +392,20 @@ class UserEquipment:
         # @IvanNoritsin: Нужен базовый класс для моделей передвижения для более
         # корректной валидации.
     
-    def SET_CH_MODEL(self, model) -> None:
-        """
-        Установить модель радиоканала для пользователя.
+    # def SET_CH_MODEL(self, model) -> None:
+    #     """
+    #     Установить модель радиоканала для пользователя.
 
-        Args:
-            model (ChannelModel): Модель радиоканала.
+    #     Args:
+    #         model (ChannelModel): Модель радиоканала.
 
-        """
-        from CHANNEL_MODEL import ChannelModel
+    #     """
+    #     from CHANNEL_MODEL import ChannelModel
         
-        if not isinstance(model, ChannelModel):
-            raise TypeError(f"Некорректный тип модели канала: {type(model).__name__}")
+    #     if not isinstance(model, ChannelModel):
+    #         raise TypeError(f"Некорректный тип модели канала: {type(model).__name__}")
         
-        self.channel_model = model
+    #     self.channel_model = model
     
     def SET_TRAFFIC_MODEL(self, model) -> None:
         """
@@ -458,7 +458,13 @@ class UserEquipment:
             self.position, self.velocity, self.direction, self.mean_direction = self.mobility_model.update(
                 self.position, self.velocity, self.direction, self.mean_velocity, self.mean_direction, current_time
             )
-            
+
+        if isinstance(self.mobility_model, DiagonalWalkModel):
+            self.position, self.velocity, self.direction, self.destination, self.is_paused, self.pause_timer = self.mobility_model.update(
+                self.position, self.velocity, self.velocity_min, self.velocity_max, self.direction,
+                self.destination, self.is_paused, self.pause_timer, current_time
+            )
+
         self.coordinates.append(self.position)
         
         # Обновление 2D и 3D расстояний до базовой станции
@@ -481,20 +487,23 @@ class UserEquipment:
         """
         from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
         
-        if not self.channel_model:
-            raise ValueError("Ошибка! Модель канала не определена! {}".format(self.UE_ID))
+        if not self.serving_bs:
+            raise ValueError("Ошибка! UE не подключен к базовой станции! {}".format(self.UE_ID))
+        
+        if not self.serving_bs.channel_model:
+            raise ValueError("Ошибка! У базовой станции не инициализирована модель канала!")
         
         displacement = np.hypot(self.position[0] - self.coordinates[-2][0],
                                 self.position[1] - self.coordinates[-2][1])
         
-        if isinstance(self.channel_model, RMaModel):
+        if isinstance(self.serving_bs.channel_model, RMaModel):
             if self.UE_height == 0.0:
                 if self.is_indoor == True:
                     self.UE_height = np.random.uniform(1, 10)
                 else:
                     self.UE_height = 1.0
-            
-        if isinstance(self.channel_model, (UMaModel, UMiModel)):
+        
+        if isinstance(self.serving_bs.channel_model, (UMaModel, UMiModel)):
             if self.UE_height == 0.0:
                 if self.is_indoor == True:
                     N_fl = np.random.uniform(4, 8)
@@ -502,17 +511,16 @@ class UserEquipment:
                     self.UE_height = 3 * (n_fl - 1) + 1.5
                 else:
                     self.UE_height = 1.5
-                  
-        self.SINR = self.channel_model.calculate_SINR(
+        
+        self.SINR = self.serving_bs.channel_model.calculate_SINR(
             self.UE_ID, displacement, self.dist_to_BS_2D, self.dist_to_BS_2D_in, 
             self.dist_to_BS_3D, self.UE_height, self.ue_class
         )
         
         self.cqi = self.SINR_TO_CQI(self.SINR)
-                
         self.SINR_values.append(self.SINR)
         self.CQI_values.append(self.cqi)
-    
+        
     def GEN_TRFFC(self, current_time: int, update_interval: int) -> None:
         """
         Сгенерировать пакеты трафика согласно модели и добавить их в буфер.
@@ -910,25 +918,6 @@ class UECollection:
         for ue in self.users.values():
             if ue_ids is None or ue.UE_ID in ue_ids:
                 ue.SET_MOBILITY_MODEL(model)
-                
-    def SET_CH_MODEL(self, model, ue_ids: List[int] = None):
-        """
-        Установить модель радиоканала для пользователей в коллекции. Если ue_ids
-        задан как None, то модель применится ко всем UE в коллекции. 
-
-        Args:
-            model (ChannelModel): Модель радиоканала.
-            ue_ids (List[int], optional): Список ID пользователей, к которым
-            необходимо применить модель. По умолчанию None.
-
-        """
-        for ue in self.users.values():
-            if ue_ids is None or ue.UE_ID in ue_ids:
-                ue.SET_CH_MODEL(model)
-                
-        # @IvanNoritsin: Пока что у нас модель трафика задаётся для каждого
-        # пользователя, а не для БС. Как только данный момент будет исправлен,
-        # надобность в этой функции исчезнет и её нужно будет удалить.
                
     def SET_TRAFFIC_MODEL(self, model, ue_ids: List[int] = None):
         """
