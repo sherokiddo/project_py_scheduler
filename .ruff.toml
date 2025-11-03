@@ -1,0 +1,8 @@
+
+line-length = 1000
+target-version = "py310"
+
+select = ["E", "F", "W", "I", "N", "B"]
+ignore = ["E501"]  
+
+per-file-ignores = { "*.py" = ["E402"] }
