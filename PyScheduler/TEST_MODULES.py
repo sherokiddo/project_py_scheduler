@@ -6,11 +6,12 @@ import numpy as np
 import GLOBALS
 from BS_MODULE import BaseStation, Packet
 from CHANNEL_MODEL import UMaModel
-from MOBILITY_MODEL import DiagonalWalkModel
+from MOBILITY_MODEL import RandomWaypointModel, DiagonalWalkModel
 from RES_GRID import RES_GRID_LTE
 from SCHEDULER import ProportionalFairScheduler
+from SIMULATION_MANAGER import SimulationManager
+from TRAFFIC_MODEL import PoissonModel
 from UE_MODULE import UECollection, UserEquipment
-
 
 def visualize_users_mobility(ue_collection: UECollection, bs: BaseStation,
                             x_min: float, x_max: float, y_min: float, y_max: float):
@@ -181,9 +182,7 @@ def debug_simulation():
 
         # Обновление состояния пользователей
         ue_collection.UPDATE_ALL_USERS(current_time=current_time,
-                                       update_interval=update_interval,
-                                       bs_position=bs.position,
-                                       bs_height=bs.height)
+                                       update_interval=update_interval)
 
         # Цикл для планирования ресурсов (по TTI)
         for tti in range(current_time - update_interval, current_time):
@@ -226,7 +225,10 @@ def sim_with_ue_collection():
     inf = math.inf
 
     # Создание и настройка базовой станции
-    bs = BaseStation(x=0, y=0, bandwidth=bandwidth, global_max=inf, per_ue_max=inf)
+    bs = BaseStation(
+        x=0, y=0, bandwidth=bandwidth, global_max=inf, 
+        per_ue_max=inf, ch_model_type="UMa", ch_model_params={"cond_update_period": 5}
+    )
 
     # Создание коллекции пользовательских устройств
     ue_collection = UECollection()
@@ -240,22 +242,13 @@ def sim_with_ue_collection():
     ue_collection.ADD_RANDOM_USERS(num_ue=3)
 
     # Создание модели передвижения пользователей
-    diagonalwalk = DiagonalWalkModel(x_min=-1000,
-                                          x_max=1000,
-                                          y_min=-1000,
-                                          y_max=1000,
-                                          pause_time=0)
+    diagonalwalk = DiagonalWalkModel(bs.position[0], 
+                                     bs.position[1], 
+                                     pause_time=0)
 
     # Установка модели передвижения для всех пользователей коллекции.
     # Есть возможность задавать для отдельных пользователей при помощи параметра ue_ids
     ue_collection.SET_MOBILITY_MODEL(diagonalwalk)
-
-    # Создание модели радиоканала
-    uma = UMaModel(bs=bs, cond_update_period=5)
-
-    # Установка модели радиоканала для всех пользователей коллекции.
-    # Есть возможность задавать для отдельных пользователей при помощи параметра ue_ids
-    ue_collection.SET_CH_MODEL(uma)
 
     # Регистрация всех пользователей коллекции в базовой станции.
     ue_collection.REG_USERS_TO_BS(bs)
@@ -281,9 +274,7 @@ def sim_with_ue_collection():
 
         # Обновление состояния пользователей
         ue_collection.UPDATE_ALL_USERS(current_time=current_time,
-                                       update_interval=update_interval,
-                                       bs_position=bs.position,
-                                       bs_height=bs.height)
+                                       update_interval=update_interval)
 
         # Цикл для планирования ресурсов (по TTI)
         for tti in range(current_time - update_interval, current_time):
@@ -313,8 +304,80 @@ def sim_with_ue_collection():
     visualize_users_sinr(ue_collection=ue_collection,
                             sim_duration=sim_duration,
                             update_interval=update_interval)
+    
+def sim_with_manager():
+    """
+    Пример запуска симуляции с использованием менеджера.
 
-
+    """    
+# =============================================================================
+#             НАСТРОЙКА БАЗОВОЙ СТАНЦИИ И КОЛЛЕКЦИИ ПОЛЬЗОВАТЕЛЕЙ                
+# =============================================================================
+    
+    # Создание и настройка базовой станции
+    bs = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMa")
+    
+    # Создание коллекции пользовательских устройств
+    ue_collection = UECollection()
+    
+    # Установка сида
+    GLOBALS.SEED = 42
+    
+    # Генерация заданного числа UE в коллекцию
+    ue_collection.ADD_RANDOM_USERS(num_ue=3)    
+    
+    # Создание модели передвижения пользователей
+    random_waypoint = RandomWaypointModel(x_min=-1000, 
+                                          x_max=1000, 
+                                          y_min=-1000, 
+                                          y_max=1000, 
+                                          pause_time=0)
+    
+    # Установка модели передвижения для всех пользователей коллекции
+    ue_collection.SET_MOBILITY_MODEL(random_waypoint)    
+    
+    # Создание модели генерации трафика
+    poisson = PoissonModel(packet_rate=1000)
+    
+    # Установка модели генерации трафика для всех пользователей коллекции
+    ue_collection.SET_TRAFFIC_MODEL(poisson)
+    
+    # Регистрация всех пользователей коллекции в базовой станции
+    ue_collection.REG_USERS_TO_BS(bs)
+    
+# =============================================================================
+#                        НАСТРОЙКА МЕНЕДЖЕРА СИМУЛЯЦИИ                
+# =============================================================================
+    
+    # Создание менеджера симуляции
+    sim = SimulationManager()
+    
+    # Установка базовой станции
+    sim.set_base_station(bs)
+    
+    # Установка коллекции пользователей
+    sim.set_ue_collection(ue_collection)
+    
+    # Установка планировщика. Можно передвать параметры, которые 
+    # поддерживает SchedulerInterface.
+    sim.set_scheduler(algorithm="RoundRobin")
+    
+    # Установка длительности симуляции
+    sim.set_sim_duration(5000)
+    
+    # Включение verbose логирования. Для вывода всех логов в файл нужно
+    # поставить флаг to_file=True.
+    sim.enable_verbose_log()
+    
+    # Включение логирования статистики в CSV-файл
+    sim.enable_stats_log()
+    
+    # Запуск симуляции
+    sim.start_simulation()
+    
+    
 if __name__ == "__main__":
-    debug_simulation()
-    # sim_with_ue_collection()
+    # debug_simulation()
+    sim_with_ue_collection()
+    # sim_with_manager()
+    
