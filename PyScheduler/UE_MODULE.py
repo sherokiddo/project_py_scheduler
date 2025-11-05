@@ -7,9 +7,9 @@
 # в сети LTE, включая их перемещение, генерацию трафика, управление буфером
 # и оценку качества канала.
 #
-# Версия: 1.0.5
-# Дата последнего изменения: 2025-04-06
-# Автор: Брагин Кирилл, Норицин Иван
+# Версия: 1.0.6
+# Дата последнего изменения: 2025-11-05
+# Автор: Брагин Кирилл, Норицин Иван, Дворников Андрей
 # Версия Python Kernel: 3.12.9
 #
 # Зависимости:
@@ -60,6 +60,12 @@
 #   v1.0.5 - 2025-04-06
 #      - Добавлен класс Packet. Логика буфера и тесты переписаны с учетом
 #       новых реалий
+#
+#   v1.0.6 - 2025-11-05
+#      - Интегрирован фактори-паттерн из MOBILITY_MODEL.
+#      - Изменен SET_MOBILITY_MODEL в UserEquipment для корректного первого шага движения 
+#        моделей RandomWaypoint и RandomDirection.
+#      - Добавлено динамическое установление атрибутов в UPD_POSITION.
 #------------------------------------------------------------------------------
 """
 import numpy as np
@@ -386,8 +392,10 @@ class UserEquipment:
 
         """
         self.mobility_model = model
-        
-        # Инициализируем все параметры для моделей
+    
+        self.velocity = np.random.uniform(self.velocity_min, self.velocity_max)
+        self.direction = np.random.uniform(0, 2 * np.pi)
+    
         self.is_first_move = True
         self.destination = (
             np.random.uniform(model.x_min, model.x_max),
@@ -395,11 +403,9 @@ class UserEquipment:
         )
         self.is_paused = False
         self.pause_timer = 0.0
-        self.mean_velocity = 5.0
-        self.mean_direction = 0.0
+        self.mean_velocity = self.velocity
+        self.mean_direction = self.direction
         
-        # @IvanNoritsin: Нужен базовый класс для моделей передвижения для более
-        # корректной валидации.
     
     def SET_CH_MODEL(self, model) -> None:
         """
@@ -432,8 +438,8 @@ class UserEquipment:
         # @IvanNoritsin: Нужен базовый класс для моделей трафика для более
         # корректной валидации.
     
-    def UPD_POSITION(self, current_time: int, bs_position: Tuple[float, float], 
-                 bs_height: float) -> None:
+    def UPD_POSITION(self, update_interval: int, bs_position: Tuple[float, float], 
+             bs_height: float) -> None:
         """Обновить позицию пользователя согласно модели передвижения."""
         
         result = self.mobility_model.update(
@@ -442,7 +448,7 @@ class UserEquipment:
             velocity_min=self.velocity_min,
             velocity_max=self.velocity_max,
             current_direction=self.direction,
-            time_ms=current_time,
+            time_ms=update_interval,
             is_first_move=self.is_first_move,
             destination=self.destination,
             is_paused=self.is_paused,
@@ -451,7 +457,6 @@ class UserEquipment:
             mean_direction=self.mean_direction,
         )
         
-        # Распаковываем результат обратно в self
         result_names = ['position', 'velocity', 'direction', 'destination', 
                         'is_paused', 'pause_timer', 'is_first_move', 'mean_direction']
         

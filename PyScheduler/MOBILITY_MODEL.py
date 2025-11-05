@@ -7,19 +7,45 @@
 #   устройств в системах беспроводной связи. Включает как простые, так и сложные
 #   модели движения с поддержкой граничных условий.
 #
-# Версия: 1.0.0
-# Дата последнего изменения: 2025-03-22
-# Автор: Норицин Иван
+# Версия: 1.0.1
+# Дата последнего изменения: 2025-11-05
+# Автор: Норицин Иван, Дворников Андрей
 # Версия Python Kernel: 3.12.9
+#
+# Изменения v1.0.1:
+#   - Добавлен фактори-паттерн. Теперь модели вызываются через MobilityInterface.
+#   - Добавлено наследование от MobilityInterface для всех моделей.
 #------------------------------------------------------------------------------
 """
 import numpy as np
 from typing import Tuple, Any
 
-class MovementInterface:
+class MobilityInterface:
+    """
+    Интерфейс для вызова моделей мобильности пользовательских устройств. 
+    Позволяет единообразно создавать любую модель по названию, без необходимости импорта каждой
+    отдельной модели.  
+    """
     @staticmethod
     def set(model: str, x_min: float, x_max: float, y_min: float, y_max: float, 
             **kwargs):
+        """
+        Создание нужной модели по строке-названию.
+
+        Args:
+            model: Название модели
+            x_min: Минимальная граница по оси X
+            x_max: Максимальная граница по оси X
+            y_min: Минимальная граница по оси Y
+            y_max: Максимальная граница по оси Y
+            **kwargs:           Дополнительные параметры для каждой модели:
+                - RandomWaypoint:   pause_time (мс)
+                - RandomDirection:  pause_time (мс)
+                - GaussMarkov:      alpha (0-1), boundary_threshold (метры)
+
+        Returns:
+            Объект выбранной модели мобильности.
+        """
         models = {
             'RandomWalk': RandomWalkModel,
             'RandomWaypoint': RandomWaypointModel,
@@ -37,10 +63,27 @@ class MovementInterface:
     
     @staticmethod
     def availavle_models():
+        """
+        Список доступных моделей движения.
+        """
         return ['RandomWalk', 'RandomWaypoint', 'RandomDirection', 'GaussMarkov']
     
     def __init__(self, x_min: float, x_max: float, y_min: float, y_max: float,
                  **kwargs):
+        """
+        Инициализация базовых параметров.
+
+        Args:
+            model: Название модели
+            x_min: Минимальная граница по оси X
+            x_max: Максимальная граница по оси X
+            y_min: Минимальная граница по оси Y
+            y_max: Максимальная граница по оси Y
+            **kwargs:           Дополнительные параметры для каждой модели:
+                - RandomWaypoint:   pause_time (мс)
+                - RandomDirection:  pause_time (мс)
+                - GaussMarkov:      alpha (0-1), boundary_threshold (метры)
+        """
         self.x_min = x_min
         self.x_max = x_max
         self.y_min = y_min
@@ -53,9 +96,13 @@ class MovementInterface:
                velocity_min: float, velocity_max: float, current_direction: float,
                time_ms: int,
                **kwargs) -> Any:
+        """
+        Абстрактный метод обновления позиции.
+        Должен быть в каждой модели движения.
+        """
         pass
 
-class RandomWalkModel(MovementInterface):
+class RandomWalkModel(MobilityInterface):
     """
     Модель передвижения Random Walk для пользовательского устройства (UE).
     Устройство движется в случайном направлении в пределах заданных границ.
@@ -125,7 +172,7 @@ class RandomWalkModel(MovementInterface):
         
         return new_position, new_velocity, new_direction, is_first_move
     
-class RandomWaypointModel(MovementInterface):
+class RandomWaypointModel(MobilityInterface):
     """
     Модель передвижения Random Waypoint для пользовательского устройства (UE).
     Устройство движется к случайным пунктам назначения с паузами между движениями.
@@ -144,6 +191,7 @@ class RandomWaypointModel(MovementInterface):
         """
         super().__init__(x_min, x_max, y_min, y_max, **kwargs)
         self.pause_time = pause_time
+        
             
     def _choose_new_destination(self, current_position: Tuple[float, float], 
                                 velocity_min: float, velocity_max: float) -> Tuple[Tuple[float, float], 
@@ -230,7 +278,7 @@ class RandomWaypointModel(MovementInterface):
             new_position = (new_x, new_y)
             return new_position, current_velocity, current_direction, destination, is_paused, pause_timer
 
-class RandomDirectionModel(MovementInterface):
+class RandomDirectionModel(MobilityInterface):
     """
     Модель передвижения Random Direction для пользовательского устройства (UE).
     Устройство движется к границе области моделирования в случайном направлении,
@@ -249,6 +297,12 @@ class RandomDirectionModel(MovementInterface):
             pause_time: Время паузы между движениями (в мс)
         """
         super().__init__(x_min, x_max, y_min, y_max, **kwargs)
+        self.destination = (
+            np.random.uniform(self.x_min, self.x_max),
+            np.random.uniform(self.y_min, self.y_max)
+        )
+        self.is_paused = False
+        self.pause_timer = 0.0
         self.pause_time = pause_time
         
     def _choose_new_direction(self, current_position: Tuple[float, float], velocity_min: float, 
@@ -378,7 +432,7 @@ class RandomDirectionModel(MovementInterface):
             new_position = (new_x, new_y)
             return new_position, current_velocity, current_direction, destination, is_paused, pause_timer, is_first_move
 
-class GaussMarkovModel(MovementInterface):
+class GaussMarkovModel(MobilityInterface):
     """
     Модель передвижения Gauss-Markov для пользовательского устройства (UE).
     Устройство движется в соответствии с моделью Гаусса-Маркова, где скорость и направление
