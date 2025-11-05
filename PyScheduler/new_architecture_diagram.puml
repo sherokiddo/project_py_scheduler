@@ -1,0 +1,136 @@
+@startuml Новая архитектура симулятора LTE-сети
+
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam componentStyle rectangle
+skinparam classStyle rectangle
+
+title Новая архитектура симулятора LTE-сети\n(Event-Driven Architecture)
+
+package "1. Центральный координатор" as coordinator {
+    [SimulationCoordinator] as SC
+    [SimulationConfig] as SCConfig
+    [SimulationMetrics] as SMetrics
+}
+
+package "2. Система событий" as events {
+    [EventManager] as EM
+    [EventType] as ET
+    [Event] as E
+}
+
+package "3. Интерфейсы модулей" as interfaces {
+    [IModule] as IM
+    [IChannelModel] as ICM
+    [IMobilityModel] as IMM
+    [ITrafficModel] as ITM
+    [IScheduler] as IS
+    [IResourceGrid] as IRG
+    [IUserEquipment] as IUE
+    [IBaseStation] as IBS
+}
+
+package "4. Базовый модуль" as base {
+    [BaseModule] as BM
+    [ModuleConfig] as MC
+    [ModuleStatus] as MS
+}
+
+package "5. Адаптеры модулей" as adapters {
+    [ModuleAdapterFactory] as MAF
+    [BaseStationAdapter] as BSA
+    [UserEquipmentAdapter] as UEA
+    [ChannelModelAdapter] as CMA
+    [MobilityModelAdapter] as MMA
+    [TrafficModelAdapter] as TMA
+    [SchedulerAdapter] as SA
+    [ResourceGridAdapter] as RGA
+}
+
+package "6. Существующие модули" as legacy {
+    [OriginalBaseStation] as OBS
+    [OriginalUserEquipment] as OUE
+    [OriginalResourceGrid] as ORG
+    [RoundRobinScheduler] as RRS
+    [UMiModel] as UM
+    [RandomWalkModel] as RWM
+    [PoissonModel] as PM
+}
+
+' Основные связи координатора
+SC --> EM : "управляет событиями"
+SC --> IM : "управляет модулями"
+SC --> SCConfig : "использует конфигурацию"
+SC --> SMetrics : "собирает метрики"
+
+' Связи системы событий
+EM --> ET : "обрабатывает типы"
+EM --> E : "создает события"
+
+' Связи базового модуля
+BM --> IM : "реализует интерфейс"
+BM --> EM : "использует события"
+BM --> MC : "содержит конфигурацию"
+
+' Связи фабрики адаптеров
+MAF --> BSA : "создает адаптер БС"
+MAF --> UEA : "создает адаптер UE"
+MAF --> CMA : "создает адаптер канала"
+MAF --> MMA : "создает адаптер мобильности"
+MAF --> TMA : "создает адаптер трафика"
+MAF --> SA : "создает адаптер планировщика"
+MAF --> RGA : "создает адаптер ресурсов"
+
+' Связи адаптеров с интерфейсами
+BSA --> IBS : "реализует интерфейс БС"
+UEA --> IUE : "реализует интерфейс UE"
+CMA --> ICM : "реализует интерфейс канала"
+MMA --> IMM : "реализует интерфейс мобильности"
+TMA --> ITM : "реализует интерфейс трафика"
+SA --> IS : "реализует интерфейс планировщика"
+RGA --> IRG : "реализует интерфейс ресурсов"
+
+' Связи адаптеров с существующими модулями
+BSA --> OBS : "адаптирует БС"
+UEA --> OUE : "адаптирует UE"
+CMA --> UM : "адаптирует модель канала"
+MMA --> RWM : "адаптирует модель мобильности"
+TMA --> PM : "адаптирует модель трафика"
+SA --> RRS : "адаптирует планировщик"
+RGA --> ORG : "адаптирует ресурсную сетку"
+
+' Событийные связи
+EM ..> IM : "уведомляет о событиях"
+IM ..> EM : "публикует события"
+
+note right of EM
+  **Observer Pattern**
+  Централизованная система событий
+  Асинхронная обработка
+end note
+
+note right of MAF
+  **Factory Pattern**
+  Создание адаптеров
+  без указания классов
+end note
+
+note right of BM
+  **Template Method**
+  Базовый класс с шаблоном
+  жизненного цикла
+end note
+
+note right of SC
+  **Facade Pattern**
+  Упрощает сложную систему
+  Единая точка входа
+end note
+
+note bottom of BSA
+  **Adapter Pattern**
+  Интегрирует старые модули
+  в новую архитектуру
+end note
+
+@enduml
