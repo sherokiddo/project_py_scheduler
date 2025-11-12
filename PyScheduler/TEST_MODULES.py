@@ -132,15 +132,11 @@ def sim_with_ue_collection():
     ue_collection.ADD_RANDOM_USERS(num_ue=3)    
     
     # Создание модели передвижения пользователей
-    random_waypoint = RandomWaypointModel(x_min=-1000, 
-                                          x_max=1000, 
-                                          y_min=-1000, 
-                                          y_max=1000, 
-                                          pause_time=0)
+    MapBorders(-1000, 1000, -1000, 1000)
 
     # Установка модели передвижения для всех пользователей коллекции.
     # Есть возможность задавать для отдельных пользователей при помощи параметра ue_ids
-    ue_collection.SET_MOBILITY_MODEL(random_waypoint)    
+    ue_collection.SET_MOBILITY_MODEL('RandomWaypoint')    
     
     # Создание модели радиоканала  
     uma = UMaModel(bs=bs, cond_update_period=5)
