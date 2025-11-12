@@ -68,11 +68,13 @@
 #      - Добавлено динамическое установление атрибутов в UPD_POSITION.
 #------------------------------------------------------------------------------
 """
-import numpy as np
-import GLOBALS
 from collections import deque
-from typing import Dict, List, Optional, Union, Tuple
-from TRAFFIC_MODEL import PoissonModel, OnOffModel, MMPPModel
+from typing import Dict, List, Optional, Tuple
+
+import GLOBALS
+import numpy as np
+from TRAFFIC_MODEL import MMPPModel, OnOffModel, PoissonModel
+
 
 class Packet:
     """Класс для представления сетевого пакета"""
@@ -420,7 +422,7 @@ class UserEquipment:
     def UPD_POSITION(self, update_interval: int, bs_position: Tuple[float, float],
                  bs_height: float) -> None:
         """Обновить позицию пользователя согласно модели передвижения."""
-        
+
         new_pos, new_vel, new_dir = self.mobility_model.update(time_ms=update_interval)
 
         self.position = new_pos
@@ -428,7 +430,7 @@ class UserEquipment:
         self.direction = new_dir
         self.coordinates.append(self.position)
 
-        
+
         # Обновляем расстояния до БС
         if self.is_indoor:
             self._calculate_distances_to_BS(bs_position, bs_height)

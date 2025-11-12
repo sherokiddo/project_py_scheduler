@@ -25,17 +25,19 @@
 #   - Аргументы скоростей и позиции пользователя теперь берутся из UserEquipment.
 #------------------------------------------------------------------------------
 """
-import numpy as np
 from typing import Tuple
-from UE_MODULE import UserEquipment
+
+import numpy as np
 from BS_MODULE import BaseStation
+from UE_MODULE import UserEquipment
+
 
 class MapBorders:
     """
     Синглтон для установки границ карты
     """
     _instance = None
-    
+
     def __new__(cls, x_min = None, x_max = None,
                      y_min = None, y_max = None):
         """
@@ -48,13 +50,13 @@ class MapBorders:
             y_max: Максимальная граница по оси Y
         """
         if cls._instance == None:
-            cls._instance = super().__new__(cls) 
+            cls._instance = super().__new__(cls)
             cls._instance.x_min = x_min if x_min is not None else -1000
             cls._instance.x_max = x_max if x_max is not None else 1000
             cls._instance.y_min = y_min if y_min is not None else -1000
             cls._instance.y_max = y_max if y_max is not None else 1000
         return cls._instance
-    
+
     def get_borders(self):
         """
         Возвращает значения границ карты.
@@ -72,7 +74,7 @@ class MobilityInterface:
     """
     Класс-фабрика для моделей мобильности
     """
-    
+
     def __init__(self, ue: UserEquipment, **kwargs):
         """
         Инициализация фабрики для моделей мобильности.
@@ -84,13 +86,13 @@ class MobilityInterface:
         """
         self.x_min, self.x_max, self.y_min, self.y_max = MapBorders().get_borders()
         self.ue = ue
-    
+
     def update(self, time_ms: int, **kwargs) -> tuple:
         """
         Обязательный метод для всех моделей.
         """
         raise NotImplementedError("Модель обязательно должна иметь метод update()")
-    
+
     @staticmethod
     def create(model: str, **kwargs):
         """
@@ -107,12 +109,12 @@ class MobilityInterface:
             'GaussMarkov': GaussMarkovModel,
             'DiagonalWalk': DiagonalWalkModel
         }
-        
+
         if model not in models:
             raise ValueError(f"Unknown model '{model}'. Valid: {', '.join(models.keys())}")
-        
+
         return models[model](**kwargs)
-    
+
     def get_available_models():
         """
         Получить список доступных моделей.
@@ -134,7 +136,7 @@ class RandomWalkModel(MobilityInterface):
         """
         super().__init__(ue=ue, **kwargs)
         self.is_first_move = True
-    
+
     def update(self, time_ms: int, **kwargs) -> Tuple[Tuple[float, float], float, float]:
         """
         Обновляет позицию, скорость и направление устройства на основе модели случайного блуждания.
@@ -200,7 +202,8 @@ class RandomWaypointModel(MobilityInterface):
         self.pause_timer = 0.0
         self.current_velocity = np.random.uniform(self.ue.velocity_min, self.ue.velocity_max)
         self.current_direction = np.random.uniform(0, 2 * np.pi)
-        self.destination, _, _, _ = self._choose_new_destination(self.ue.position, self.ue.velocity_min, self.ue.velocity_max)
+        self.destination, _, _, _ = self._choose_new_destination(self.ue.position, 
+                                                                 self.ue.velocity_min, self.ue.velocity_max)
 
 
     def _choose_new_destination(self, current_position: Tuple[float, float],
@@ -248,7 +251,7 @@ class RandomWaypointModel(MobilityInterface):
         current_position = self.ue.position
         velocity_min, velocity_max = self.ue.velocity_min, self.ue.velocity_max
         time_s = time_ms / 1000.0
-    
+
         if self.is_paused:
             self.pause_timer += time_ms
             if self.pause_timer >= self.pause_time:
@@ -259,28 +262,28 @@ class RandomWaypointModel(MobilityInterface):
                 self.current_direction = new_direction
                 self.is_paused = False
                 self.pause_timer = 0.0
-    
+
                 return current_position, new_velocity, new_direction
             else:
                 return current_position, 0.0, self.current_direction
-    
+
         delta_x = self.destination[0] - current_position[0]
         delta_y = self.destination[1] - current_position[1]
         distance = np.sqrt(delta_x**2 + delta_y**2)
-    
+
         if distance <= self.current_velocity * time_s:
             new_position = self.destination
             self.is_paused = True
             self.current_velocity = 0.0
             self.ue.position = new_position
-    
+
             return new_position, 0.0, self.current_direction
         else:
             new_x = current_position[0] + self.current_velocity * np.cos(self.current_direction) * time_s
             new_y = current_position[1] + self.current_velocity * np.sin(self.current_direction) * time_s
             new_position = (new_x, new_y)
             self.ue.position = new_position
-    
+
             return new_position, self.current_velocity, self.current_direction
 
 
@@ -304,7 +307,7 @@ class RandomDirectionModel(MobilityInterface):
         self.pause_timer = 0.0
         self.is_first_move = True
         self.destination, self.current_velocity, self.current_direction, _, self.is_first_move = \
-            self._choose_new_direction(self.ue.position, self.ue.velocity_min, self.ue.velocity_max, 
+            self._choose_new_direction(self.ue.position, self.ue.velocity_min, self.ue.velocity_max,
                                        self.is_first_move)
 
 
@@ -393,24 +396,24 @@ class RandomDirectionModel(MobilityInterface):
         """
         time_s = time_ms / 1000.0
         current_position = self.ue.position
-    
+
         if self.is_paused:
             self.pause_timer += time_ms
             if self.pause_timer >= self.pause_time:
-                self.destination, self.current_velocity, 
+                self.destination, self.current_velocity,
                 self.current_direction, _, self.is_first_move = \
-                    self._choose_new_direction(current_position, 
+                    self._choose_new_direction(current_position,
                                     self.ue.velocity_min, self.ue.velocity_max,
                                     self.is_first_move)
                 self.is_paused = False
                 self.pause_timer = 0.0
             else:
                 return current_position, 0.0, self.current_direction
-    
+
         delta_x = self.destination[0] - current_position[0]
         delta_y = self.destination[1] - current_position[1]
         distance = np.sqrt(delta_x**2 + delta_y**2)
-    
+
         if distance <= self.current_velocity * time_s:
             self.is_paused = True
             new_position = self.destination
@@ -466,12 +469,12 @@ class GaussMarkovModel(MobilityInterface):
         current_position = self.ue.position
         current_velocity = getattr(self, 'current_velocity', 0)
         current_direction = getattr(self, 'current_direction', 0)
-    
+
         mean_velocity = kwargs.get('mean_velocity', getattr(self, 'mean_velocity', current_velocity))
         mean_direction = kwargs.get('mean_direction', getattr(self, 'mean_direction', current_direction))
-    
+
         x, y = current_position
-    
+
         # При пересечении установленной "защитной" границы меняем среднее направление
         if x < self.x_min + self.boundary_threshold:
             if y < self.y_min + self.boundary_threshold:
@@ -491,39 +494,39 @@ class GaussMarkovModel(MobilityInterface):
             mean_direction = np.deg2rad(90)
         elif y > self.y_max - self.boundary_threshold:
             mean_direction = np.deg2rad(270)
-    
+
         new_velocity = (self.alpha * current_velocity + (1 - self.alpha) * mean_velocity +
                         np.sqrt(1 - self.alpha**2) * np.random.normal(0, 1))
-    
+
         new_direction = (self.alpha * current_direction + (1 - self.alpha) * mean_direction +
                          np.sqrt(1 - self.alpha**2) * np.random.normal(0, 1))
-    
+
         new_x = x + new_velocity * np.cos(new_direction) * time_s
         new_y = y + new_velocity * np.sin(new_direction) * time_s
-    
+
         # Если всё же пользователь залез за область симуляции - делаем отскок
         if new_x < self.x_min or new_x > self.x_max:
             new_direction = np.pi - current_direction
             new_x = x + np.cos(new_direction) * current_velocity * time_s
-    
+
         if new_y < self.y_min or new_y > self.y_max:
             new_direction = -current_direction
             new_y = y + np.sin(new_direction) * current_velocity * time_s
-    
+
         new_position = (new_x, new_y)
-    
+
         # Обновляем состояние
         self.current_velocity = new_velocity
         self.current_direction = new_direction
         self.mean_velocity = mean_velocity
         self.mean_direction = mean_direction
         self.ue.position = new_position
-    
+
         return new_position, new_velocity, new_direction
 
 
 class DiagonalWalkModel(MobilityInterface):
-    def __init__(self, ue: UserEquipment, bs: BaseStation, 
+    def __init__(self, ue: UserEquipment, bs: BaseStation,
                  pause_time: int, **kwargs):
         """
         Инициализация модели DiagonalWalk.
@@ -603,7 +606,7 @@ class DiagonalWalkModel(MobilityInterface):
         velocity_min = self.ue.velocity_min
         velocity_max = self.ue.velocity_max
         time_s = time_ms / 1000.0
-    
+
         if self.is_paused:
             self.pause_timer += time_ms
             if self.pause_timer >= self.pause_time:
@@ -612,17 +615,17 @@ class DiagonalWalkModel(MobilityInterface):
                 self.pause_timer = 0.0
             else:
                 return current_position, 0.0, self.current_direction
-    
+
         if self._diagonal_destination is None:
             self._diagonal_destination, self.current_velocity, self.current_direction, self.is_paused, self.pause_timer, self.is_first_move = \
                 self._choose_new_destination(current_position, velocity_min, velocity_max, self.is_first_move)
-    
+
         delta_x = self._diagonal_destination[0] - current_position[0]
         delta_y = self._diagonal_destination[1] - current_position[1]
         distance = np.hypot(delta_x, delta_y)
-    
+
         self.current_direction = np.arctan2(delta_y, delta_x)
-    
+
         if distance <= self.current_velocity * time_s:
             self.is_paused = True
             new_position = self._diagonal_destination
