@@ -6,7 +6,7 @@ from UE_MODULE import UserEquipment, UECollection
 from BS_MODULE import BaseStation, Packet
 from RES_GRID import RES_GRID_LTE
 from SCHEDULER import RoundRobinScheduler, BestCQIScheduler, ProportionalFairScheduler
-from MOBILITY_MODEL import MobilityInterface
+from MOBILITY_MODEL import MobilityInterface, MapBorders
 from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
 
 def visualize_users_mobility(ue_collection: UECollection, bs: BaseStation,
@@ -105,115 +105,7 @@ def print_users_stats(ue_collection: UECollection, tti: int, bs: BaseStation,
         print(f"\tТекущая позиция     : {ue.position}")
         print(f"\tСмещение            : {displacement} m")
         print("-" * 40)
-
-def debug_simulation():
-    """
-    Симуляция, предназначенная для отладки. 
-    Позволяет проверить корректность взаимодействия компонентов системы при 
-    помощи вывода различных графиков и статистики для каждого пользователя.
-    
-    """
-    sim_duration = 2000 # Время симуляции (в мс)
-    update_interval = 100 # Интервал обновления параметров пользователя (в мс)
-    num_frames = int(np.ceil(sim_duration / 10)) # Кол-во кадров (для ресурсной сетки)
-    bandwidth = 10 # Ширина полосы (в МГц)
-    inf = math.inf 
-    
-    # Создание и настройка базовой станции
-    bs = BaseStation(x=0, y=0, bandwidth=bandwidth, global_max=inf, per_ue_max=inf)
-       
-    # Создание коллекции пользовательских устройств
-    ue_collection = UECollection()
-    
-    # Создание и настройка пользовательских устройств
-    ue1 = UserEquipment(UE_ID=1, x=80, y=80, ue_class="pedestrian")
-    ue2 = UserEquipment(UE_ID=2, x=40, y=-20, ue_class="cyclist")
-    ue3 = UserEquipment(UE_ID=3, x=-50, y=-50, ue_class="car")
-    
-    # Создание модели передвижения пользователей
-    Mobility_model = MobilityInterface.set('RandomWaypoint',
-                                            x_min=-1000,
-                                            x_max=1000,
-                                            y_min=-1000,
-                                            y_max=1000,
-                                            pause_time=4)
   
-    # Назначение пользователям модели передвижения
-    ue1.SET_MOBILITY_MODEL(Mobility_model)
-    ue2.SET_MOBILITY_MODEL(Mobility_model)
-    ue3.SET_MOBILITY_MODEL(Mobility_model)
-    
-    # Создание модели радиоканала  
-    uma = UMaModel(bs=bs, cond_update_period=5)
-    
-    # Назначение пользователям модели радиоканала
-    ue1.SET_CH_MODEL(uma)
-    ue2.SET_CH_MODEL(uma)
-    ue3.SET_CH_MODEL(uma)
-    
-    # Регистрация пользователей в базовой станции
-    bs.REG_UE(ue1)
-    bs.REG_UE(ue2)
-    bs.REG_UE(ue3)
-    
-    # Добавление пользовательских устройств в коллекцию
-    ue_collection.ADD_USER(ue1)
-    ue_collection.ADD_USER(ue2)
-    ue_collection.ADD_USER(ue3)
-    
-    # Имитация Full Buffer 
-    bs.ue_buffers[1].ADD_PACKET(Packet(size=inf, ue_id=1, creation_time=0), current_time=0)
-    bs.ue_buffers[2].ADD_PACKET(Packet(size=inf, ue_id=2, creation_time=0), current_time=0)
-    bs.ue_buffers[3].ADD_PACKET(Packet(size=inf, ue_id=3, creation_time=0), current_time=0)
-
-    # Создание ресурсной сетки
-    lte_grid = RES_GRID_LTE(bandwidth=bandwidth, num_frames=num_frames)
-    
-    # Создание планировщика
-    scheduler = ProportionalFairScheduler(lte_grid, bs)
-
-    # Основной цикл симуляции
-    for current_time in range(update_interval, sim_duration + 1, update_interval):
-        
-        # Обновление глобальной переменной текущего времени 
-        # (Временное решение)
-        GLOBALS.CURRENT_TIME = current_time
-        
-        # Обновление состояния пользователей
-        ue_collection.UPDATE_ALL_USERS(current_time=current_time, 
-                                       update_interval=update_interval, 
-                                       bs_position=bs.position, 
-                                       bs_height=bs.height)
-    
-        # Цикл для планирования ресурсов (по TTI)
-        for tti in range(current_time - update_interval, current_time):
-            
-            # Подготовка данных для планировщика     
-            users = ue_collection.GET_USERS_FOR_SCHEDULER()
-            
-            # Планирование ресурсов 
-            sched_result = scheduler.schedule(tti, users)
-            
-            # Вывод статистики для каждого пользователя
-            print_users_stats(ue_collection=ue_collection, 
-                              tti=tti, 
-                              bs=bs,
-                              sched_result=sched_result)
-            
-            
-    # Визуализация передвижения пользователей
-    visualize_users_mobility(ue_collection=ue_collection, 
-                            bs=bs, 
-                            x_min=-1000, 
-                            x_max=1000, 
-                            y_min=-1000, 
-                            y_max=1000)
-    
-    # Визуализация SINR пользователей во времени     
-    visualize_users_sinr(ue_collection=ue_collection,
-                            sim_duration=sim_duration, 
-                            update_interval=update_interval)
-    
 def sim_with_ue_collection():
     """
     Пример сценария с использованием коллекций UE.
@@ -315,6 +207,108 @@ def sim_with_ue_collection():
                             update_interval=update_interval)
     
     
+def debug_simulation():
+    """
+    Симуляция для тестирования диагональной модели движения DiagonalWalkModel.
+    Позволяет проверить работу новой модели в новой архитектуре с фабрикой.
+    """
+    sim_duration = 20000 # Время симуляции (в мс)
+    update_interval = 100 # Интервал обновления параметров пользователя (в мс)
+    num_frames = int(np.ceil(sim_duration / 10)) # Кол-во кадров (для ресурсной сетки)
+    bandwidth = 10 # Ширина полосы (в МГц)
+    inf = math.inf
+
+    # Создание и настройка базовой станции
+    bs = BaseStation(x=0, y=0, bandwidth=bandwidth, global_max=inf, per_ue_max=inf)
+
+    # Создание коллекции пользовательских устройств
+    ue_collection = UECollection()
+
+    # Создание и настройка пользовательских устройств
+    ue1 = UserEquipment(UE_ID=1, x=4, y=4, ue_class="pedestrian")
+    ue2 = UserEquipment(UE_ID=2, x=4, y=-2, ue_class="pedestrian")
+    ue3 = UserEquipment(UE_ID=3, x=-2, y=-5, ue_class="pedestrian")
+    
+    # Через синглтон указываем границы карты
+    MapBorders(-1000, 1000, -1000, 1000)
+    
+    ue1.SET_MOBILITY_MODEL('DiagonalWalk', bs=bs, pause_time=200)
+    ue2.SET_MOBILITY_MODEL('RandomDirection', pause_time=0)
+    ue3.SET_MOBILITY_MODEL('GaussMarkov', alpha=0.15, boundary_threshold=100)
+
+
+    # Создание модели радиоканала
+    uma = UMaModel(bs=bs, cond_update_period=5)
+
+    # Назначение пользователям модели радиоканала
+    ue1.SET_CH_MODEL(uma)
+    ue2.SET_CH_MODEL(uma)
+    ue3.SET_CH_MODEL(uma)
+
+    # Регистрация пользователей в базовой станции
+    bs.REG_UE(ue1)
+    bs.REG_UE(ue2)
+    bs.REG_UE(ue3)
+
+    # Добавление пользовательских устройств в коллекцию
+    ue_collection.ADD_USER(ue1)
+    ue_collection.ADD_USER(ue2)
+    ue_collection.ADD_USER(ue3)
+
+    # Имитация Full Buffer
+    bs.ue_buffers[1].ADD_PACKET(Packet(size=inf, ue_id=1, creation_time=0), current_time=0)
+    bs.ue_buffers[2].ADD_PACKET(Packet(size=inf, ue_id=2, creation_time=0), current_time=0)
+    bs.ue_buffers[3].ADD_PACKET(Packet(size=inf, ue_id=3, creation_time=0), current_time=0)
+
+    # Создание ресурсной сетки
+    lte_grid = RES_GRID_LTE(bandwidth=bandwidth, num_frames=num_frames)
+
+    # Создание планировщика
+    scheduler = ProportionalFairScheduler(lte_grid, bs)
+
+    # Основной цикл симуляции
+    for current_time in range(update_interval, sim_duration + 1, update_interval):
+
+        # Обновление глобальной переменной текущего времени
+        # (Временное решение)
+        GLOBALS.CURRENT_TIME = current_time
+
+        # Обновление состояния пользователей
+        ue_collection.UPDATE_ALL_USERS(current_time=current_time,
+                                       update_interval=update_interval,
+                                       bs_position=bs.position,
+                                       bs_height=bs.height)
+
+        # Цикл для планирования ресурсов (по TTI)
+        for tti in range(current_time - update_interval, current_time):
+
+            # Подготовка данных для планировщика
+            users = ue_collection.GET_USERS_FOR_SCHEDULER()
+
+            # Планирование ресурсов
+            sched_result = scheduler.schedule(tti, users)
+
+            # Вывод статистики для каждого пользователя
+            print_users_stats(ue_collection=ue_collection,
+                              tti=tti,
+                              bs=bs,
+                              sched_result=sched_result)
+
+
+    # Визуализация передвижения пользователей
+    visualize_users_mobility(ue_collection=ue_collection,
+                            bs=bs,
+                            x_min=-100,
+                            x_max=100,
+                            y_min=-100,
+                            y_max=100)
+
+    # Визуализация SINR пользователей во времени
+    # visualize_users_sinr(ue_collection=ue_collection,
+    #                         sim_duration=sim_duration,
+    #                         update_interval=update_interval)
+
+
 if __name__ == "__main__":
     debug_simulation()
     # sim_with_ue_collection()
