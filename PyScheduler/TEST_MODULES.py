@@ -68,6 +68,7 @@ def visualize_users_sinr(ue_collection: UECollection, sim_duration: float,
         plt.plot(tti_range, sinr_values, label=f'UE{ue.UE_ID}')
     plt.legend()
     plt.grid(True)
+    plt.ylim(-20, 65)
     plt.show()
 
 def print_users_stats(ue_collection: UECollection, tti: int, bs: BaseStation,
@@ -102,7 +103,8 @@ def print_users_stats(ue_collection: UECollection, tti: int, bs: BaseStation,
         print(f"\tСредняя скорость    : {ue.average_throughput:.2f} bit/s")
         print("\t+" + "-" * 35)
         print(f"\tSINR                : {ue.SINR:.2f} dB")
-        print(f"\tCQI                 : {ue.cqi}")
+        print(f"\tWideband CQI        : {ue.cqi}")
+        print(f"\tSubband CQI         : {ue.cqi_subband}")
         print(f"\tРазмер буфера       : {bs.ue_buffers[ue.UE_ID].sizes[ue.UE_ID]} B")
         print("\t+" + "-" * 35)
         print(f"\tПред. позиция       : {ue.coordinates[-2]}")
@@ -375,9 +377,12 @@ def sim_with_manager():
     # Запуск симуляции
     sim.start_simulation()
     
+    visualize_users_sinr(ue_collection=ue_collection,
+                            sim_duration=5000,
+                            update_interval=1)
     
 if __name__ == "__main__":
     # debug_simulation()
-    sim_with_ue_collection()
-    # sim_with_manager()
+    # sim_with_ue_collection()
+    sim_with_manager()
     

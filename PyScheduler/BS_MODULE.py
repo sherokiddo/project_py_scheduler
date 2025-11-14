@@ -13,6 +13,7 @@
 # Версия Python Kernel: 3.12.9
 #------------------------------------------------------------------------------
 """
+import numpy as np
 from collections import deque, defaultdict
 from typing import Dict, List, Optional, Union, Tuple
 from UE_MODULE import UserEquipment
@@ -360,6 +361,16 @@ class BaseStation:
         20: 38
     }
     
+    # Словарь соответствия полосы частот и количества RB согласно стандарту LTE
+    BANDWIDTH_TO_RB = {
+        1.4: 6,    # 6 RB на слот → 12 RB на TTI
+        3: 15,     # 15 RB на слот → 30 RB на TTI
+        5: 25,     # 25 RB на слот → 50 RB на TTI
+        10: 50,    # 50 RB на слот → 100 RB на TTI
+        15: 75,    # 75 RB на слот → 150 RB на TTI
+        20: 100    # 100 RB на слот → 200 RB на TTI
+    }
+    
     def __init__(self, x: float = 0.0, y: float = 0.0, height: float = 35.0,
                  frequency_GHz: float = 1.8, bandwidth: float = 10,
                  global_max: int = 1048576, per_ue_max: int = 262144,
@@ -383,6 +394,7 @@ class BaseStation:
         self.frequency_GHz = frequency_GHz # Частота в ГГц
         self.frequency_Hz = frequency_GHz * 1e9 # Частота в Гц
         self.bandwidth = bandwidth # Полоса пропускания
+        self.rb_per_slot = self.BANDWIDTH_TO_RB[bandwidth]
         
         # Характеристики передачи
         self.tx_power = None # Мощность передачи (устанавливается отдельно)
@@ -426,19 +438,31 @@ class BaseStation:
                 bs=self,
                 W=params.get('W', 20.0),
                 h=params.get('h', 5.0),
-                cond_update_period=params.get('cond_update_period', 0.0)
+                cond_update_period=params.get('cond_update_period', 0.0),
+                freq_fad_nlos_model = params.get('freq_fad_nlos_model', 'TDL-A'),
+                freq_fad_los_model = params.get('freq_fad_los_model', 'TDL-D'),
+                ds_profile = params.get('ds_profile', 'normal'),
+                los_arrival_angle = params.get('los_arrival_angle', np.pi / 4)
             )
         elif self.ch_model_type == 'UMa':
             self.channel_model = UMaModel(
                 bs=self,
                 cond_update_period=params.get('cond_update_period', 0.0),
-                o2i_model=params.get('o2i_model', 'low')
+                o2i_model=params.get('o2i_model', 'low'),
+                freq_fad_nlos_model = params.get('freq_fad_nlos_model', 'TDL-A'),
+                freq_fad_los_model = params.get('freq_fad_los_model', 'TDL-D'),
+                ds_profile = params.get('ds_profile', 'normal'),
+                los_arrival_angle = params.get('los_arrival_angle', np.pi / 4)
             )
         elif self.ch_model_type == 'UMi':
             self.channel_model = UMiModel(
                 bs=self,
                 cond_update_period=params.get('cond_update_period', 0.0),
-                o2i_model=params.get('o2i_model', 'low')
+                o2i_model=params.get('o2i_model', 'low'),
+                freq_fad_nlos_model = params.get('freq_fad_nlos_model', 'TDL-A'),
+                freq_fad_los_model = params.get('freq_fad_los_model', 'TDL-D'),
+                ds_profile = params.get('ds_profile', 'normal'),
+                los_arrival_angle = params.get('los_arrival_angle', np.pi / 4)
             )
         else:
             raise ValueError(f"Неизвестный тип модели канала: {self.ch_model_type}")

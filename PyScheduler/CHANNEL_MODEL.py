@@ -25,7 +25,10 @@ class ChannelModel:
     CHANNEL_COND_INFO = {}
     O2I_INFO = {}
     
-    def __init__(self, bs: BaseStation, cond_update_period: float = 0.0):
+    def __init__(self, bs: BaseStation, cond_update_period: float = 0.0, 
+                 freq_fad_nlos_model: str = "TDL-A", 
+                 freq_fad_los_model: str = "TDL-D", ds_profile: str = "normal",
+                 los_arrival_angle: float = np.pi / 4):
         """
         Инициализация базового класса моделей радиоканала.
 
@@ -37,6 +40,9 @@ class ChannelModel:
         """
         self.bs = bs
         self.cond_update_period = cond_update_period
+        self.freq_fading = TDLModel(bs, freq_fad_nlos_model,
+                                    freq_fad_los_model, ds_profile,
+                                    los_arrival_angle)
         
     def _get_sigma_sf(self, channel_condition: str, d_2D: float = None, 
                       UE_height: float = None) -> float:
@@ -327,7 +333,15 @@ class ChannelModel:
         
         SINR = P_signal - 10 * np.log10(10 ** (P_interference / 10) + 10 ** (P_noise / 10))
         
-        return SINR
+        channel_cond = self.CHANNEL_COND_INFO[UE_ID].get("cond")
+        channel_model = self.__class__.__name__
+        gain_on_RB = self.freq_fading.calculate_channel_gain(UE_ID, 
+                                                             channel_cond, 
+                                                             channel_model, 
+                                                             ue_class)
+        SINR_on_RB = SINR + gain_on_RB
+        
+        return SINR_on_RB
 
 
 class RMaModel(ChannelModel):
@@ -336,7 +350,9 @@ class RMaModel(ChannelModel):
     Реализует расчеты для сценариев макросотового покрытия в сельской местности.
     """
     def __init__(self, bs: BaseStation, W: float = 20.0, h: float = 5.0, 
-                 cond_update_period: float = 0.0):
+                 cond_update_period: float = 0.0, freq_fad_nlos_model: str = "TDL-A",
+                 freq_fad_los_model: str = "TDL-D", ds_profile: str = "normal",
+                 los_arrival_angle: float = np.pi / 4):
         """
         Инициализация модели RMa.
 
@@ -348,7 +364,8 @@ class RMaModel(ChannelModel):
                 радиоканала (мс). По умолчанию 0.0.
                 
         """
-        super().__init__(bs, cond_update_period)
+        super().__init__(bs, cond_update_period, freq_fad_nlos_model, 
+                         freq_fad_los_model, ds_profile, los_arrival_angle)
         
         self.W = W
         self.h = h
@@ -502,7 +519,9 @@ class UMaModel(ChannelModel):
     Реализует расчеты для сценариев макросотового покрытия в городских условиях.
     """
     def __init__(self, bs: BaseStation, cond_update_period: float = 0.0, 
-                 o2i_model: str = "low"):
+                 o2i_model: str = "low", freq_fad_nlos_model: str = "TDL-A",
+                 freq_fad_los_model: str = "TDL-D", ds_profile: str = "normal",
+                 los_arrival_angle: float = np.pi / 4):
         """
         Инициализация модели UMa.
 
@@ -514,7 +533,8 @@ class UMaModel(ChannelModel):
                 По умолчанию "low".
                 
         """
-        super().__init__(bs, cond_update_period)
+        super().__init__(bs, cond_update_period, freq_fad_nlos_model, 
+                         freq_fad_los_model, ds_profile, los_arrival_angle)
         
         self.bs.tx_power = self.bs.MACROCELL_TX_POWER[self.bs.bandwidth]
         self.bs.height = 25.0
@@ -668,7 +688,9 @@ class UMiModel(ChannelModel):
     Реализует расчеты для сценариев микросотового покрытия в городских условиях.
     """
     def __init__(self, bs: BaseStation, cond_update_period: float = 0.0, 
-                 o2i_model: str = "low"):
+                 o2i_model: str = "low", freq_fad_nlos_model: str = "TDL-A",
+                 freq_fad_los_model: str = "TDL-D", ds_profile: str = "normal",
+                 los_arrival_angle: float = np.pi / 4):
         """
         Инициализация модели UMi.
 
@@ -680,7 +702,8 @@ class UMiModel(ChannelModel):
                 По умолчанию "low".
                 
         """
-        super().__init__(bs, cond_update_period)
+        super().__init__(bs, cond_update_period, freq_fad_nlos_model, 
+                         freq_fad_los_model, ds_profile, los_arrival_angle)
         
         self.bs.tx_power = self.bs.MICROCELL_TX_POWER[self.bs.bandwidth]
         self.bs.height = 10.0
@@ -795,3 +818,347 @@ class UMiModel(ChannelModel):
             
         else:
             return 10000.0   
+        
+        
+class TDLModel:
+    
+    TDL_TABLE = {
+        "TDL-A": {
+            "normalized_delay": np.array([
+                0.0000, 0.3819, 0.4025, 0.5868, 0.4610, 0.5375, 0.6708, 0.5750, 
+                0.7618, 1.5375, 1.8979, 2.2242, 2.1718, 2.4942, 2.5119, 3.0582, 
+                4.0810, 4.4579, 4.7966, 5.0063, 5.3044, 5.5150, 9.6586
+            ]),
+            "power_dB": np.array([
+                -13.4, 0, -2.2, -4, -6, -8.2, -9.9, -9, -7.5, -15.9, -6.6, 
+                -16.7, -12.4, -15.2, -10.8, -11.3, -12.7, -16.2, -18.3, -19.9, 
+                -23.9, -22.9, -29.7
+            ])
+        },
+        
+        "TDL-B": {
+            "normalized_delay": np.array([
+                0.0000, 0.1072, 0.2155, 0.2095, 0.2870, 0.2986, 0.3752, 0.5055,
+                0.3681, 0.3697, 0.5700, 0.5283, 1.1021, 1.2756, 1.5474, 1.7842,
+                2.0169, 2.8294, 3.0219, 3.6187, 4.1067, 4.2790, 4.7834
+            ]),
+            "power_dB": np.array([
+                0, -2.2, -4, -3.2, -9.8, -1.2, -3.4, -5.2, -7.6, -3, -8.9, -9,
+                -4.8, -5.7, -7.5, -1.9, -7.6, -12.2, -9.8, -11.4, -14.9, -9.2, 
+                -11.3
+            ])
+        },
+        
+        "TDL-C": {
+            "normalized_delay": np.array([
+                0.0000, 0.2099, 0.2219, 0.2329, 0.2176, 0.6366, 0.6448, 0.6560, 
+                0.6584, 0.7935, 0.8213, 0.9336, 1.2285, 1.3083, 2.1704, 2.7105, 
+                4.2589, 4.6003, 5.4902, 5.6077, 6.3065, 6.6374, 7.0427, 8.6523
+            ]),
+            "power_dB": np.array([
+                -4.4, -1.2, -3.5, -5.2, -2.5, 0, -2.2, -3.9, -7.4, -7.1, -10.7, 
+                -11.1, -5.1, -6.8, -8.7, -13.2, -13.9, -13.9, -15.8, -17.1, 
+                -16, -15.7, -21.6, -22.8
+            ])
+        },
+        
+        "TDL-D": {
+            "normalized_delay": np.array([
+                0.000, 0.000, 0.035, 0.612, 1.363, 1.405, 1.804, 2.596, 1.775, 
+                4.042, 7.937, 9.424, 9.708, 12.525
+            ]),
+            "power_dB": np.array([
+                -0.2, -13.5, -18.8, -21, -22.8, -17.9, -20.1, -21.9, -22.9, 
+                -27.8, -23.6, -24.8, -30.0, -27.7
+            ]),
+            "K_factor": 13.3
+        },
+        
+        "TDL-E": {
+            "normalized_delay": np.array([
+                0.0000, 0.0000, 0.5133, 0.5440, 0.5630, 0.5440, 0.7112, 1.9092, 
+                1.9293, 1.9589, 2.6426, 3.7136, 5.4524, 12.0034, 20.6519
+            ]),
+            "power_dB": np.array([
+                -0.03, -22.03, -15.8, -18.1, -19.8, -22.9, -22.4, -18.6, -20.8, 
+                -22.6, -22.3, -25.6, -20.2, -29.8, -29.2
+            ]),
+            "K_factor": 23.0
+        }
+    }
+    
+    DELAY_SPREAD_TABLE = {
+        "UMiModel": {
+            "short": 65,
+            "normal": 129,
+            "long": 634
+        },
+        
+        "UMaModel": {
+            "short": 93,
+            "normal": 363,
+            "long": 1148
+        },
+        
+        "RMaModel": {
+            "short": 32,
+            "normal": 37,
+            "long": 153
+        },
+        
+        "UMi_UMa_O2I": {
+            "normal": 242,
+            "long": 616
+        }
+    }
+    
+    NUM_SINUSOIDS = 32
+    
+    def __init__(self, bs: BaseStation, nlos_model: str = "TDL-A", 
+                 los_model: str = "TDL-D", delay_spread_profile: str = "normal", 
+                 los_angle_of_arrival: float = np.pi / 4):
+        
+        self._validate_parameters(nlos_model, los_model, delay_spread_profile)
+        
+        self.bs = bs
+        
+        self.delay_spread_profile = delay_spread_profile
+        
+        self.los_angle_of_arrival = los_angle_of_arrival
+        
+        self.nlos_normalized_delay = self._get_value(nlos_model, "normalized_delay")
+        self.los_normalized_delay = self._get_value(los_model, "normalized_delay")   
+        self.nlos_power_dB = self._get_value(nlos_model, "power_dB")
+        self.los_power_dB = self._get_value(los_model, "power_dB")
+        self.K_factor = self._get_value(los_model, "K_factor")
+        
+        self.lam = 3e8 / self.bs.frequency_Hz
+        self.rb_freqs = self._get_rb_frequencies()
+        
+        self.ues_info = {}
+        
+    def _validate_parameters(self, nlos_model: str, los_model: str, 
+                             delay_spread_profile: str):
+        
+        valid_nlos_models = ["TDL-A", "TDL-B", "TDL-C"]
+        if nlos_model not in valid_nlos_models:
+            raise ValueError(
+                f"Недопустимая TDL модель для NLOS: '{nlos_model}'. "
+                f"Разрешённые значения: {valid_nlos_models}"
+            )
+        
+        valid_los_models = ["TDL-D", "TDL-E"]
+        if los_model not in valid_los_models:
+            raise ValueError(
+                f"Недопустимая TDL модель для LOS: '{los_model}'. "
+                f"Разрешённые значения: {valid_los_models}"
+            )
+            
+        valid_ds_profiles = ["short", "normal", "long"]
+        if delay_spread_profile not in valid_ds_profiles:
+            raise ValueError(
+                f"Недопустимый профиль задержек: '{delay_spread_profile}'. "
+                f"Разрешённые значения: {valid_ds_profiles}"
+            )
+        
+    def _get_value(self, model: str, key: str):
+        
+        return self.TDL_TABLE[model].get(key)
+    
+    def _get_rb_frequencies(self):
+        
+        delta_f = 180e3
+        rb_idx = np.arange(-self.bs.rb_per_slot // 2, self.bs.rb_per_slot // 2)
+        rb_freqs = rb_idx * delta_f
+        
+        return rb_freqs
+    
+    def _get_delay_spread(self, channel_model: str, ue_class: str):
+        
+        if ue_class in {"car", "indoor"} and channel_model != "RMaModel":
+            table_key = "UMi_UMa_O2I" 
+        else:
+            table_key = channel_model
+            
+        profile = ("normal" if self.delay_spread_profile == "short" and 
+                   table_key == "UMi_UMa_O2I" else self.delay_spread_profile)
+        
+        return self.DELAY_SPREAD_TABLE[table_key].get(profile)
+    
+    def _jakes_sum_of_sinusoids(self, f_doppler, alpha, phi):
+        
+        t = GLOBALS.CURRENT_TIME * 1e-3
+        arg = 2 * np.pi * f_doppler * t * np.cos(alpha) + phi
+        c_l = np.exp(1j * arg).sum(axis=1) / np.sqrt(self.NUM_SINUSOIDS)
+        
+        return c_l
+    
+    def _calculate_freq_response(self, UE_ID: int, channel_cond: str, 
+                                     channel_model: str, ue_class: str):
+        
+        if (UE_ID not in self.ues_info or 
+            self.ues_info[UE_ID]["cond"] != channel_cond):
+        
+            if channel_cond == "NLOS":
+                powers_lin = 10 ** (self.nlos_power_dB / 10.0)
+                normalized_delay = self.nlos_normalized_delay
+            
+            elif channel_cond == "LOS":
+                powers_lin = 10 ** (self.los_power_dB / 10.0)
+                normalized_delay = self.los_normalized_delay
+            
+            powers_lin = powers_lin / np.sum(powers_lin)
+        
+            delay_spread = self._get_delay_spread(channel_model, ue_class)
+            delays_ns = normalized_delay * delay_spread
+
+            sqrt_p = np.sqrt(powers_lin)
+          
+            if UE_ID not in self.ues_info:
+                max_L = max(len(self.nlos_normalized_delay), 
+                            len(self.los_normalized_delay))
+                
+                n = np.arange(1, self.NUM_SINUSOIDS + 1)
+                alpha_base = 2 * np.pi * n / self.NUM_SINUSOIDS
+                theta = np.random.uniform(-np.pi / self.NUM_SINUSOIDS, 
+                                          np.pi / self.NUM_SINUSOIDS, 
+                                          (max_L, self.NUM_SINUSOIDS))
+                alpha = alpha_base + theta
+                phi = np.random.uniform(-np.pi, np.pi, (max_L, self.NUM_SINUSOIDS))
+                
+                self.ues_info[UE_ID] = {"alpha": alpha,
+                                        "phi": phi}
+            
+            delays_s = delays_ns * 1e-9
+            path_phase_matrix = np.exp(-1j * 2 * np.pi * (self.rb_freqs[None, :] * 
+                                                          delays_s[:, None]))
+            self.ues_info[UE_ID].update({
+                "cond": channel_cond,
+                "sqrt_p": sqrt_p,
+                "path_phase_matrix": path_phase_matrix
+            })
+            
+        sqrt_p = self.ues_info[UE_ID]["sqrt_p"]
+        alpha = self.ues_info[UE_ID]["alpha"]
+        phi = self.ues_info[UE_ID]["phi"]
+        path_phase_matrix = self.ues_info[UE_ID]["path_phase_matrix"]
+            
+        ue = self.bs.registered_ues.get(UE_ID)
+        f_doppler = ue.velocity / self.lam    
+        
+        L = len(path_phase_matrix)
+        c_l = self._jakes_sum_of_sinusoids(f_doppler, alpha[:L, :], phi[:L, :])
+        
+        if channel_cond == "LOS":
+            K_factor_lin = 10**(self.K_factor / 10)
+            
+            los_weight = np.sqrt(K_factor_lin / (K_factor_lin + 1.0))
+            nlos_weight = np.sqrt(1.0 / (K_factor_lin + 1.0))
+            
+            if "phi_los" not in self.ues_info[UE_ID]:
+                phi_los = np.random.uniform(-np.pi, np.pi)
+                self.ues_info[UE_ID]["phi_los"] = phi_los
+            else:
+                phi_los = self.ues_info[UE_ID]["phi_los"]
+ 
+            t = GLOBALS.CURRENT_TIME * 1e-3
+            los_phase = (2.0 * np.pi * f_doppler * t * 
+                         np.cos(self.los_angle_of_arrival) + phi_los)
+            
+            los_comp = np.exp(1j * los_phase)
+            c_l[0] = los_weight * los_comp + nlos_weight * c_l[0]
+  
+        a_l = sqrt_p * c_l
+        
+        H = (a_l[:, None] * path_phase_matrix).sum(axis=0)
+        
+        return H
+    
+    def calculate_channel_gain(self, UE_ID: int, channel_cond: str, 
+                               channel_model: str, ue_class: str):
+        
+        H = self._calculate_freq_response(UE_ID, channel_cond, 
+                                          channel_model, ue_class)
+        
+        return 10 * np.log10(np.abs(H)**2)
+    
+# TODO: Удалить или переместить в конце разработки
+def test_freq_fading_model():
+    
+    from UE_MODULE import UserEquipment, UECollection
+    from MOBILITY_MODEL import RandomWaypointModel
+    from TEST_MODULES import visualize_users_sinr
+    
+    bs = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMa",
+                     ch_model_params={
+                         "cond_update_period": 50,
+                         })
+    
+    ue_collection = UECollection()
+    
+    ue = UserEquipment(UE_ID=1, x=100, y=100, ue_class="car")
+    
+    ue_collection.ADD_USER(ue)
+    
+    random_waypoint = RandomWaypointModel(x_min=-1000, 
+                                          x_max=1000, 
+                                          y_min=-1000, 
+                                          y_max=1000, 
+                                          pause_time=0)
+    
+    ue_collection.SET_MOBILITY_MODEL(random_waypoint) 
+
+    ue_collection.REG_USERS_TO_BS(bs)
+    
+    tdl = TDLModel(bs=bs,
+                   nlos_model="TDL-A",
+                   los_model="TDL-E",
+                   delay_spread_profile="normal")
+    
+    sim_duration = 200
+    N_RB = bs.rb_per_slot
+    G = np.zeros((sim_duration, N_RB))
+    
+    for t in range(sim_duration):
+    
+        GLOBALS.CURRENT_TIME = t
+        
+        ue_collection.UPDATE_ALL_USERS(current_time=t,
+                                       update_interval=1)
+        
+        # channel_cond = bs.channel_model.CHANNEL_COND_INFO[ue.UE_ID].get("cond")
+        
+        if t < 50 or t > 150:
+            channel_cond = "NLOS"
+        else:
+            channel_cond = "LOS"
+        
+        print(f"[TTI: {t}] Channel Cond: {channel_cond}; Velocity: {ue.velocity}")
+        channel_model = bs.channel_model.__class__.__name__
+        
+        channel_gain = tdl.calculate_channel_gain(UE_ID=ue.UE_ID, 
+                                                  channel_cond=channel_cond, 
+                                                  channel_model=channel_model, 
+                                                  ue_class=ue.ue_class)
+    
+        G[t, :] = channel_gain
+        
+    import matplotlib.pyplot as plt    
+        
+    fig = plt.figure(figsize=(10, 6))
+    ax = fig.add_subplot(111, projection='3d')
+
+    UU, RR = np.meshgrid(np.arange(sim_duration), np.arange(N_RB), indexing='ij')
+
+    ax.plot_surface(UU, RR, G, cmap='coolwarm', linewidth=0, antialiased=True)
+
+    ax.set_xlabel('Time index')
+    ax.set_ylabel('Resource Block index')
+    ax.set_zlabel('Gain / Attenuation (dB)')
+    ax.set_title('Channel gain/attenuation per RB over time')
+
+    plt.tight_layout()
+    plt.show()
+    
+if __name__ == "__main__":
+    test_freq_fading_model()
