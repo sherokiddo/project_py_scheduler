@@ -16,11 +16,136 @@
 import numpy as np
 import GLOBALS
 from BS_MODULE import BaseStation
+from typing import List, Tuple 
+from SCHEDULER import HARQManager, AdaptiveModulationAndCoding
+import bisect
+import random
+import GLOBALS
 
 class ChannelModel:
     """
     Базовый класс для моделей радиоканалов.
     """
+
+
+    def __init__(self):
+        """
+        Инициализация модели канала
+        """    
+        self.amc = AdaptiveModulationAndCoding()
+
+    @staticmethod
+    def lookup_bler(sinr_dB: float, cqi: int) -> float:
+        """
+        Интерполяция BLER по SINR между точками для заданного CQI.
+        Если SINR = -6.5 дБ (между -9 и -4), она вычислит BLER ≈ 0.55 (55%)
+        Если SINR = -2 дБ (между -4 и 1), она вычислит BLER ≈ 0.05 (5%)
+        """
+        points = GLOBALS.BLER_TABLE[cqi]
+        xs, ys = zip(*points)
+        idx = bisect.bisect_left(xs, sinr_dB)
+        if idx == 0:
+            return ys[0]
+        if idx >= len(xs):
+            return ys[-1]
+        x0, y0 = xs[idx-1], ys[idx-1]
+        x1, y1 = xs[idx], ys[idx]
+        return y0 + (y1 - y0) * (sinr_dB - x0) / (x1 - x0)
+
+    def is_tb_error(self, sinr_avg_dB: float, cqi: int) -> bool:
+        """
+        Генерация ошибки TB
+        Возвращает True, если TB ошибочен по встроенной BLER-таблице.
+        """
+        bler = self.lookup_bler(sinr_avg_dB, cqi)
+        return random.random() < bler
+    
+    def get_mcs_from_cqi(self, cqi: int) -> int:
+        """
+        CQI (1-15) → MCS (0-28)
+        Для Scheduler-а
+        """
+        if not (1 <= cqi <= 15):
+            raise ValueError(f"CQI должен быть [1, 15], получено {cqi}")
+        return GLOBALS.CQI_TO_MCS_MAP[cqi]
+
+    def get_itbs_from_mcs(self, mcs: int) -> Tuple[int, int]:
+        """
+        MCS (0-28) → (Qm, ITBS)
+        Qm: 2=QPSK, 4=16QAM, 6=64QAM
+        ITBS: 0-26
+        """
+        if not (0 <= mcs <= 28):
+            raise ValueError(f"MCS должен быть [0, 28], получено {mcs}")
+        return GLOBALS.MCS_TO_ITBS[mcs]
+    
+    def get_tbs(self, itbs: int, nprb: int) -> int:
+        """
+        (ITBS, NPRB) → TBS (размер блока в битах)
+        
+        Args:
+            itbs (int): Индекс таблицы размеров (0-26)
+            nprb (int): Количество выделенных ресурсных блоков (1-100)
+        
+        Returns:
+            int: Размер транспортного блока в БИТАХ
+        
+        Примеры:
+            get_tbs(0, 1) → 16 бит
+            get_tbs(9, 5) → 2344 бита
+            get_tbs(26, 100) → 442368 бит
+        """
+        
+        # Проверка входных данных
+        if not (0 <= itbs <= 26):
+            raise ValueError(f"ITBS должен быть [0, 26], получено {itbs}")
+        
+        if not (1 <= nprb <= 100):
+            raise ValueError(f"NPRB должен быть [1, 100], получено {nprb}")
+        
+        # Получить размер из таблицы
+        # TB_SIZE_TABLE[itbs][nprb - 1]
+        # -1 потому что NPRB от 1, а индекс массива от 0
+        return GLOBALS.TB_SIZE_TABLE[itbs][nprb - 1]
+    
+    def calculate_tbs(self, cqi: int, nprb: int) -> dict:
+        """
+        Полный расчет TBS: CQI → MCS → ITBS → TBS
+        
+        Возвращает:
+        {
+            'cqi': int,
+            'mcs': int,
+            'itbs': int,
+            'qm': int (2, 4, 6),
+            'nprb': int,
+            'tbs_bits': int,
+            'throughput_mbps': float,
+        }
+        """
+        # Шаг 1: CQI → MCS
+        mcs = GLOBALS.CQI_TO_MCS_MAP[cqi]
+        
+        # Шаг 2: MCS → ITBS
+        qm, itbs = GLOBALS.MCS_TO_ITBS[mcs]
+        
+        # Шаг 3: (ITBS, NPRB) → TBS
+        tbs = GLOBALS.TB_SIZE_TABLE[itbs][nprb - 1]
+        
+        # Шаг 4: Расчет пропускной способности (для TTI=1ms)
+        throughput_mbps = tbs * 1000 / 1e6
+        
+        return {
+            'cqi': cqi,
+            'mcs': mcs,
+            'itbs': itbs,
+            'qm': qm,
+            'nprb': nprb,
+            'tbs_bits': tbs,
+            'tbs_bytes': tbs // 8,
+            'throughput_mbps': throughput_mbps,
+        }
+
     SHADOW_FADING_INFO = {}
     CHANNEL_COND_INFO = {}
     O2I_INFO = {}
