@@ -45,6 +45,8 @@
 from typing import Dict, List, Optional, Union, Tuple
 from RES_GRID import RES_GRID_LTE, SchedulerInterface
 from BS_MODULE import BaseStation
+from enum import Enum
+from CHANNEL_MODEL import ChannelModel
 
 class AdaptiveModulationAndCoding:
     """
@@ -145,6 +147,233 @@ class AdaptiveModulationAndCoding:
         stats['total_effective_bits'] = total_effective_bits
         return stats
 
+class HARQState(Enum):
+    """
+    Состояния HARQ-процесса.
+    """
+    IDLE = 0           # Процесс свободен
+    WAITING_ACK = 1    # Ожидание ACK/NACK
+    RETRANSMIT = 2     # Требуется повторная передача
+
+
+class HARQProcess:
+    """
+    Класс для управления одним HARQ-процессом.
+    
+    Attributes:
+        process_id: Идентификатор процесса (0-7 для LTE)
+        state: Текущее состояние процесса
+        tx_count: Число попыток передачи (включая начальную)
+        max_tx: Максимальное число передач
+        tb_data: Буфер транспортного блока
+        rv_sequence: Последовательность Redundancy Version
+        cqi: Текущий CQI для передачи
+        allocated_rbs: Список выделенных RB
+    """
+    
+    def __init__(self, process_id: int, max_tx: int = 4):
+        """
+        Инициализация HARQ-процесса.
+        
+        Args:
+            process_id: Идентификатор процесса (0-7)
+            max_tx: Максимальное число передач (по умолчанию 4)
+        """
+        self.process_id = process_id
+        self.state = HARQState.IDLE
+        self.tx_count = 0
+        self.max_tx = max_tx
+        self.tb_data = None
+        self.rv_sequence = [0, 2, 3, 1]  # Стандартная последовательность RV для LTE
+        self.cqi = None
+        self.allocated_rbs = []
+        
+    def start_transmission(self, tb_data: bytes, cqi: int, rbs: List[int]):
+        """
+        Начало новой передачи TB.
+        
+        Args:
+            tb_data: Данные транспортного блока
+            cqi: Channel Quality Indicator
+            rbs: Список выделенных resource blocks
+        """
+        self.state = HARQState.WAITING_ACK
+        self.tx_count = 1
+        self.tb_data = tb_data
+        self.cqi = cqi
+        self.allocated_rbs = rbs
+        
+    def handle_ack(self):
+        """
+        Обработка положительного подтверждения (ACK).
+        """
+        self.reset()
+        self.tx_count = 0
+        self.tb_data = None # Процесс освобождается
+        
+    def handle_nack(self) -> bool:
+        """
+        Обработка отрицательного подтверждения (NACK).
+        
+        Returns:
+            True если возможна повторная передача, False если достигнут лимит
+        """
+        if self.tx_count < self.max_tx:
+            self.tx_count += 1
+            self.state = HARQState.RETRANSMIT
+            return True
+        else:
+            # Достигнут максимум передач, сбрасываем процесс
+            self.reset()
+            return False
+            
+    def get_current_rv(self) -> int:
+        """
+        Получение текущего Redundancy Version.
+        
+        Returns:
+            Индекс RV для текущей передачи
+        """
+        return self.rv_sequence[(self.tx_count - 1) % len(self.rv_sequence)]
+        
+    def reset(self):
+        """
+        Сброс процесса в начальное состояние.
+        """
+        self.state = HARQState.IDLE
+        self.tx_count = 0
+        self.tb_data = None
+        self.cqi = None
+        self.allocated_rbs = []
+        
+    def is_idle(self) -> bool:
+        """
+        Проверка, свободен ли процесс.
+        """
+        return self.state == HARQState.IDLE
+        
+    def needs_retransmission(self) -> bool:
+        """
+        Проверка, требуется ли повторная передача.
+        """
+        return self.state == HARQState.RETRANSMIT
+
+
+class HARQManager:
+    """
+    Менеджер HARQ-процессов для всех UE в системе.
+    
+    Attributes:
+        num_processes: Число HARQ-процессов на UE (обычно 8 для LTE)
+        max_tx: Максимальное число передач на процесс
+        processes: Словарь {ue_id: [HARQProcess, ...]}
+    """
+    
+    def __init__(self, num_processes: int = 8, max_tx: int = 4):
+        """
+        Инициализация менеджера HARQ.
+        
+        Args:
+            num_processes: Число HARQ-процессов на UE (по умолчанию 8)
+            max_tx: Максимальное число передач (по умолчанию 4)
+        """
+        self.num_processes = num_processes
+        self.max_tx = max_tx
+        self.processes: Dict[int, List[HARQProcess]] = {}
+        
+    def init_ue(self, ue_id: int):
+        """
+        Инициализация HARQ-процессов для нового UE.
+        
+        Args:
+            ue_id: Идентификатор UE
+        """
+        if ue_id not in self.processes:
+            self.processes[ue_id] = [
+                HARQProcess(pid, self.max_tx) 
+                for pid in range(self.num_processes)
+            ]
+            
+    def get_idle_process(self, ue_id: int) -> Optional[HARQProcess]:
+        """
+        Получение свободного HARQ-процесса для UE.
+        
+        Args:
+            ue_id: Идентификатор UE
+            
+        Returns:
+            Свободный HARQProcess или None если все заняты
+        """
+        if ue_id not in self.processes:
+            self.init_ue(ue_id)
+            
+        for process in self.processes[ue_id]:
+            if process.is_idle():
+                return process
+        return None
+        
+    def get_retransmission_process(self, ue_id: int) -> Optional[HARQProcess]:
+        """
+        Получение процесса, требующего повторной передачи.
+        
+        Args:
+            ue_id: Идентификатор UE
+            
+        Returns:
+            HARQProcess требующий ретрансмиссии или None
+        """
+        if ue_id not in self.processes:
+            return None
+            
+        for process in self.processes[ue_id]:
+            if process.needs_retransmission():
+                return process
+        return None
+        
+    def handle_feedback(self, ue_id: int, process_id: int, ack: bool):
+        """
+        Обработка ACK/NACK от UE.
+        
+        Args:
+            ue_id: Идентификатор UE
+            process_id: Идентификатор HARQ-процесса
+            ack: True для ACK, False для NACK
+        """
+        if ue_id not in self.processes:
+            return
+            
+        process = self.processes[ue_id][process_id]
+        
+        if ack:
+            process.handle_ack()
+        else:
+            success = process.handle_nack()
+            if not success:
+                # Достигнут лимит передач, TB потерян
+                print(f"[HARQ] UE {ue_id} Process {process_id}: TB dropped after {self.max_tx} attempts")
+                
+    def get_statistics(self, ue_id: int) -> Dict[str, float]:
+        """
+        Получение статистики HARQ для UE.
+        
+        Args:
+            ue_id: Идентификатор UE
+            
+        Returns:
+            Словарь со статистикой {metric: value}
+        """
+        if ue_id not in self.processes:
+            return {}
+            
+        total_tx = sum(p.tx_count for p in self.processes[ue_id] if not p.is_idle())
+        active_processes = sum(1 for p in self.processes[ue_id] if not p.is_idle())
+        
+        return {
+            'active_processes': active_processes,
+            'avg_transmissions': total_tx / max(active_processes, 1),
+            'idle_processes': self.num_processes - active_processes
+        }
+
 class RoundRobinScheduler(SchedulerInterface):
     
     def __init__(self, lte_grid: RES_GRID_LTE, bs: BaseStation):
@@ -154,7 +383,10 @@ class RoundRobinScheduler(SchedulerInterface):
         self.last_served_ue_id = None 
         #теперь планировщик знает предыдущего обслуженного в tti прользователя
         #именно через этот метод
-        self.amc = AdaptiveModulationAndCoding() 
+        self.amc = AdaptiveModulationAndCoding()
+        self.harq_manager = HARQManager(num_processes=8, max_tx=4)
+        for user_id in range(self.lte_grid.bs.num_ues):
+            self.harq_manager.init_ue(user_id)
     
     def schedule(self, tti: int, users: List[Dict]) -> Dict:
             """
@@ -249,6 +481,38 @@ class RoundRobinScheduler(SchedulerInterface):
                         bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
                         rbg_capacity = len(rb_indices) * bits_per_rb * 2
                         remaining_buffer[ue_id] -= min(remaining_buffer[ue_id], rbg_capacity)
+
+                        # --- HARQ: передача TB через канал ---
+                        # пытаемся найти процесс для ретрансмиссии
+                        harq_proc = self.harq_manager.get_retransmission_process(ue_id)
+                        if harq_proc:
+                            proc_id = harq_proc.process_id
+                            tb_data = harq_proc.tb_data
+                            is_retx = True
+                        else:
+                            # новый процесс
+                            harq_proc = self.harq_manager.get_idle_process(ue_id)
+                            proc_id = harq_proc.process_id
+
+                            # расчёт максимального размера TB
+                            max_bytes = (len(rb_indices) * self.amc.GET_BITS_PER_RB(user['cqi']) * 2) // 8
+                            
+                            # формируем TB из буфера UE
+                            tb_data = user['ue'].buffer.GET_BYTES(max_bytes)  # или ваш pack_transport_block
+                            harq_proc.start_transmission(tb_data, user['cqi'], rb_indices)
+                            is_retx = False
+
+                        # передаём TB и получаем ACK/NACK
+                        ack = self.channel_model.receive_tb(
+                            ue_id=ue_id,
+                            rb_list=rb_indices,
+                            cqi=user['cqi'],
+                            process_id=proc_id,
+                            is_retransmission=is_retx
+                        )
+
+                        # обрабатываем обратную связь
+                        self.harq_manager.handle_feedback(ue_id, proc_id, ack)
 
                 # 7. Переход к следующему пользователю
                 current_idx = (current_idx + 1) % len(active_users)
@@ -411,6 +675,7 @@ class ProportionalFairScheduler(SchedulerInterface):
         self.lte_grid = lte_grid
         self.lte_grid.SET_BS(bs)
         self.amc = AdaptiveModulationAndCoding()
+        self.channel_model = ChannelModel()
         
     def calculate_pf_metric(self, users: List[Dict]):
         """
@@ -483,6 +748,9 @@ class ProportionalFairScheduler(SchedulerInterface):
         
         # 4. Инициализация структур данных
         allocation = {user['UE_ID']: [] for user in active_users}
+
+        # Инициализация для AMC результатов 
+        amc_results = {user['UE_ID']: None for user in active_users}
         
         # 5. Определение количества бит на передачу каждому пользователю
         remaining_buffer = {user['UE_ID']: user['bs_buffer_size'] * 8 for user in active_users}
@@ -504,6 +772,15 @@ class ProportionalFairScheduler(SchedulerInterface):
             if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, ue_id):
                 rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
                 allocation[ue_id].extend(rb_indices)
+
+                # Расчет AMC только один раз для пользователя
+                if amc_results[ue_id] is None:
+                    # Получить количество выделенных RB
+                    num_rb = len(allocation[ue_id])
+                    cqi = best_user['cqi']
+                
+                    # Вызов AMC функции
+                    amc_results[ue_id] = self.channel_model.calculate_tbs(cqi=cqi, nprb=num_rb)
                 
                 # 9. Обновление буфера
                 bits_per_rb = self.amc.GET_BITS_PER_RB(best_user['cqi'])
@@ -519,8 +796,26 @@ class ProportionalFairScheduler(SchedulerInterface):
                 continue
             
             allocated_rb = len(allocation.get(user['UE_ID'], [])) * 2
-            bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
-            max_bytes = (allocated_rb * bits_per_rb) // 8
+
+            # Использование AMC результатов
+            if amc_results[ue_id]:
+                amc = amc_results[ue_id]
+                mcs = amc['mcs']
+                tbs_bits = amc['tbs_bits']
+                tbs_bytes = amc['tbs_bytes']
+                throughput = amc['throughput_mbps']
+                bits_per_rb = amc['qm']
+                
+                # Логирование AMC результатов
+                print(f"[TTI {tti}] UE{ue_id}: CQI={amc['cqi']} → MCS={mcs} → "
+                    f"NPRB={amc['nprb']} → TBS={tbs_bits} бит → {throughput:.3f} Мбит/с")
+                
+                max_bytes = tbs_bytes  # ← Используем TBS из AMC
+            else:
+                # Fallback на старый метод
+                bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
+                max_bytes = (allocated_rb * bits_per_rb) // 8
+                
             packets, total = bs_buffer.GET_PACKETS(
                 ue_id=ue_id,
                 max_bytes=max_bytes,

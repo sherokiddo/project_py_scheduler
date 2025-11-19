@@ -625,6 +625,41 @@ class UserEquipment:
             # Линейная интерполяция
             step = (22.976 + 6.934) / 14
             return int(1 + (SINR + 6.934) / step)
+
+    def receive_tb(self, ue_id: int, rb_list: List[int], cqi: int, 
+                process_id: int = 0, is_retransmission: bool = False) -> bool:
+        """
+        Моделирует приём TB с учётом BLER и HARQ.
+        
+        Args:
+            ue_id: Идентификатор UE
+            rb_list: Список выделенных resource blocks
+            cqi: Channel Quality Indicator
+            process_id: Идентификатор HARQ-процесса
+            is_retransmission: Флаг повторной передачи
+            
+        Returns:
+            True если ACK (успешный приём), False если NACK
+        """
+        # 1.Расчёт среднего SINR
+        sinr_vals = [self.get_sinr(ue_id, rb) for rb in rb_list]
+        sinr_avg = sum(sinr_vals) / len(sinr_vals)
+        
+        # 2. Получение BLER из таблицы
+        base_bler = self._lookup_bler(sinr_avg, cqi)
+        
+        # 3. Soft combining при ретрансмиссии
+        if is_retransmission:
+            process = self.harq_manager.processes.get(ue_id, [])[process_id]
+            # Эвристика: каждая ретрансмиссия уменьшает BLER в ~2 раза
+            bler = base_bler / (2 ** (process.tx_count - 1))
+        else:
+            bler = base_bler
+            
+        # 4. Вероятностная модель ошибки
+        tb_error = self.is_tb_error(sinr_avg, cqi)
+        
+        return not tb_error
         
     def _calculate_distances_to_BS(self, bs_position: Tuple[float, float], bs_height: float,
                                    indoor_boundaries: Tuple[float, float, float, float]) -> None:
