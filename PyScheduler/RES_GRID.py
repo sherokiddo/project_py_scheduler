@@ -586,39 +586,6 @@ class RES_GRID_LTE:
         """Установка ссылки на базовую станцию"""
         self.bs = bs
 
-class SchedulerInterface:
-    """
-    Интерфейс для планировщиков ресурсов.
-    Все планировщики должны наследоваться от этого класса и реализовывать метод schedule.
-    """
-    def __init__(self, lte_grid: RES_GRID_LTE):
-        """
-        Инициализация интерфейса планировщика.
-        
-        Args:
-            lte_grid: Объект RES_GRID_LTE для работы с ресурсной сеткой
-        """
-        self.lte_grid = lte_grid
-    
-    def schedule(self, tti: int, 
-            users: List[Dict], 
-            buffer_status: Dict[int, int], 
-            channel_quality: Dict[int, float]):
-        """
-        Метод планирования ресурсов для заданного TTI.
-        
-        Args:
-            tti: Индекс TTI для планирования
-            users: Список пользователей с их параметрами
-            
-        Returns:
-            Dict: Результаты планирования
-        """
-        if tti < 0 or tti >= self.lte_grid.total_tti:
-            raise ValueError(f"Invalid TTI: {tti}")
-        
-        raise NotImplementedError("Этот метод должен быть переопределен в дочернем классе")
-
 def test_rb_allocation():
     grid = RES_GRID_LTE(bandwidth=10)
     
