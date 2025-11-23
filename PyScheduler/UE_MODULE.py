@@ -376,13 +376,31 @@ class UserEquipment:
 
     def SET_MOBILITY_MODEL(self, model: str, **kwargs):
         """
-        Устанавливает модель мобильности
-        
+        Устанавливает модель мобильности.
+    
         Args:
-            model (str): Название модели движения
+            model (str): Название модели движения. Доступные модели:
+                RandomWalk
+                    - pause_time (float, optional): Время паузы между блужданиями.
+                    - velocity_min (float): Минимальная скорость.
+                    - velocity_max (float): Максимальная скорость.
+                RandomWaypoint
+                    - pause_time (float, optional): Время паузы между движениями.
+                    - velocity_min (float): Минимальная скорость.
+                    - velocity_max (float): Максимальная скорость.
+                RandomDirection
+                    - pause_time (float, optional): Время паузы между движениями.
+                GaussMarkov
+                    - alpha (float, optional): Параметр памяти модели.
+                    - boundary_threshold (float, optional): Порог приближения к границе.
+                DiagonalWalk
+                    - pause_time (int): Время паузы.
+                    - bs (BaseStation): Экземпляр базовой станции.
+    
+        Пример:
+            SET_MOBILITY_MODEL('RandomWalk', pause_time=2.0, velocity_min=1.0)
         """
         from MOBILITY_MODEL import MobilityInterface
-
         mobility = MobilityInterface.create(model=model, ue=self, **kwargs)
         self.mobility_model = mobility
 

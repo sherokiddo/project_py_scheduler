@@ -15,9 +15,9 @@
 # Изменения v1.0.1:
 #   - Добавлен фактори-паттерн. Теперь модели вызываются через MobilityInterface.
 #   - Добавлено наследование от MobilityInterface для всех моделей.
-# 
+#
 # Изменения v1.1:
-#   - Исправлен фактори-паттерн. 
+#   - Исправлен фактори-паттерн.
 #   - Добавлен синглтон-паттерн для установки единых границ карты для всех моделей.
 #   - Исправлены модели. Теперь в UE_MODULE передаются только new_position, new_velocity и
 #   new_direction. Остальные аргументы остаются внутри моделей движения.
@@ -25,6 +25,8 @@
 #   - Аргументы скоростей и позиции пользователя теперь берутся из UserEquipment.
 #------------------------------------------------------------------------------
 """
+
+import inspect
 from typing import Tuple
 
 import numpy as np
@@ -35,11 +37,16 @@ from UE_MODULE import UserEquipment
 class MapBorders:
     """
     Синглтон для установки границ карты
+    Args:
+        x_min: Минимальная граница по оси X
+        x_max: Максимальная граница по оси X
+        y_min: Минимальная граница по оси Y
+        y_max: Максимальная граница по оси Y
     """
+
     _instance = None
 
-    def __new__(cls, x_min = None, x_max = None,
-                     y_min = None, y_max = None):
+    def __new__(cls, x_min=None, x_max=None, y_min=None, y_max=None):
         """
         Создает единственный объект границ.
 
@@ -49,12 +56,19 @@ class MapBorders:
             y_min: Минимальная граница по оси Y
             y_max: Максимальная граница по оси Y
         """
-        if cls._instance == None:
+        if x_min is not None and x_max is not None and x_max <= x_min:
+            raise ValueError("x_max должен быть больше x_min")
+        if y_min is not None and y_max is not None and y_max <= y_min:
+            raise ValueError("y_max должен быть больше y_min")
+        for val in [x_min, x_max, y_min, y_max]:
+            if val is not None and not isinstance(val, (int, float)):
+                raise TypeError("Границы карты должны быть числами")
+        if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance.x_min = x_min if x_min is not None else -1000
-            cls._instance.x_max = x_max if x_max is not None else 1000
-            cls._instance.y_min = y_min if y_min is not None else -1000
-            cls._instance.y_max = y_max if y_max is not None else 1000
+            cls._instance.x_min = x_min
+            cls._instance.x_max = x_max
+            cls._instance.y_min = y_min
+            cls._instance.y_max = y_max
         return cls._instance
 
     def get_borders(self):
@@ -86,6 +100,23 @@ class MobilityInterface:
         """
         self.x_min, self.x_max, self.y_min, self.y_max = MapBorders().get_borders()
         self.ue = ue
+        self.current_velocity = np.random.uniform(self.ue.velocity_min, self.ue.velocity_max)
+        self.current_direction = np.random.uniform(0, 2 * np.pi)
+
+    @staticmethod
+    def validate_params(cls, kwargs):
+        """
+        Проверяет наличие всех обязательных параметров при создании модели.
+        """
+        sig = inspect.signature(cls.__init__)
+        missing = []
+        for name, param in sig.parameters.items():
+            if name == "self" or name == "kwargs":
+                continue
+            if param.default == inspect.Parameter.empty and name not in kwargs:
+                missing.append(name)
+        if missing:
+            raise ValueError(f"Отсутствуют обязательные параметры: {', '.join(missing)}")
 
     def update(self, time_ms: int, **kwargs) -> tuple:
         """
@@ -93,40 +124,52 @@ class MobilityInterface:
         """
         raise NotImplementedError("Модель обязательно должна иметь метод update()")
 
+    def get_models():
+        """
+        Возвращает словарь доступных моделей.
+        """
+        models = {
+            "RandomWalk": RandomWalkModel,
+            "RandomWaypoint": RandomWaypointModel,
+            "RandomDirection": RandomDirectionModel,
+            "GaussMarkov": GaussMarkovModel,
+            "DiagonalWalk": DiagonalWalkModel,
+        }
+        return models
+
     @staticmethod
     def create(model: str, **kwargs):
         """
         Метод для создания фабрики.
-
+        Выбирает модель по названию и проверяет параметры.
         Args:
-            model: Название модели. [str] (См. get_available_models()).
+            model (str): Название модели.
             Иные аргументы для модели.
         """
-        models = {
-            'RandomWalk': RandomWalkModel,
-            'RandomWaypoint': RandomWaypointModel,
-            'RandomDirection': RandomDirectionModel,
-            'GaussMarkov': GaussMarkovModel,
-            'DiagonalWalk': DiagonalWalkModel
-        }
-
+        models = MobilityInterface.get_models()
         if model not in models:
-            raise ValueError(f"Unknown model '{model}'. Valid: {', '.join(models.keys())}")
+            raise ValueError(
+                f"Unknown model '{model}'. Valid: {', '.join(MobilityInterface.models.keys())}"
+            )
 
-        return models[model](**kwargs)
+        model = models[model]
+        MobilityInterface.validate_params(model, kwargs)
+        return model(**kwargs)
 
     def get_available_models():
         """
-        Получить список доступных моделей.
+        Выводит на экран список названий доступных моделей.
         """
-        models = ['RandomWalk', 'RandomWaypoint', 'RandomDirection', 'GaussMarkov', 'DiagonalWalk']
+        models = list(MobilityInterface.get_models().keys())
         print("Доступные модели:", models)
+
 
 class RandomWalkModel(MobilityInterface):
     """
     Модель передвижения Random Walk для пользовательского устройства (UE).
     Устройство движется в случайном направлении в пределах заданных границ.
     """
+
     def __init__(self, ue: UserEquipment, **kwargs):
         """
         Инициализация модели случайного блуждания.
@@ -140,7 +183,7 @@ class RandomWalkModel(MobilityInterface):
     def update(self, time_ms: int, **kwargs) -> Tuple[Tuple[float, float], float, float]:
         """
         Обновляет позицию, скорость и направление устройства на основе модели случайного блуждания.
-    
+
         Args:
             time_ms: Время, прошедшее с последнего обновления (миллисекунды).
         Returns:
@@ -151,12 +194,10 @@ class RandomWalkModel(MobilityInterface):
         current_position = self.ue.position
         current_direction = self.ue.direction
         velocity_min, velocity_max = self.ue.velocity_min, self.ue.velocity_max
-        is_first_move = kwargs.get('is_first_move', False)
+        is_first_move = kwargs.get("is_first_move", False)
         time_s = time_ms / 1000.0
 
         if is_first_move:
-            current_velocity = np.random.uniform(velocity_min, velocity_max)
-            current_direction = np.random.uniform(0, 2 * np.pi)
             is_first_move = False
         else:
             current_velocity = self.ue.velocity
@@ -184,31 +225,32 @@ class RandomWalkModel(MobilityInterface):
 
         return new_position, new_velocity, new_direction
 
+
 class RandomWaypointModel(MobilityInterface):
     """
     Модель передвижения Random Waypoint для пользовательского устройства (UE).
     Устройство движется к случайным пунктам назначения с паузами между движениями.
     """
+
     def __init__(self, ue: UserEquipment, **kwargs):
         """
         Инициализация модели Random Waypoint.
 
         Args:
             ue: Объект пользователя.
+            pause_time: Время паузы между движениями (в мс)
         """
         super().__init__(ue=ue, **kwargs)
-        self.pause_time = kwargs.get('pause_time', 5.0)
+        self.pause_time = kwargs.get("pause_time", 5.0)
         self.is_paused = False
         self.pause_timer = 0.0
-        self.current_velocity = np.random.uniform(self.ue.velocity_min, self.ue.velocity_max)
-        self.current_direction = np.random.uniform(0, 2 * np.pi)
-        self.destination, _, _, _ = self._choose_new_destination(self.ue.position, 
-                                                                 self.ue.velocity_min, self.ue.velocity_max)
+        self.destination, _, _, _ = self._choose_new_destination(
+            self.ue.position, self.ue.velocity_min, self.ue.velocity_max
+        )
 
-
-    def _choose_new_destination(self, current_position: Tuple[float, float],
-                                velocity_min: float, velocity_max: float) -> Tuple[Tuple[float, float],
-                                                                                  float, float, bool]:
+    def _choose_new_destination(
+        self, current_position: Tuple[float, float], velocity_min: float, velocity_max: float
+    ) -> Tuple[Tuple[float, float], float, float, bool]:
         """
         Выбирает новую точку назначения, скорость и направление для устройства.
 
@@ -225,7 +267,7 @@ class RandomWaypointModel(MobilityInterface):
         """
         new_destination = (
             np.random.uniform(self.x_min, self.x_max),
-            np.random.uniform(self.y_min, self.y_max)
+            np.random.uniform(self.y_min, self.y_max),
         )
 
         new_velocity = np.random.uniform(velocity_min, velocity_max)
@@ -239,10 +281,10 @@ class RandomWaypointModel(MobilityInterface):
     def update(self, time_ms: int, **kwargs) -> Tuple[Tuple[float, float], float, float]:
         """
         Обновляет позицию, скорость, направление и состояние устройства на основе модели Random Waypoint.
-    
+
         Args:
             time_ms: Время, прошедшее с последнего обновления (миллисекунды)
-    
+
         Returns:
             new_position: Новые координаты устройства (x, y)
             new_velocity: Новая скорость устройства (м/с)
@@ -255,8 +297,9 @@ class RandomWaypointModel(MobilityInterface):
         if self.is_paused:
             self.pause_timer += time_ms
             if self.pause_timer >= self.pause_time:
-                new_destination, new_velocity, new_direction, is_paused = self._choose_new_destination(
-                    current_position, velocity_min, velocity_max)
+                new_destination, new_velocity, new_direction, is_paused = (
+                    self._choose_new_destination(current_position, velocity_min, velocity_max)
+                )
                 self.destination = new_destination
                 self.current_velocity = new_velocity
                 self.current_direction = new_direction
@@ -275,14 +318,20 @@ class RandomWaypointModel(MobilityInterface):
             new_position = self.destination
             self.is_paused = True
             self.current_velocity = 0.0
-            self.ue.position = new_position
+            self.current_position = new_position
 
             return new_position, 0.0, self.current_direction
         else:
-            new_x = current_position[0] + self.current_velocity * np.cos(self.current_direction) * time_s
-            new_y = current_position[1] + self.current_velocity * np.sin(self.current_direction) * time_s
+            new_x = (
+                current_position[0]
+                + self.current_velocity * np.cos(self.current_direction) * time_s
+            )
+            new_y = (
+                current_position[1]
+                + self.current_velocity * np.sin(self.current_direction) * time_s
+            )
             new_position = (new_x, new_y)
-            self.ue.position = new_position
+            self.current_position = new_position
 
             return new_position, self.current_velocity, self.current_direction
 
@@ -293,6 +342,7 @@ class RandomDirectionModel(MobilityInterface):
     Устройство движется к границе области моделирования в случайном направлении,
     делает паузу, а затем выбирает новое направление.
     """
+
     def __init__(self, ue: UserEquipment, pause_time=5.0, **kwargs):
         """
         Инициализация модели Random Waypoint.
@@ -306,14 +356,19 @@ class RandomDirectionModel(MobilityInterface):
         self.is_paused = False
         self.pause_timer = 0.0
         self.is_first_move = True
-        self.destination, self.current_velocity, self.current_direction, _, self.is_first_move = \
-            self._choose_new_direction(self.ue.position, self.ue.velocity_min, self.ue.velocity_max,
-                                       self.is_first_move)
+        self.destination, self.current_velocity, self.current_direction, _, self.is_first_move = (
+            self._choose_new_direction(
+                self.ue.position, self.ue.velocity_min, self.ue.velocity_max, self.is_first_move
+            )
+        )
 
-
-    def _choose_new_direction(self, current_position: Tuple[float, float], velocity_min: float,
-                              velocity_max: float, is_first_move: bool) -> Tuple[Tuple[float, float],
-                                                                                 float, float, bool, bool]:
+    def _choose_new_direction(
+        self,
+        current_position: Tuple[float, float],
+        velocity_min: float,
+        velocity_max: float,
+        is_first_move: bool,
+    ) -> Tuple[Tuple[float, float], float, float, bool, bool]:
         """
         Выбирает новое случайное направление и вычисляет точку на границе области моделирования.
 
@@ -339,8 +394,10 @@ class RandomDirectionModel(MobilityInterface):
         new_destination = self._calculate_boundary_point(current_position, new_direction)
 
         # Жесточайший костыль, но что поделать, пока будет так
-        while not (self.x_min <= new_destination[0] <= self.x_max and self.y_min \
-                   <= new_destination[1] <= self.y_max):
+        while not (
+            self.x_min <= new_destination[0] <= self.x_max
+            and self.y_min <= new_destination[1] <= self.y_max
+        ):
             new_direction = np.random.uniform(0, 2 * np.pi)
             new_destination = self._calculate_boundary_point(current_position, new_direction)
 
@@ -348,8 +405,9 @@ class RandomDirectionModel(MobilityInterface):
 
         return new_destination, new_velocity, new_direction, False, is_first_move
 
-    def _calculate_boundary_point(self, current_position: Tuple[float, float],
-                              direction: float) -> Tuple[float, float]:
+    def _calculate_boundary_point(
+        self, current_position: Tuple[float, float], direction: float
+    ) -> Tuple[float, float]:
         """
         Вычисляет точку на границе области моделирования, в которую движется устройство.
 
@@ -385,10 +443,10 @@ class RandomDirectionModel(MobilityInterface):
     def update(self, time_ms: int, **kwargs) -> Tuple[Tuple[float, float], float, float]:
         """
         Обновляет позицию, скорость, направление и состояние устройства на основе модели Random Direction.
-    
+
         Args:
             time_ms: Время, прошедшее с последнего обновления (миллисекунды)
-    
+
         Returns:
             new_position: Новые координаты устройства (x, y)
             new_velocity: Новая скорость устройства (м/с)
@@ -400,11 +458,9 @@ class RandomDirectionModel(MobilityInterface):
         if self.is_paused:
             self.pause_timer += time_ms
             if self.pause_timer >= self.pause_time:
-                self.destination, self.current_velocity,
-                self.current_direction, _, self.is_first_move = \
-                    self._choose_new_direction(current_position,
-                                    self.ue.velocity_min, self.ue.velocity_max,
-                                    self.is_first_move)
+                self.current_direction, _, self.is_first_move = self._choose_new_direction(
+                    current_position, self.ue.velocity_min, self.ue.velocity_max, self.is_first_move
+                )
                 self.is_paused = False
                 self.pause_timer = 0.0
             else:
@@ -417,14 +473,20 @@ class RandomDirectionModel(MobilityInterface):
         if distance <= self.current_velocity * time_s:
             self.is_paused = True
             new_position = self.destination
-            self.ue.position = new_position
+            self.current_position = new_position
             self.current_velocity = 0.0
             return new_position, 0.0, self.current_direction
         else:
-            new_x = current_position[0] + self.current_velocity * np.cos(self.current_direction) * time_s
-            new_y = current_position[1] + self.current_velocity * np.sin(self.current_direction) * time_s
+            new_x = (
+                current_position[0]
+                + self.current_velocity * np.cos(self.current_direction) * time_s
+            )
+            new_y = (
+                current_position[1]
+                + self.current_velocity * np.sin(self.current_direction) * time_s
+            )
             new_position = (new_x, new_y)
-            self.ue.position = new_position
+            self.current_position = new_position
             return new_position, self.current_velocity, self.current_direction
 
 
@@ -435,7 +497,10 @@ class GaussMarkovModel(MobilityInterface):
     изменяются на основе предыдущих значений и случайных отклонений. При приближении к границам
     области моделирования направление корректируется для предотвращения выхода за пределы.
     """
-    def __init__(self, ue: UserEquipment, alpha: float = 0.75, boundary_threshold: float = 5.0, **kwargs):
+
+    def __init__(
+        self, ue: UserEquipment, alpha: float = 0.75, boundary_threshold: float = 5.0, **kwargs
+    ):
         """
         Инициализация модели Gauss-Markov.
 
@@ -447,11 +512,8 @@ class GaussMarkovModel(MobilityInterface):
         super().__init__(ue=ue, **kwargs)
         self.alpha = alpha
         self.boundary_threshold = boundary_threshold
-        self.current_velocity = np.random.uniform(self.ue.velocity_min, self.ue.velocity_max)
-        self.current_direction = np.random.uniform(0, 2 * np.pi)
         self.mean_velocity = self.current_velocity
         self.mean_direction = self.current_direction
-
 
     def update(self, time_ms: int, **kwargs) -> Tuple[Tuple[float, float], float, float]:
         """
@@ -467,11 +529,15 @@ class GaussMarkovModel(MobilityInterface):
         """
         time_s = time_ms / 1000.0
         current_position = self.ue.position
-        current_velocity = getattr(self, 'current_velocity', 0)
-        current_direction = getattr(self, 'current_direction', 0)
+        current_velocity = getattr(self, "current_velocity", 0)
+        current_direction = getattr(self, "current_direction", 0)
 
-        mean_velocity = kwargs.get('mean_velocity', getattr(self, 'mean_velocity', current_velocity))
-        mean_direction = kwargs.get('mean_direction', getattr(self, 'mean_direction', current_direction))
+        mean_velocity = kwargs.get(
+            "mean_velocity", getattr(self, "mean_velocity", current_velocity)
+        )
+        mean_direction = kwargs.get(
+            "mean_direction", getattr(self, "mean_direction", current_direction)
+        )
 
         x, y = current_position
 
@@ -495,11 +561,17 @@ class GaussMarkovModel(MobilityInterface):
         elif y > self.y_max - self.boundary_threshold:
             mean_direction = np.deg2rad(270)
 
-        new_velocity = (self.alpha * current_velocity + (1 - self.alpha) * mean_velocity +
-                        np.sqrt(1 - self.alpha**2) * np.random.normal(0, 1))
+        new_velocity = (
+            self.alpha * current_velocity
+            + (1 - self.alpha) * mean_velocity
+            + np.sqrt(1 - self.alpha**2) * np.random.normal(0, 1)
+        )
 
-        new_direction = (self.alpha * current_direction + (1 - self.alpha) * mean_direction +
-                         np.sqrt(1 - self.alpha**2) * np.random.normal(0, 1))
+        new_direction = (
+            self.alpha * current_direction
+            + (1 - self.alpha) * mean_direction
+            + np.sqrt(1 - self.alpha**2) * np.random.normal(0, 1)
+        )
 
         new_x = x + new_velocity * np.cos(new_direction) * time_s
         new_y = y + new_velocity * np.sin(new_direction) * time_s
@@ -520,14 +592,19 @@ class GaussMarkovModel(MobilityInterface):
         self.current_direction = new_direction
         self.mean_velocity = mean_velocity
         self.mean_direction = mean_direction
-        self.ue.position = new_position
+        self.current_position = new_position
 
         return new_position, new_velocity, new_direction
 
 
 class DiagonalWalkModel(MobilityInterface):
-    def __init__(self, ue: UserEquipment, bs: BaseStation,
-                 pause_time: int, **kwargs):
+    """
+    Модель передвижения Diagonal Walk для пользовательского устройства (UE).
+    Устройство движется к точке, противоположной его текущей позиции относительно базовой
+    станции (BS).
+    """
+
+    def __init__(self, ue: UserEquipment, bs: BaseStation, pause_time: int, **kwargs):
         """
         Инициализация модели DiagonalWalk.
 
@@ -548,9 +625,13 @@ class DiagonalWalkModel(MobilityInterface):
         self.current_direction = np.random.uniform(0, 2 * np.pi)
         self.is_first_move = True
 
-    def _choose_new_destination(self, current_position: Tuple[float, float],
-                                velocity_min: float, velocity_max: float,
-                                is_first_move: bool):
+    def _choose_new_destination(
+        self,
+        current_position: Tuple[float, float],
+        velocity_min: float,
+        velocity_max: float,
+        is_first_move: bool,
+    ):
         """
         Вычисление точки назначения, противоположной начальной позиции пользователя, относительно
         базовой станции.
@@ -585,7 +666,7 @@ class DiagonalWalkModel(MobilityInterface):
             else:
                 new_destination = (
                     2 * self.bs_x - current_position[0],
-                    2 * self.bs_y - current_position[1]
+                    2 * self.bs_y - current_position[1],
                 )
             self._diagonal_destination = new_destination
         return self._diagonal_destination, velocity_max, 0.0, False, 0.0, 0.0
@@ -593,10 +674,10 @@ class DiagonalWalkModel(MobilityInterface):
     def update(self, time_ms: int, **kwargs) -> Tuple[Tuple[float, float], float, float]:
         """
         Обновляет позицию, скорость, направление и состояние устройства на основе модели DiagonalWalk.
-    
+
         Args:
             time_ms: Время, прошедшее с последнего обновления (миллисекунды)
-    
+
         Returns:
             new_position: Новые координаты устройства (x, y)
             new_velocity: Новая скорость устройства (м/с)
@@ -617,8 +698,16 @@ class DiagonalWalkModel(MobilityInterface):
                 return current_position, 0.0, self.current_direction
 
         if self._diagonal_destination is None:
-            self._diagonal_destination, self.current_velocity, self.current_direction, self.is_paused, self.pause_timer, self.is_first_move = \
-                self._choose_new_destination(current_position, velocity_min, velocity_max, self.is_first_move)
+            (
+                self._diagonal_destination,
+                self.current_velocity,
+                self.current_direction,
+                self.is_paused,
+                self.pause_timer,
+                self.is_first_move,
+            ) = self._choose_new_destination(
+                current_position, velocity_min, velocity_max, self.is_first_move
+            )
 
         delta_x = self._diagonal_destination[0] - current_position[0]
         delta_y = self._diagonal_destination[1] - current_position[1]
@@ -630,11 +719,17 @@ class DiagonalWalkModel(MobilityInterface):
             self.is_paused = True
             new_position = self._diagonal_destination
             self.current_velocity = 0.0
-            self.ue.position = new_position
+            self.current_position = new_position
             return new_position, 0.0, self.current_direction
         else:
-            new_x = current_position[0] + self.current_velocity * np.cos(self.current_direction) * time_s
-            new_y = current_position[1] + self.current_velocity * np.sin(self.current_direction) * time_s
+            new_x = (
+                current_position[0]
+                + self.current_velocity * np.cos(self.current_direction) * time_s
+            )
+            new_y = (
+                current_position[1]
+                + self.current_velocity * np.sin(self.current_direction) * time_s
+            )
             new_position = (new_x, new_y)
-            self.ue.position = new_position
+            self.current_position = new_position
             return new_position, self.current_velocity, self.current_direction
