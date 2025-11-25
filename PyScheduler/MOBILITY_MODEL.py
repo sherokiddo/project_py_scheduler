@@ -318,7 +318,6 @@ class RandomWaypointModel(MobilityInterface):
             new_position = self.destination
             self.is_paused = True
             self.current_velocity = 0.0
-            self.current_position = new_position
 
             return new_position, 0.0, self.current_direction
         else:
@@ -331,7 +330,6 @@ class RandomWaypointModel(MobilityInterface):
                 + self.current_velocity * np.sin(self.current_direction) * time_s
             )
             new_position = (new_x, new_y)
-            self.current_position = new_position
 
             return new_position, self.current_velocity, self.current_direction
 
@@ -473,7 +471,6 @@ class RandomDirectionModel(MobilityInterface):
         if distance <= self.current_velocity * time_s:
             self.is_paused = True
             new_position = self.destination
-            self.current_position = new_position
             self.current_velocity = 0.0
             return new_position, 0.0, self.current_direction
         else:
@@ -486,7 +483,6 @@ class RandomDirectionModel(MobilityInterface):
                 + self.current_velocity * np.sin(self.current_direction) * time_s
             )
             new_position = (new_x, new_y)
-            self.current_position = new_position
             return new_position, self.current_velocity, self.current_direction
 
 
@@ -592,7 +588,6 @@ class GaussMarkovModel(MobilityInterface):
         self.current_direction = new_direction
         self.mean_velocity = mean_velocity
         self.mean_direction = mean_direction
-        self.current_position = new_position
 
         return new_position, new_velocity, new_direction
 
@@ -719,7 +714,6 @@ class DiagonalWalkModel(MobilityInterface):
             self.is_paused = True
             new_position = self._diagonal_destination
             self.current_velocity = 0.0
-            self.current_position = new_position
             return new_position, 0.0, self.current_direction
         else:
             new_x = (
@@ -731,5 +725,4 @@ class DiagonalWalkModel(MobilityInterface):
                 + self.current_velocity * np.sin(self.current_direction) * time_s
             )
             new_position = (new_x, new_y)
-            self.current_position = new_position
             return new_position, self.current_velocity, self.current_direction

@@ -119,10 +119,10 @@ def sim_with_ue_collection():
     Пример сценария с использованием коллекций UE.
 
     """
-    sim_duration = 3000 # Время симуляции (в мс)
-    update_interval = 1 # Интервал обновления параметров пользователя (в мс)
-    num_frames = int(np.ceil(sim_duration / 10)) # Кол-во кадров (для ресурсной сетки)
-    bandwidth = 10 # Ширина полосы (в МГц)
+    sim_duration = 3000  # Время симуляции (в мс)
+    update_interval = 1  # Интервал обновления параметров пользователя (в мс)
+    num_frames = int(np.ceil(sim_duration / 10))  # Кол-во кадров (для ресурсной сетки)
+    bandwidth = 10  # Ширина полосы (в МГц)
     inf = math.inf
 
     # Создание и настройка базовой станции
@@ -145,7 +145,7 @@ def sim_with_ue_collection():
     # Установка модели передвижения для всех пользователей коллекции.
     # Есть возможность задавать для отдельных пользователей при помощи параметра ue_ids
     ue_collection.SET_MOBILITY_MODEL("RandomWaypoint")
-    
+
     # @Andrey пишет: Для коллекций фабрика криво работает, надо пофикисть UPD_POSITION и
     # SET_MOBILITY_MODEL на основе тех, что были в UserEquipment
 
@@ -234,7 +234,7 @@ def debug_simulation():
     # Через синглтон указываем границы карты
     MapBorders(-1000, 1000, -1000, 1000)
 
-    ue1.SET_MOBILITY_MODEL("DiagonalWalk", bs=bs,  pause_time=200)
+    ue1.SET_MOBILITY_MODEL("DiagonalWalk", bs=bs, pause_time=200)
     ue2.SET_MOBILITY_MODEL("RandomWaypoint", pause_time=0)
     ue3.SET_MOBILITY_MODEL("GaussMarkov", alpha=0.15, boundary_threshold=100)
 
