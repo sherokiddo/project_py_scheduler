@@ -194,13 +194,9 @@ class RandomWalkModel(MobilityInterface):
         current_position = self.ue.position
         current_direction = self.ue.direction
         velocity_min, velocity_max = self.ue.velocity_min, self.ue.velocity_max
-        is_first_move = kwargs.get("is_first_move", False)
         time_s = time_ms / 1000.0
 
-        if is_first_move:
-            is_first_move = False
-        else:
-            current_velocity = self.ue.velocity
+        current_velocity = self.ue.velocity
 
         delta_x = current_velocity * np.cos(current_direction) * time_s
         delta_y = current_velocity * np.sin(current_direction) * time_s
@@ -616,8 +612,6 @@ class DiagonalWalkModel(MobilityInterface):
         self.is_paused = False
         self.pause_timer = 0.0
         self._diagonal_destination = None
-        self.current_velocity = np.random.uniform(ue.velocity_min, ue.velocity_max)
-        self.current_direction = np.random.uniform(0, 2 * np.pi)
         self.is_first_move = True
 
     def _choose_new_destination(
