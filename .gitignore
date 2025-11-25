@@ -2,3 +2,5 @@ __pycache__
 PyScheduler/__pycache__
 PyScheduler/metrics_results.json
 PyScheduler/scheduler_efficiency.json
+PyScheduler/stats.csv
+PyScheduler/output.txt
