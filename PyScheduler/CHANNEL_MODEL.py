@@ -17,7 +17,6 @@ import numpy as np
 import GLOBALS
 from BS_MODULE import BaseStation
 from typing import List, Tuple 
-from SCHEDULER import HARQManager, AdaptiveModulationAndCoding
 import bisect
 import random
 import GLOBALS
@@ -32,6 +31,7 @@ class ChannelModel:
         """
         Инициализация модели канала
         """    
+        from SCHEDULER import AdaptiveModulationAndCoding
         self.amc = AdaptiveModulationAndCoding()
 
     @staticmethod

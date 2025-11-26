@@ -63,6 +63,7 @@
 #------------------------------------------------------------------------------
 """
 import numpy as np
+import random
 import GLOBALS
 from collections import deque
 from typing import Dict, List, Optional, Union, Tuple
@@ -678,17 +679,17 @@ class UserEquipment:
         # 2. Получение BLER из таблицы
         base_bler = self._lookup_bler(sinr_avg, cqi)
         
-        # 3. Soft combining при ретрансмиссии
-        if is_retransmission:
-            process = self.harq_manager.processes.get(ue_id, [])[process_id]
-            # Эвристика: каждая ретрансмиссия уменьшает BLER в ~2 раза
-            bler = base_bler / (2 ** (process.tx_count - 1))
-        else:
-            bler = base_bler
-            
-        # 4. Вероятностная модель ошибки
-        tb_error = self.is_tb_error(sinr_avg, cqi)
-        
+        # 3. HARQ soft combining — понижение BLER на каждую ретрансмиссию
+        bler = base_bler
+        if is_retransmission and hasattr(self, 'harq_manager'):
+            process = self.harq_manager.processes.get(ue_id, [None]*8)[process_id]
+            if process is not None:
+                # Каждая новая попытка уменьшает BLER /2
+                bler = max(base_bler / (2 ** (process.tx_count - 1)), 1e-7)
+
+        # 4. Вероятностная модель ошибки принятия TB
+        tb_error = random.random() < bler
+
         return not tb_error
         
     def _calculate_distances_to_BS(self) -> None:
