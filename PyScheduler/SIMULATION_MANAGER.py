@@ -40,6 +40,7 @@ class SimulationConfig:
     update_interval: int = 1
     stats_log: bool = False
     verbose: bool = False
+    to_file: bool = False
     
 @dataclass
 class SchedulerConfig:
@@ -207,7 +208,7 @@ class SimulationManager:
 
         """
         self.sim_config.verbose = True
-        self._to_file = to_file
+        self.sim_config.to_file = to_file
         
     def start_simulation(self) -> None:
         """
@@ -226,7 +227,7 @@ class SimulationManager:
 
         """
         # Перевод консольного вывода в текстовый файл
-        if self._to_file:
+        if self.sim_config.to_file:
             self._log_file = open("output.txt", "w", buffering=1, encoding="utf-8")
             self._original_stdout = sys.stdout
             self._original_stderr = sys.stderr
@@ -300,7 +301,7 @@ class SimulationManager:
 
         finally:    
             # Возвращение консольного вывода
-            if self._to_file:
+            if self.sim_config.to_file:
                 sys.stdout = self._original_stdout
                 sys.stderr = self._original_stderr
                 self._log_file.close()

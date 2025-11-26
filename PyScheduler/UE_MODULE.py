@@ -275,16 +275,6 @@ class UserEquipment:
     """
     Класс, представляющий пользовательское устройство (UE) в сети LTE.
     """
-    
-    SUBBAND_SIZE = {
-        1.4: 1,
-        3: 2,
-        5: 2,
-        10: 3,
-        15: 4,
-        20: 4
-    }
-    
     def __init__(self, UE_ID: int, x: float = 0.0, y: float = 0.0,
                  buffer_size: int = 1048576, ue_class: str = "pedestrian",
                  indoor_boundaries: Tuple[float, float, float, float] = (0, 0, 0, 0)):
@@ -531,11 +521,13 @@ class UserEquipment:
             self.dist_to_BS_3D, self.UE_height, self.ue_class
         )
         
+        # Wideband SINR и CQI
         self.SINR = np.mean(SINR_on_RB)
         self.cqi = self.SINR_TO_CQI(self.SINR)
         
-        subband_size = self.SUBBAND_SIZE.get(self.serving_bs.bandwidth)
+        subband_size = GLOBALS.SUBBAND_SIZE[self.serving_bs.bandwidth]
         
+        # Subband CQI
         self.cqi_subband = []
         for i in range(0, len(SINR_on_RB), subband_size):
             sinr_subband = np.mean(SINR_on_RB[i:i+subband_size])

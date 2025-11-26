@@ -14,6 +14,7 @@
 #------------------------------------------------------------------------------
 """
 import numpy as np
+import GLOBALS
 from collections import deque, defaultdict
 from typing import Dict, List, Optional, Union, Tuple
 from UE_MODULE import UserEquipment
@@ -361,16 +362,6 @@ class BaseStation:
         20: 38
     }
     
-    # Словарь соответствия полосы частот и количества RB согласно стандарту LTE
-    BANDWIDTH_TO_RB = {
-        1.4: 6,    # 6 RB на слот → 12 RB на TTI
-        3: 15,     # 15 RB на слот → 30 RB на TTI
-        5: 25,     # 25 RB на слот → 50 RB на TTI
-        10: 50,    # 50 RB на слот → 100 RB на TTI
-        15: 75,    # 75 RB на слот → 150 RB на TTI
-        20: 100    # 100 RB на слот → 200 RB на TTI
-    }
-    
     def __init__(self, x: float = 0.0, y: float = 0.0, height: float = 35.0,
                  frequency_GHz: float = 1.8, bandwidth: float = 10,
                  global_max: int = 1048576, per_ue_max: int = 262144,
@@ -394,7 +385,7 @@ class BaseStation:
         self.frequency_GHz = frequency_GHz # Частота в ГГц
         self.frequency_Hz = frequency_GHz * 1e9 # Частота в Гц
         self.bandwidth = bandwidth # Полоса пропускания
-        self.rb_per_slot = self.BANDWIDTH_TO_RB[bandwidth]
+        self.rb_per_slot = GLOBALS.BANDWIDTH_TO_RB[bandwidth]
         
         # Характеристики передачи
         self.tx_power = None # Мощность передачи (устанавливается отдельно)
