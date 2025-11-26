@@ -6,15 +6,21 @@ import numpy as np
 import GLOBALS
 from BS_MODULE import BaseStation, Packet
 from CHANNEL_MODEL import UMaModel
-from MOBILITY_MODEL import RandomWaypointModel, DiagonalWalkModel
+from MOBILITY_MODEL import MapBorders
 from RES_GRID import RES_GRID_LTE
 from SCHEDULER import ProportionalFairScheduler
 from SIMULATION_MANAGER import SimulationManager
 from TRAFFIC_MODEL import PoissonModel
 from UE_MODULE import UECollection, UserEquipment
 
-def visualize_users_mobility(ue_collection: UECollection, bs: BaseStation,
-                            x_min: float, x_max: float, y_min: float, y_max: float):
+def visualize_users_mobility(
+    ue_collection: UECollection,
+    bs: BaseStation,
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+):
     """
     Функция для построения карты передвижения пользователей.
 
@@ -25,7 +31,7 @@ def visualize_users_mobility(ue_collection: UECollection, bs: BaseStation,
         x_max (float): Максимальная граница отображения по оси X.
         y_min (float): Минимальная граница отображения по оси Y.
         y_max (float): Максимальная граница отображения по оси Y.
-        
+
     """
     x_bs, y_bs = bs.position
 
@@ -65,7 +71,7 @@ def visualize_users_sinr(ue_collection: UECollection, sim_duration: float,
     plt.ylabel("SINR (dB)")
     for ue in ue_collection.GET_ALL_USERS():
         sinr_values = ue.SINR_values
-        plt.plot(tti_range, sinr_values, label=f'UE{ue.UE_ID}')
+        plt.plot(tti_range, sinr_values, label=f"UE{ue.UE_ID}")
     plt.legend()
     plt.grid(True)
     plt.ylim(-20, 65)
@@ -93,8 +99,7 @@ def print_users_stats(ue_collection: UECollection, tti: int, bs: BaseStation,
         num_rbs = len(allocation.get(ue_id, []))
 
         displacement = np.hypot(
-            ue.position[0] - ue.coordinates[-2][0],
-            ue.position[1] - ue.coordinates[-2][1]
+            ue.position[0] - ue.coordinates[-2][0], ue.position[1] - ue.coordinates[-2][1]
         )
 
         print(f"UE {ue_id}:")
@@ -112,12 +117,11 @@ def print_users_stats(ue_collection: UECollection, tti: int, bs: BaseStation,
         print(f"\tСмещение            : {displacement} m")
         print("-" * 40)
 
-def debug_simulation():
+
+def sim_with_ue_collection():
     """
-    Симуляция, предназначенная для отладки. 
-    Позволяет проверить корректность взаимодействия компонентов системы при 
-    помощи вывода различных графиков и статистики для каждого пользователя.
-    
+    Пример сценария с использованием коллекций UE.
+
     """
     sim_duration = 3000 # Время симуляции (в мс)
     update_interval = 1 # Интервал обновления параметров пользователя (в мс)
@@ -136,15 +140,13 @@ def debug_simulation():
     ue2 = UserEquipment(UE_ID=2, x=4, y=-2, ue_class="cyclist")
     ue3 = UserEquipment(UE_ID=3, x=-5, y=-5, ue_class="car")
 
-    # Создание модели передвижения пользователей
-    diagonalwalk = DiagonalWalkModel(bs_x=0,
-                                    bs_y=0,
-                                    pause_time = 0)
+    # Через синглтон указываем границы карты
+    MapBorders(-1000, 1000, -1000, 1000)
 
     # Назначение пользователям модели передвижения
-    ue1.SET_MOBILITY_MODEL(diagonalwalk)
-    ue2.SET_MOBILITY_MODEL(diagonalwalk)
-    ue3.SET_MOBILITY_MODEL(diagonalwalk)
+    ue1.SET_MOBILITY_MODEL("DiagonalWalk", bs=bs, pause_time=0)
+    ue2.SET_MOBILITY_MODEL("DiagonalWalk", bs=bs, pause_time=0)
+    ue3.SET_MOBILITY_MODEL("DiagonalWalk", bs=bs, pause_time=0)
 
     # Создание модели радиоканала
     uma = UMaModel(bs=bs, cond_update_period=5)
@@ -219,6 +221,8 @@ def sim_with_ue_collection():
     """
     Пример сценария с использованием коллекций UE.
 
+
+def debug_simulation():
     """
     sim_duration = 20 # Время симуляции (в мс)
     update_interval = 1 # Интервал обновления параметров пользователя (в мс)
@@ -235,10 +239,10 @@ def sim_with_ue_collection():
     # Создание коллекции пользовательских устройств
     ue_collection = UECollection()
 
-    # Установка сида. Нужен для того, чтобы ADD_RANDOM_USERS всегда генерировал
-    # одинаковых пользователей в одинаковом месте. Если не задавать сид, пользователи
-    # каждую симуляцию будут генерироваться абсолютно случайно
-    GLOBALS.SEED = 42
+    # Создание и настройка пользовательских устройств
+    ue1 = UserEquipment(UE_ID=1, x=4, y=4, ue_class="pedestrian")
+    ue2 = UserEquipment(UE_ID=2, x=4, y=-2, ue_class="pedestrian")
+    ue3 = UserEquipment(UE_ID=3, x=-2, y=-5, ue_class="pedestrian")
 
     # Генерация заданного числа UE в коллекцию
     ue_collection.ADD_RANDOM_USERS(num_ue=3)
