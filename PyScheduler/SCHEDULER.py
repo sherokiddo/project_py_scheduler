@@ -47,11 +47,11 @@
 # - Реализован класс PDCCHManager для управления ресурсами Physical Downlink Control
 #   Channel (PDCCH) с расчетом CCE (Control Channel Elements) на основе bandwidth и PCFICH.
 # - Интегрирован PDCCH во все планировщики с поддержкой Aggregation Level (1/2/4/8 CCE)
-# - RoundRobinScheduler: использует Sequential PDCCH Pre-Allocation подход - PDCCH 
+# - RoundRobinScheduler: использует Sequential PDCCH Pre-Allocation подход - PDCCH
 #   выделяется до цикла RBG. Минимальный waste благодаря циклическому распределению.
 # - BestCQIScheduler: использует Concurrent PDCCH allocation - PDCCH выделяется
 #   итеративно в момент первого RBG для каждого UE. Предотвращает waste для жадного алгоритма.
-# - Добавлен новый планировщик ProportionalFairScheduler с метрикой 
+# - Добавлен новый планировщик ProportionalFairScheduler с метрикой
 #   PF = instant_rate / average_throughput. Использует
 #   Concurrent PDCCH подход для минимизации waste CCE.
 # - Добавлены параметры конфигурации PDCCH: pcfich (1/2/3), max_dl_cce_allowance,
@@ -75,7 +75,7 @@
 # - Enhanced verbose. Теперь для всего модуля verbose обязателен и становится
 #   базовым инструментом отладки и тестирования.
 # - Расширенная статистика по разным этапам планирования.
-# - Полный рефакторинг, naming (PEP8), docstrings, типы, обработка DRY кейсов. 
+# - Полный рефакторинг, naming (PEP8), docstrings, типы, обработка DRY кейсов.
 # - Небольшие изменения в логике работы с буфером.
 # - Новый подход при расчете метрики Proportional Fair.
 # - Все новые функции протестированы. Но старые сохранены.
@@ -85,8 +85,10 @@
 #------------------------------------------------------------------------------
 """
 
-from typing import Dict, List, Optional, Union, Tuple
+import GLOBALS
 from BS_MODULE import BaseStation
+from typing import Dict, List, Optional
+
 
 #==============================================================================
 #                              ИНТЕРФЕЙС МОДУЛЯ
@@ -97,7 +99,7 @@ class SchedulerInterface:
     Интерфейс для планировщиков ресурсов.
     Использует factory метод "create"
     для выбора конкретных планировщиков без лишнего импорта
-    
+
     Args:
         lte_grid: Ресурсная сетка LTE
         bs: Базовая станция
@@ -109,24 +111,24 @@ class SchedulerInterface:
         window_size: Размер окна в TTI
         verbose: Отладочный вывод для всех этапов планирования (default: False)
     """
-     
+
     @staticmethod
     def create(algorithm: str, lte_grid, bs, **kwargs):
         """
         Factory method для создания планировщиков по имени алгоритма.
-        
+
         Позволяет создавать планировщики без знания конкретных классов.
         Удобно для конфигурирования через параметры или файлы.
-        
+
         Args:
             algorithm: Имя алгоритма ('BestCQI', 'ProportionalFair', 'RoundRobin')
             lte_grid: Ресурсная сетка LTE
             bs: Базовая станция
             **kwargs: Параметры планировщика (max_dl_ue_tti, verbose, etc.)
-        
+
         Returns:
             SchedulerInterface: Экземпляр конкретного планировщика
-        
+
         Raises:
             ValueError: Если алгоритм неизвестен
         """
@@ -135,55 +137,61 @@ class SchedulerInterface:
             'BestCQI': BestCQIScheduler,
             'ProportionalFair': ProportionalFairScheduler,
             'RoundRobin': RoundRobinScheduler}
-        
+
         if algorithm not in schedulers:
             valid = ', '.join(schedulers.keys())
             raise ValueError(
                 f"Unknown algorithm '{algorithm}'. "
                 f"Valid algorithms: {valid}")
-        
+
         scheduler_class = schedulers[algorithm]
         return scheduler_class(lte_grid, bs, **kwargs)
-    
+
     @staticmethod
     def available_algorithms():
         """
         Получить список доступных алгоритмов приоритизации.
-        
+
         Returns:
             List[str]: Список имен алгоритмов
         """
         return ['BestCQI', 'ProportionalFair', 'RoundRobin']
-    
-    def __init__(self, lte_grid, bs, 
-                 max_dl_ue_tti=None, 
-                 pcfich=2, 
-                 max_dl_cce_allowance=None, 
-                 verbose_pdcch=False, 
+
+    def __init__(self, lte_grid, bs,
+                 max_dl_ue_tti=None,
+                 pcfich=2,
+                 max_dl_cce_allowance=None,
+                 verbose_pdcch=False,
                  window_size=100,
                  enable_window = True,
                  verbose = False):
-        
+
         self.lte_grid = lte_grid
         self.lte_grid.SET_BS(bs)
-        self.amc = AdaptiveModulationAndCoding()
+        self.amc = AdaptiveModulationAndCoding(self)
         self.pdcch_manager = PDCCHManager(bandwidth=lte_grid.bandwidth,
             pcfich=pcfich,
             max_dl_cce_allowance=max_dl_cce_allowance,
             verbose=verbose_pdcch)
-        
+
         self.max_dl_ue_tti = max_dl_ue_tti
         self.enable_window = enable_window
         self.active_ue_window = []
         self.window_size = window_size
-        
+
+        self._last_eligible_ue_count = 0
+        self._last_allocated_rb_count = 0
+        self._last_active_ue_count = 0
+        self._last_tti = -1
+        self._last_allocation = None
+        self._last_users = None
         self.verbose = verbose
-        
+
         self.harq_manager = None  # Заготовка для HARQ
-        
+
         if self.verbose:
             print(f"[SCHEDULER] Initialized {self.__class__.__name__}")
-        
+
     def schedule(self, tti: int, users: List[Dict]) -> Dict:
         """
         Основной оркестратор этапов планирования ресурсов
@@ -196,48 +204,86 @@ class SchedulerInterface:
         6. PDSCH allocation - распределение RBG
         7. Buffer processing - обработка буферов
         8. Result formation - формирование результата и статс
-        
+
         3, 6 реализуются в конкретных планировщиках
         """
-        
+
         # ЭТАП 1: Eligibility checks
         eligible_ues = self._filter_eligible_ues(tti, users)
         if not eligible_ues:
             return self._empty_result()
-        
+
         # ЭТАП 2: Active window update
         self._update_active_window(eligible_ues)
-        
+
         # ЭТАП 3: Priority calculation
         prioritized_ues = self._calculate_priorities(eligible_ues, tti)
-        
+
         # ЭТАП 4: PList formation
         priority_list = self._form_priority_list(prioritized_ues, tti)
         if not priority_list:
             return self._empty_result()
-        
+
         # Этап 4.5: PDSCH estimation
         priority_list = self._apply_pdsch_estimation(priority_list, tti)
-        
+
         # ЭТАП 5: PDCCH allocation
         ues_with_pdcch = self._allocate_pdcch(priority_list)
         if not ues_with_pdcch:
             return self._empty_result()
-        
+
         # ЭТАП 6: PDSCH allocation
         allocation = self._allocate_pdsch(tti, ues_with_pdcch, eligible_ues)
-        
+
         # ЭТАП 7: Buffer processing
         self._process_buffers(tti, users, allocation)
-        
+
+        # ЭТАП 7.5: Stats processing
+        allocated_rbs = sum(len(rbs) for rbs in allocation.values())
+        active_ues = sum(1 for rbs in allocation.values() if len(rbs) > 0)
+        self._update_stats(tti, len(eligible_ues), allocated_rbs, active_ues)
+        self._last_allocation = allocation.copy()
+        self._last_users = users
+        self._last_tti = tti
+
         # ЭТАП 8: Result formation
         return self._build_result(allocation, users, eligible_ues, tti)
-    
+
+    def get_stats(self) -> Dict:
+        """
+        Получить статистику планировщика за последний TTI.
+
+        Вызывается StatsManager'ом для сбора статистики.
+        Возвращает счетчики, обновленные в schedule().
+
+        Returns:
+            Dict: {
+                "tti": int,                      # Последний обработанный TTI
+                "eligible_ue_count": int,        # Кол-во UE в очереди
+                "allocated_rb_count": int,       # Всего выделено RB
+                "active_ue_count": int,          # Кол-во UE с allocation > 0
+                "allocation_efficiency": float   # Среднее RB на одного активного UE
+            }
+        """
+        if self._last_active_ue_count == 0:
+            allocation_efficiency = 0.0
+        else:
+            allocation_efficiency = self._last_allocated_rb_count / self._last_active_ue_count
+
+        stats = {
+            'tti': self._last_tti,
+            'eligible_ue_count': self._last_eligible_ue_count,
+            'allocated_rb_count': self._last_allocated_rb_count,
+            'active_ue_count': self._last_active_ue_count,
+            'allocation_efficiency': allocation_efficiency}
+
+        return stats
+
     def _filter_eligible_ues(self, tti: int, users: List[Dict]) -> List[Dict]:
         """
         Фильтрация доступных (допустимых) юзеров.
         Подготовительный этап планирования
-        
+
         Текущие проверки:
         1. BS buffer существует
         2. Buffer size > 0 (есть данные)
@@ -435,13 +481,13 @@ class SchedulerInterface:
         """
         Обработка буферов и обновление throughput статистики.
         Извлечение пакетов из BS буферов для всех UE на основе allocation.
-        
+
         Для каждого UE:
         1. Рассчитывает сколько RB было выделено
         2. Определяет максимальное количество байт для передачи (на основе CQI и RB)
         3. Извлекает пакеты из BS буфера
         4. Обновляет DL throughput статистику UE
-        
+
         Args:
             tti: Текущий TTI
             users: Список всех UE (не только запланированных)
@@ -449,43 +495,69 @@ class SchedulerInterface:
         """
         total_bits_transmitted = 0
         ues_transmitted = 0
-        
-        for user in users:
-            ue = user['ue']
-            ue_id = user['UE_ID']
-            bs_buffer = self.lte_grid.bs.ue_buffers.get(ue_id)
-            
-            if not bs_buffer:
-                continue
-            
-            allocated_rb = len(allocation.get(ue_id, [])) * 2  # 2 слота (0.5ms каждый)
-        
-            if allocated_rb == 0:
-                continue  # UE не получил ресурсов - пропускаем
-            
-            bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
-            max_bytes = (allocated_rb * bits_per_rb) // 8
-            
-            # Извлечение пакетов из буфера
-            packets, total_bytes = bs_buffer.GET_PACKETS(
-                ue_id=ue_id,
-                max_bytes=max_bytes,
-                bits_per_rb=bits_per_rb,
-                current_time=tti)
-            
-            # Обновление throughput статистики
-            transmitted_bits = total_bytes * 8
-            ue.UPD_DL_THROUGHPUT(transmitted_bits, 1)
-            
-            total_bits_transmitted += transmitted_bits
-            if transmitted_bits > 0:
-                ues_transmitted += 1
-        
-        # Verbose 
-        if self.verbose:
-            print(f"[SCHEDULER TTI {tti}] Buffer processing: {total_bits_transmitted} bits transmitted to {ues_transmitted} UE")
+        time_interval_ms = 1
 
-    def _build_result(self, allocation: Dict, users: List[Dict], 
+        for user in users:
+            ue = user.get('ue')
+            ueid = user.get('UE_ID')
+
+            if ue is None or ueid is None:
+                continue
+
+            allocated_rbs = len(allocation.get(ueid, []))
+
+            if allocated_rbs == 0:
+                ue.UPD_DL_THROUGHPUT_BPS(0, time_interval_ms)
+                continue  # UE не получил ресурсов - пропускаем
+
+            bs_buffer = self.lte_grid.bs.ue_buffers.get(ueid)
+            if bs_buffer is None:
+            # UE нет в буферах BS — обновить на 0
+                ue.UPD_DL_THROUGHPUT_BPS(0, time_interval_ms)
+                continue
+
+            cqi = user.get('cqi', 0)
+            bits_per_rb = self.amc.GET_BITS_PER_RB(cqi)
+            max_bits= allocated_rbs * bits_per_rb * 2
+            max_bytes = max_bits // GLOBALS.BITS_PER_BYTE
+            #ВНИМАНИЕ! Временный костыль.
+            remainder_bits = max_bits % GLOBALS.BITS_PER_BYTE
+
+            if max_bytes <= 0:
+                ue.UPD_DL_THROUGHPUT_BPS(0, time_interval_ms)
+                continue
+
+            try:
+                packets, total_bytes = bs_buffer.GET_PACKETS(
+                    ue_id=ueid,
+                    max_bytes=max_bytes,
+                    bits_per_rb = bits_per_rb,
+                    current_time=tti)
+            except Exception as e:
+                if self.verbose:
+                    print(f"[ERROR] TTI {tti} UE {ueid}: Buffer extraction failed - {e}")
+                ue.UPD_DL_THROUGHPUT_BPS(0, time_interval_ms)
+                continue
+
+            transmitted_bits = GLOBALS.bytes_to_bits(total_bytes) + remainder_bits
+            ue.UPD_DL_THROUGHPUT_BPS(transmitted_bits, time_interval_ms)
+
+            total_bits_transmitted += transmitted_bits
+            if total_bytes > 0:
+                ues_transmitted += 1
+
+            if self.verbose:
+                throughput_kbps = (transmitted_bits * 1000) / (time_interval_ms * 1000)  # Кбит/с
+                print(f"[BUFFER] TTI {tti} UE {ueid}: "
+                      f"RB={allocated_rbs}, CQI={cqi}, bits/RB={bits_per_rb}, "
+                      f"MaxBytes={max_bytes}, Transmitted={total_bytes}B ({transmitted_bits}bits, {throughput_kbps:.1f}Kbps)")
+
+        if self.verbose and (total_bits_transmitted > 0 or ues_transmitted > 0):
+            print(f"[SCHEDULER] TTI {tti}: Buffer processing - "
+                  f"Total {total_bits_transmitted} bits to {ues_transmitted} UE")
+
+
+    def _build_result(self, allocation: Dict, users: List[Dict],
                      eligible_ues: List[Dict], tti: int) -> Dict:
         """
         Формирование финального результата планирования.
@@ -509,9 +581,6 @@ class SchedulerInterface:
             user['UE_ID']: self.lte_grid.GENERATE_BITMAP(tti, user['UE_ID'])
             for user in eligible_ues}
         
-        statistics = self.amc.calculate_throughput(
-            allocation, users, tti, self.lte_grid.bs)
-        
         pdcch_stats = self.pdcch_manager.get_stats()
         
         # Verbose
@@ -522,7 +591,7 @@ class SchedulerInterface:
         
         return {
             'allocation': allocation,
-            'statistics': statistics,
+            'statistics': {},
             'bitmap': bitmap,
             'pdcch_stats': pdcch_stats}
     
@@ -544,12 +613,31 @@ class SchedulerInterface:
         if self.verbose:
             print("[SCHEDULER] Empty result: No UE to schedule")
         #TODO: можно добавить *reason чтобы возвращал в консоль причину
-        
+
+        self._update_stats(-1, 0, 0, 0)
+        self._last_allocation = {}
+        self._last_users = []
+
         return {
             'allocation': {},
             'statistics': {},
             'bitmap': {},
             'pdcch_stats': self.pdcch_manager.get_stats()}
+
+    def _update_stats(self, tti: int, eligible_count: int, allocated_rbs: int, active_ues: int) -> None:
+        """
+        Обновить счетчики статистики.
+
+        Args:
+            tti (int): Номер текущего TTI
+            eligible_count (int): Кол-во eligible UE
+            allocated_rbs (int): Всего выделено RB
+            active_ues (int): Кол-во UE с allocation > 0
+        """
+        self._last_eligible_ue_count = eligible_count
+        self._last_allocated_rb_count = allocated_rbs
+        self._last_active_ue_count = active_ues
+        self._last_tti = tti
 
     def _get_active_ue_stats(self) -> Dict:
         """
@@ -1043,44 +1131,44 @@ class PDCCHManager:
             int: Total CCE
         """
         return self.total_cce
-    
+
     def get_max_dl_cce(self) -> int:
         """
         Получить максимум CCE для DL UE-specific передач.
-        
+
         Returns:
             int: Max DL CCE (DBdlNumCceAllowance или total_cce)
         """
         return self.max_dl_cce
-    
+
     def get_used_cce(self) -> int:
         """
         Получить число выделенных CCE в текущем TTI.
-        
+
         Returns:
             int: Количество выделенных CCE (0 до max_dl_cce)
         """
         return self.num_assigned_cce
-    
+
     def get_available_cce(self) -> int:
         """
         Получить число доступных CCE для выделения.
-        
+
         Returns:
             int: Количество доступных CCE (max_dl_cce - used_cce)
         """
         return self.max_dl_cce - self.num_assigned_cce
-    
+
     def get_stats(self) -> Dict:
         """
         Получение статистики использования CCE в текущем TTI.
-        
+
         Возвращает детальную информацию о состоянии PDCCH, включая:
         - Общие параметры конфигурации
         - Текущее использование CCE
         - Коэффициент утилизации
         - Детальную информацию о выделениях по пользователям
-        
+
         Returns:
             dict: Словарь со статистикой, содержащий:
                 - 'total_cce': int - Общее число CCE в системе
@@ -1093,12 +1181,12 @@ class PDCCHManager:
                 - 'allocations': dict - Словарь {ue_id: cce_count}
         """
         available_cce = self.max_dl_cce - self.num_assigned_cce
-        
+
         if self.max_dl_cce > 0:
             utilization = self.num_assigned_cce / self.max_dl_cce
         else:
             utilization = 0.0
-        
+
         stats = {
             'total_cce': self.total_cce,
             'max_dl_cce': self.max_dl_cce,
@@ -1108,9 +1196,9 @@ class PDCCHManager:
             'utilization_percent': utilization * 100,
             'num_scheduled_users': len(self.cce_allocations),
             'allocations': self.cce_allocations.copy()} #Копия, не оригинал
-        
+
         return stats
-       
+
 #==============================================================================
 #                               ЛОГИКА AMC
 #==============================================================================
@@ -1119,7 +1207,7 @@ class AdaptiveModulationAndCoding:
     """
     Класс для преобразования CQI в MCS и расчета бит на ресурсный блок.
     """
-    
+
     # Таблица соответствия CQI → (Modulation Order, Code Rate)
     CQI_TO_MCS = {
         1: (2, 0.152),   # QPSK
@@ -1139,82 +1227,73 @@ class AdaptiveModulationAndCoding:
         15: (6, 0.978)   # 64QAM
     }
 
+    def __init__(self, scheduler=None):
+        self.scheduler = scheduler
+
     def GET_BITS_PER_RB(self, cqi: int) -> int:
         """
         Рассчитать количество бит на ресурсный блок (RB) для заданного CQI.
         """
         if cqi not in self.CQI_TO_MCS:
             raise ValueError(f"Invalid CQI: {cqi}. Must be 1-15.")
-        
+
         modulation, code_rate = self.CQI_TO_MCS[cqi]
         symbols_per_rb = 12 * 7  # 84 символа в RB (с учетом слотов)
         return int(symbols_per_rb * modulation * code_rate)
-	#@sherokiddo: "Добавить зависимость от CP"
-    
-    def calculate_throughput(self, allocation: Dict, 
-                             users: List[Dict], 
-                             tti: int, bs: BaseStation) -> Dict:
-        """
-        Рассчитывает фактическую пропускную способность с учетом:
-        - Реальных данных из буфера
-        - Адаптивной модуляции и кодирования (AMC)
-    
-        Args:
-            allocation: Словарь распределения RB {UE_ID: список freq_indices}
-            users: Список активных пользователей с параметрами CQI
-    
-        Returns:
-            Словарь с метриками производительности:
-            - total_allocated_rbs: Общее количество выделенных RB
-            - user_throughput: Пропускная способность на пользователя (бит/с)
-            - average_throughput: Средняя пропускная способность (бит/с)
-            - total_effective_bits: Фактически переданные биты
-        """
-        all_users = {u['UE_ID']: u for u in users}
-        stats = {
-            'total_allocated_rbs': 0,
-            'user_throughput': {ue_id: 0 for ue_id in all_users}, 
-            'user_effective_throughput': {ue_id: 0 for ue_id in all_users},
-            'user_max_throughput': {ue_id: 0 for ue_id in all_users},
-            'average_dl_throughput': 0.0,
-            'total_effective_bits': 0}
-        
-        total_effective_bits = 0
-    
-        for ue_id in all_users:
-            user = all_users[ue_id]
-            rb_count = len(allocation.get(ue_id, [])) * 2
-            
-            if rb_count == 0:
-                # Обновление истории для неактивных пользователей
-                user['ue'].UPD_DL_THROUGHPUT(0, 1)
-                continue
-    
-            # 1. Расчет максимальной ёмкости RB для данного CQI
-            bits_per_rb = self.GET_BITS_PER_RB(user['cqi'])
+    #@sherokiddo: "Добавить зависимость от CP"
 
-            # 2. Расчет эффективно использованных бит
-            max_bits = rb_count * bits_per_rb
-            
-            # 3. Реальные переданные биты из буфера
-            real_bits = user['ue'].current_dl_throughput
-            effective_bits = min(real_bits, max_bits)
-            
-            # 4. Обновление статистики
-            stats['user_throughput'][ue_id] = effective_bits
-            total_effective_bits += effective_bits
-            stats['total_allocated_rbs'] += rb_count
-            stats['user_effective_throughput'][ue_id] = effective_bits
-            stats['user_max_throughput'][ue_id] = max_bits
-    
-        # 5. Расчет средней пропускной способности
-        active_users = [u for u in all_users.values() if stats['user_throughput'][u['UE_ID']] > 0]
-        if active_users:
-            stats['average_dl_throughput'] = total_effective_bits / len(active_users)
-        
-        stats['total_effective_bits'] = total_effective_bits
-        return stats
-    
+    def get_stats(self) -> Dict:
+        """
+        Получить статистику AMC за последний TTI из кэша scheduler.
+        Рассчитывает throughput на основе _last_allocation и _last_users.
+        Вызывается StatsManager.
+
+        Returns:
+            Dict: {
+                "total_throughput": float,     # Общий throughput в bps
+                "avg_bits_per_rb": float,      # Средние биты на RB
+                "ue_throughputs": Dict         # UEID -> throughput (bps)
+            }
+        """
+        if self.scheduler is None or self.scheduler._last_allocation is None:
+            return {"total_throughput": 0.0,
+                    "avg_bits_per_rb": 0.0,
+                    "ue_throughputs": {}}
+
+        users = self.scheduler._last_users
+        allocation = self.scheduler._last_allocation or {}
+        total_bits = 0.0
+        total_rbs = 0
+
+        # Рассчет throughput (аналог старого calculate_throughput, но на кэше)
+        total_throughput = 0.0
+        ue_throughputs = {}
+
+        for user in users:
+            ue = user.get('ue')  # Предполагаем, что 'ue' в users Dict
+            ueid = user['UE_ID']
+
+            if ue is None or ueid is None:
+                continue
+
+            throughput_bps = ue.current_dl_throughput  # В бит/с
+            ue_throughputs[ueid] = throughput_bps
+            total_throughput += throughput_bps
+
+            allocated_rbs = len(allocation.get(ueid, []))
+            if allocated_rbs > 0:
+                cqi = user.get('cqi', 0)
+                bits_per_rb = self.GET_BITS_PER_RB(cqi)
+                total_bits += bits_per_rb * allocated_rbs * 2  # * 2 слота
+                total_rbs += allocated_rbs
+
+        avg_bits_per_rb = (total_bits / total_rbs) if total_rbs > 0 else 0.0
+
+        return {
+            "total_throughput": total_throughput,
+            "avg_bits_per_rb": avg_bits_per_rb,
+            "ue_throughputs": ue_throughputs}
+
 #==============================================================================
 #                              ЛОГИКА SCHEDULER_NEW
 #==============================================================================
@@ -1322,7 +1401,7 @@ class BestCQIScheduler(SchedulerInterface):
                 print(f"[PDSCH] UE {ue_id}: {len(rb_list)} RB allocated "
                       f"(RB {rb_list[0]}-{rb_list[-1]})")
         
-        return allocation        
+        return allocation
 
 class RoundRobinScheduler(SchedulerInterface):
     """
@@ -1481,7 +1560,7 @@ class ProportionalFairScheduler(SchedulerInterface):
                         eligible_ues: List[Dict]) -> Dict[int, List[int]]:
         """
         Выделяем RBG по приоритету (highest priority first).
-        
+
         Args:
             tti: Текущий TTI
             ues_with_pdcch: UE получившие PDCCH (отсортированы по priority)
@@ -1738,7 +1817,7 @@ class RoundRobinScheduler_OLD:
                     current_time=tti
                 )               
             # Обновление метрик DL
-                ue.UPD_DL_THROUGHPUT(total * 8, 1)                
+                ue.UPD_DL_THROUGHPUT_BPS(total * 8, 1)                
     
         # 10. Формирование bitmap
             bitmap = {user['UE_ID']: self.lte_grid.GENERATE_BITMAP(tti, user['UE_ID']) for user in active_users}
@@ -1896,7 +1975,7 @@ class BestCQIScheduler_OLD:
             )
             
             # Обновление метрик DL
-            ue.UPD_DL_THROUGHPUT(total * 8, 1)
+            ue.UPD_DL_THROUGHPUT_BPS(total * 8, 1)
    
         # 7. Формирование bitmap
         bitmap = {user['UE_ID']: self.lte_grid.GENERATE_BITMAP(tti, user['UE_ID']) for user in active_users}
@@ -2069,7 +2148,7 @@ class ProportionalFairScheduler_OLD:
             )
             
             # Обновление метрик DL
-            ue.UPD_DL_THROUGHPUT(total * 8, 1)
+            ue.UPD_DL_THROUGHPUT_BPS(total * 8, 1)
 
             average_throughput_past = ue.average_throughput
             ue.average_throughput = (1 - 0.2) * average_throughput_past + 0.2 * ue.current_dl_throughput 

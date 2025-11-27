@@ -25,7 +25,7 @@ def visualize_users_mobility(ue_collection: UECollection, bs: BaseStation,
         x_max (float): Максимальная граница отображения по оси X.
         y_min (float): Минимальная граница отображения по оси Y.
         y_max (float): Максимальная граница отображения по оси Y.
-        
+
     """
     x_bs, y_bs = bs.position
 
@@ -112,10 +112,10 @@ def print_users_stats(ue_collection: UECollection, tti: int, bs: BaseStation,
 
 def debug_simulation():
     """
-    Симуляция, предназначенная для отладки. 
-    Позволяет проверить корректность взаимодействия компонентов системы при 
+    Симуляция, предназначенная для отладки.
+    Позволяет проверить корректность взаимодействия компонентов системы при
     помощи вывода различных графиков и статистики для каждого пользователя.
-    
+
     """
     sim_duration = 3000 # Время симуляции (в мс)
     update_interval = 1 # Интервал обновления параметров пользователя (в мс)
@@ -226,7 +226,7 @@ def sim_with_ue_collection():
 
     # Создание и настройка базовой станции
     bs = BaseStation(
-        x=0, y=0, bandwidth=bandwidth, global_max=inf, 
+        x=0, y=0, bandwidth=bandwidth, global_max=inf,
         per_ue_max=inf, ch_model_type="UMa", ch_model_params={"cond_update_period": 5}
     )
 
@@ -242,8 +242,8 @@ def sim_with_ue_collection():
     ue_collection.ADD_RANDOM_USERS(num_ue=3)
 
     # Создание модели передвижения пользователей
-    diagonalwalk = DiagonalWalkModel(bs.position[0], 
-                                     bs.position[1], 
+    diagonalwalk = DiagonalWalkModel(bs.position[0],
+                                     bs.position[1],
                                      pause_time=0)
 
     # Установка модели передвижения для всех пользователей коллекции.
@@ -263,7 +263,7 @@ def sim_with_ue_collection():
     lte_grid = RES_GRID_LTE(bandwidth=bandwidth, num_frames=num_frames)
 
     # Создание планировщика
-    scheduler = ProportionalFairScheduler(lte_grid, bs)
+    scheduler = ProportionalFairScheduler(lte_grid, bs, verbose = True)
 
     # Основной цикл симуляции
     for current_time in range(update_interval, sim_duration + 1, update_interval):
@@ -304,80 +304,89 @@ def sim_with_ue_collection():
     visualize_users_sinr(ue_collection=ue_collection,
                             sim_duration=sim_duration,
                             update_interval=update_interval)
-    
+
 def sim_with_manager():
     """
     Пример запуска симуляции с использованием менеджера.
 
-    """    
+    """
 # =============================================================================
-#             НАСТРОЙКА БАЗОВОЙ СТАНЦИИ И КОЛЛЕКЦИИ ПОЛЬЗОВАТЕЛЕЙ                
+#             НАСТРОЙКА БАЗОВОЙ СТАНЦИИ И КОЛЛЕКЦИИ ПОЛЬЗОВАТЕЛЕЙ
 # =============================================================================
-    
+
     # Создание и настройка базовой станции
     bs = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMa")
-    
+
     # Создание коллекции пользовательских устройств
     ue_collection = UECollection()
-    
+
     # Установка сида
     GLOBALS.SEED = 42
-    
+
     # Генерация заданного числа UE в коллекцию
-    ue_collection.ADD_RANDOM_USERS(num_ue=3)    
-    
+    ue_collection.ADD_RANDOM_USERS(num_ue=3)
+
     # Создание модели передвижения пользователей
-    random_waypoint = RandomWaypointModel(x_min=-1000, 
-                                          x_max=1000, 
-                                          y_min=-1000, 
-                                          y_max=1000, 
+    random_waypoint = RandomWaypointModel(x_min=-1000,
+                                          x_max=1000,
+                                          y_min=-1000,
+                                          y_max=1000,
                                           pause_time=0)
-    
+
     # Установка модели передвижения для всех пользователей коллекции
-    ue_collection.SET_MOBILITY_MODEL(random_waypoint)    
-    
+    ue_collection.SET_MOBILITY_MODEL(random_waypoint)
+
     # Создание модели генерации трафика
     poisson = PoissonModel(packet_rate=1000)
-    
+
     # Установка модели генерации трафика для всех пользователей коллекции
     ue_collection.SET_TRAFFIC_MODEL(poisson)
-    
+
     # Регистрация всех пользователей коллекции в базовой станции
     ue_collection.REG_USERS_TO_BS(bs)
-    
+
 # =============================================================================
-#                        НАСТРОЙКА МЕНЕДЖЕРА СИМУЛЯЦИИ                
+#                        НАСТРОЙКА МЕНЕДЖЕРА СИМУЛЯЦИИ
 # =============================================================================
-    
+
     # Создание менеджера симуляции
     sim = SimulationManager()
-    
+
     # Установка базовой станции
     sim.set_base_station(bs)
-    
+
     # Установка коллекции пользователей
     sim.set_ue_collection(ue_collection)
-    
-    # Установка планировщика. Можно передвать параметры, которые 
+
+    # Установка планировщика. Можно передвать параметры, которые
     # поддерживает SchedulerInterface.
     sim.set_scheduler(algorithm="RoundRobin")
-    
+
     # Установка длительности симуляции
     sim.set_sim_duration(5000)
-    
+
     # Включение verbose логирования. Для вывода всех логов в файл нужно
     # поставить флаг to_file=True.
     sim.enable_verbose_log()
-    
+
     # Включение логирования статистики в CSV-файл
     sim.enable_stats_log()
-    
+
+    # Установка менеджера статистики
+    sim.set_stats_manager(
+        enabled=True,                # Включить сбор
+        collect_interval=1,         # Собирать каждые 10 TTI
+        scheduler_level="basic",     # Scheduler: только агрегированные метрики
+        amc_level="basic",           # AMC: total throughput + avg bits/RB
+        pdcch_level="none",          # PDCCH: отключен (можно включить "basic")
+        file_prefix="emp_stats"      # Префикс файла: lte_stats.csv
+    )
+
     # Запуск симуляции
     sim.start_simulation()
-    
-    
+
+
 if __name__ == "__main__":
     # debug_simulation()
-    sim_with_ue_collection()
-    # sim_with_manager()
-    
+    # sim_with_ue_collection()
+    sim_with_manager()
