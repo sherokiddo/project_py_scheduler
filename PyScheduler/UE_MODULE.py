@@ -913,7 +913,7 @@ class UECollection:
                 UE_ID=ue_id, x=x_position, y=y_position, ue_class=ue_classes[i]
             )
 
-    def SET_MOBILITY_MODEL(self, model, ue_ids: List[int] = None):
+    def SET_MOBILITY_MODEL(self, model, ue_ids: List[int] = None, **kwargs):
         """
         Установить модель передвижения пользователей в коллекции. Если ue_ids
         задан как None, то модель применится ко всем UE в коллекции.
@@ -926,7 +926,7 @@ class UECollection:
         """
         for ue in self.users.values():
             if ue_ids is None or ue.UE_ID in ue_ids:
-                ue.SET_MOBILITY_MODEL(model)
+                ue.SET_MOBILITY_MODEL(model, **kwargs)
                
     def SET_TRAFFIC_MODEL(self, model, ue_ids: List[int] = None):
         """
