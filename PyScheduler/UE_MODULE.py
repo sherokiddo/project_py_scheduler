@@ -68,7 +68,8 @@
 #      - Добавлено динамическое установление атрибутов в UPD_POSITION.
 #------------------------------------------------------------------------------
 """
-
+import numpy as np
+import GLOBALS
 from collections import deque
 from typing import Dict, List, Optional, Union, Tuple
 from TRAFFIC_MODEL import PoissonModel, OnOffModel, MMPPModel
@@ -338,6 +339,7 @@ class UserEquipment:
         # Параметры канала связи
         self.serving_bs = None  # Установить позже
         self.cqi = 1  # Текущий CQI (1-15)
+        self.cqi_subband = []
         self.SINR = 0.0  # Текущее отношение сигнал/шум+помехи в dB
 
         self.SINR_values = []  # Временный параметр для демонстрации результатов
@@ -500,12 +502,23 @@ class UserEquipment:
                 else:
                     self.UE_height = 1.5
         
-        self.SINR = self.serving_bs.channel_model.calculate_SINR(
+        SINR_on_RB = self.serving_bs.channel_model.calculate_SINR(
             self.UE_ID, displacement, self.dist_to_BS_2D, self.dist_to_BS_2D_in, 
             self.dist_to_BS_3D, self.UE_height, self.ue_class
         )
-
+        
+        # Wideband SINR и CQI
+        self.SINR = np.mean(SINR_on_RB)
         self.cqi = self.SINR_TO_CQI(self.SINR)
+        
+        subband_size = GLOBALS.SUBBAND_SIZE[self.serving_bs.bandwidth]
+        
+        # Subband CQI
+        self.cqi_subband = []
+        for i in range(0, len(SINR_on_RB), subband_size):
+            sinr_subband = np.mean(SINR_on_RB[i:i+subband_size])
+            self.cqi_subband.append(self.SINR_TO_CQI(sinr_subband))
+        
         self.SINR_values.append(self.SINR)
         self.CQI_values.append(self.cqi)
         

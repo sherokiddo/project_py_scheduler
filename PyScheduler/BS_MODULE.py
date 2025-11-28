@@ -13,9 +13,10 @@
 # Версия Python Kernel: 3.12.9
 #------------------------------------------------------------------------------
 """
-
-from collections import defaultdict, deque
-from typing import Dict, List, Tuple
+import numpy as np
+import GLOBALS
+from collections import deque, defaultdict
+from typing import Dict, List, Optional, Union, Tuple
 
 from UE_MODULE import UserEquipment
 
@@ -382,10 +383,11 @@ class BaseStation:
         self.height = height  # Высота антенны
 
         # Частотные параметры
-        self.frequency_GHz = frequency_GHz  # Частота в ГГц
-        self.frequency_Hz = frequency_GHz * 1e9  # Частота в Гц
-        self.bandwidth = bandwidth  # Полоса пропускания
-
+        self.frequency_GHz = frequency_GHz # Частота в ГГц
+        self.frequency_Hz = frequency_GHz * 1e9 # Частота в Гц
+        self.bandwidth = bandwidth # Полоса пропускания
+        self.rb_per_slot = GLOBALS.BANDWIDTH_TO_RB[bandwidth]
+        
         # Характеристики передачи
         self.tx_power = None  # Мощность передачи (устанавливается отдельно)
         self.antenna_gain = 15  # Коэффициент усиления антенны (дБи)
@@ -428,68 +430,31 @@ class BaseStation:
                 bs=self,
                 W=params.get('W', 20.0),
                 h=params.get('h', 5.0),
-                cond_update_period=params.get('cond_update_period', 0.0)
+                cond_update_period=params.get('cond_update_period', 0.0),
+                freq_fad_nlos_model = params.get('freq_fad_nlos_model', 'TDL-A'),
+                freq_fad_los_model = params.get('freq_fad_los_model', 'TDL-D'),
+                ds_profile = params.get('ds_profile', 'normal'),
+                los_arrival_angle = params.get('los_arrival_angle', np.pi / 4)
             )
         elif self.ch_model_type == 'UMa':
             self.channel_model = UMaModel(
                 bs=self,
                 cond_update_period=params.get('cond_update_period', 0.0),
-                o2i_model=params.get('o2i_model', 'low')
+                o2i_model=params.get('o2i_model', 'low'),
+                freq_fad_nlos_model = params.get('freq_fad_nlos_model', 'TDL-A'),
+                freq_fad_los_model = params.get('freq_fad_los_model', 'TDL-D'),
+                ds_profile = params.get('ds_profile', 'normal'),
+                los_arrival_angle = params.get('los_arrival_angle', np.pi / 4)
             )
         elif self.ch_model_type == 'UMi':
             self.channel_model = UMiModel(
                 bs=self,
                 cond_update_period=params.get('cond_update_period', 0.0),
-                o2i_model=params.get('o2i_model', 'low')
-            )
-        else:
-            raise ValueError(f"Неизвестный тип модели канала: {self.ch_model_type}")
-
-        # Связь с моделью канала
-        self.ch_model_type = ch_model_type
-        self.channel_model = None
-        self.registered_ues = {}
-
-        if ch_model_type is not None:
-            self._init_channel_model(ch_model_params or {})
-
-    def _init_channel_model(self, params: dict) -> None:
-        """
-        Инициализация модели канала для базовой станции.
-        Использует ленивый импорт для избежания циклических зависимостей.
-        (от ленивого импорта можно избавиться)
-
-        Args:
-            params: Параметры для конкретной модели канала
-                - RMa: W (ширина улицы), h (высота здания), cond_update_period
-                - UMa: cond_update_period, o2i_model
-                - UMi: cond_update_period, o2i_model
-
-        Raises:
-            ValueError: Если указан неизвестный тип модели
-        """
-        # Ленивый импорт (избегаем циклических зависимостей)
-        # TODO: перейти на фабричный паттерн
-        from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
-
-        if self.ch_model_type == "RMa":
-            self.channel_model = RMaModel(
-                bs=self,
-                W=params.get("W", 20.0),
-                h=params.get("h", 5.0),
-                cond_update_period=params.get("cond_update_period", 0.0),
-            )
-        elif self.ch_model_type == "UMa":
-            self.channel_model = UMaModel(
-                bs=self,
-                cond_update_period=params.get("cond_update_period", 0.0),
-                o2i_model=params.get("o2i_model", "low"),
-            )
-        elif self.ch_model_type == "UMi":
-            self.channel_model = UMiModel(
-                bs=self,
-                cond_update_period=params.get("cond_update_period", 0.0),
-                o2i_model=params.get("o2i_model", "low"),
+                o2i_model=params.get('o2i_model', 'low'),
+                freq_fad_nlos_model = params.get('freq_fad_nlos_model', 'TDL-A'),
+                freq_fad_los_model = params.get('freq_fad_los_model', 'TDL-D'),
+                ds_profile = params.get('ds_profile', 'normal'),
+                los_arrival_angle = params.get('los_arrival_angle', np.pi / 4)
             )
         else:
             raise ValueError(f"Неизвестный тип модели канала: {self.ch_model_type}")
