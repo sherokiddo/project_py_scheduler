@@ -55,7 +55,7 @@ class LevelsConfig:
     """
     scheduler: MetricLevel = MetricLevel.BASIC
     amc: MetricLevel = MetricLevel.BASIC
-    pdcch: MetricLevel = MetricLevel.NONE
+    pdcch: MetricLevel = MetricLevel.BASIC
 
 @dataclass
 class StatisticsConfig:
@@ -109,44 +109,40 @@ class StatsManager:
         Args:
             tti (int): Номер текущего TTI (для timestamp)
         """
-        snapshot = {"tti": tti}  # Базовый Dict с timestamp
-
-        # 1. Scheduler metrics
-        if self.config.levels.scheduler != MetricLevel.NONE:
-            sched_stats = self.scheduler.get_stats()
-
-            if self.config.levels.scheduler == MetricLevel.BASIC:
-                snapshot.update({
-                    "eligible_ue_count": sched_stats["eligible_ue_count"],
-                    "active_ue_count": sched_stats["active_ue_count"],
-                    "allocated_rb_count": sched_stats["allocated_rb_count"],
-                    "allocation_efficiency": sched_stats["allocation_efficiency"]
-                })
-            else:  # DETAILED
-                # Все метрики (включая rb_distribution, если добавлен)
-                snapshot.update(sched_stats)
-
-        # 2. AMC metrics
-        if self.config.levels.amc != MetricLevel.NONE:
-            amc_stats = self.scheduler.amc.get_stats()
-            print(f"[DEBUG AMC] amc_stats: {amc_stats}") ############
-
-            if self.config.levels.amc == MetricLevel.BASIC:
-                snapshot.update({
-                    "total_throughput_bps": amc_stats.get("total_throughput", 0),  # ← Fallback на 0
-                    "avg_bits_per_rb": amc_stats.get("avg_bits_per_rb", 0.0)
-                })
-
-            else:  # DETAILED
-                # Включая per-UE throughputs
-                snapshot.update(amc_stats)
-
-        # 3. PDCCH metrics (опционально)
-        if self.config.levels.pdcch != MetricLevel.NONE:
-            pdcch_stats = self.scheduler.pdcch_manager.get_stats()
-            snapshot["pdcch"] = pdcch_stats  # Вложенный Dict
-
-        # Добавить snapshot в историю
+        
+        # Получить метрики из источников
+        sched_stats = self.scheduler.get_stats() if self.config.levels.scheduler != MetricLevel.NONE else {}
+        amc_stats = self.scheduler.amc.get_stats() if self.config.levels.amc != MetricLevel.NONE else {}
+        pdcch_stats = self.scheduler.pdcch_manager.get_stats() if self.config.levels.pdcch != MetricLevel.NONE else {}
+        
+        snapshot = {
+            # Временная метка и базовые счетчики (ПЕРВЫЕ!)
+            "tti": tti,
+            "sch_eligible_ue_count": sched_stats.get("sch_eligible_ue_count", 0),
+            "sch_active_ue_count": sched_stats.get("sch_active_ue_count", 0),
+            
+            # Scheduler метрики (группа RB)
+            "dl_rb_allocated_count": sched_stats.get("dl_rb_allocated_count", 0),
+            "dl_rb_per_ue_avg": sched_stats.get("dl_rb_per_ue_avg", 0.0),
+            "dl_prb_utilization_pct": sched_stats.get("dl_prb_utilization_pct", 0.0),
+            
+            # AMC метрики (группа throughput/bits)
+            "dl_bits_per_rb_avg": amc_stats.get("dl_bits_per_rb_avg", 0.0),
+            "dl_capacity_bits_sum_tti": amc_stats.get("dl_capacity_bits_sum_tti", 0),      # ✅ НОВОЕ!
+            "dl_transmitted_bits_sum_tti": amc_stats.get("dl_transmitted_bits_sum_tti", 0),
+            "dl_throughput_sum_kbps": amc_stats.get("dl_throughput_sum_kbps", 0.0),
+            "dl_cqi_wb_avg_idx": amc_stats.get("dl_cqi_wb_avg_idx", 0.0),
+            "dl_sinr_avg": amc_stats.get("dl_sinr_avg", 0.0),
+            
+            # Buffer метрики
+            "buffer_size_sum_bytes": sched_stats.get("buffer_size_sum_bytes", 0),
+            
+            # PDCCH метрики (группа CCE)
+            "pdcch_cce_total_count": pdcch_stats.get("pdcch_cce_total_count", 0),
+            "pdcch_cce_allocated_count": pdcch_stats.get("pdcch_cce_allocated_count", 0),
+            "pdcch_cce_utilization_pct": pdcch_stats.get("pdcch_cce_utilization_pct", 0.0),
+        }
+        
         self.history.append(snapshot)
 
     def export_csv(self, filename: str = None) -> None:
@@ -162,13 +158,16 @@ class StatsManager:
         if not self.history:
             print("StatsManager: No data to export (history is empty)")
             return
-
+        
         if filename is None:
             filename = f"{self.config.file_prefix}.csv"
-
+        
         import json
+        
+        first_snapshot = self.history[0]
+        headers = list(first_snapshot.keys())
+        
         rows = []
-
         for snapshot in self.history:
             row = {}
             for key, value in snapshot.items():
@@ -177,14 +176,13 @@ class StatsManager:
                 else:
                     row[key] = value
             rows.append(row)
-
-        headers = sorted({header for row in rows for header in row.keys()})
-
+        
+        # Запись в CSV
         with open(filename, 'w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=headers)
             writer.writeheader()
             writer.writerows(rows)
-
+        
         print(f"StatsManager: Exported {len(rows)} snapshots to {filename}")
 
     def get_summary(self) -> Dict:
