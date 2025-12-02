@@ -86,6 +86,7 @@
 """
 
 import GLOBALS
+import time
 from BS_MODULE import BaseStation
 from typing import Dict, List, Optional
 
@@ -185,6 +186,14 @@ class SchedulerInterface:
         self._last_tti = -1
         self._last_allocation = None
         self._last_users = None
+        
+        self._last_sch_time_us = 0.0
+        self._last_priority_calc_time_us = 0.0
+        self._last_priority_sort_time_us = 0.0
+        self._last_priority_list_size = 0
+        self._last_avg_priority_value = 0.0
+        self._last_pdcch_blocked_count = 0
+
         self.verbose = verbose
 
         self.harq_manager = None  # Заготовка для HARQ
@@ -207,6 +216,7 @@ class SchedulerInterface:
 
         3, 6 реализуются в конкретных планировщиках
         """
+        t_sch_start = time.perf_counter()
 
         # ЭТАП 1: Eligibility checks
         eligible_ues = self._filter_eligible_ues(tti, users)
@@ -217,11 +227,25 @@ class SchedulerInterface:
         self._update_active_window(eligible_ues)
 
         # ЭТАП 3: Priority calculation
+        t_priority_start = time.perf_counter()
+        
         prioritized_ues = self._calculate_priorities(eligible_ues, tti)
+       
+        t_priority_end = time.perf_counter()
+        priority_calc_time_us = (t_priority_end - t_priority_start) * 1_000_000
 
         # ЭТАП 4: PList formation
+        t_sort_start = time.perf_counter()
+        
         priority_list = self._form_priority_list(prioritized_ues, tti)
-        if not priority_list:
+        
+        t_sort_end = time.perf_counter()
+        priority_sort_time_us = (t_sort_end - t_sort_start) * 1_000_000
+
+        self._last_priority_list_size = len(priority_list)
+        if priority_list:
+            self._last_avg_priority_value = sum(u.get('priority', 0) for u in priority_list) / len(priority_list)
+        else:
             return self._empty_result()
 
         # Этап 4.5: PDSCH estimation
@@ -229,6 +253,7 @@ class SchedulerInterface:
 
         # ЭТАП 5: PDCCH allocation
         ues_with_pdcch = self._allocate_pdcch(priority_list)
+        self._last_pdcch_blocked_count = len(priority_list) - len(ues_with_pdcch)
         if not ues_with_pdcch:
             return self._empty_result()
 
@@ -245,9 +270,15 @@ class SchedulerInterface:
         self._last_allocation = allocation.copy()
         self._last_users = users
         self._last_tti = tti
+        
+        t_sch_end = time.perf_counter()
+        sch_time_us = (t_sch_end - t_sch_start) * 1_000_000
+        self._save_timing_stats(sch_time_us, 
+                                priority_calc_time_us, 
+                                priority_sort_time_us)
 
         # ЭТАП 8: Result formation
-        return self._build_result(allocation, users, eligible_ues, tti)
+        return self._build_result(allocation, users, eligible_ues, tti) 
 
     def get_stats(self) -> Dict:
         """
@@ -290,7 +321,13 @@ class SchedulerInterface:
             'dl_rb_per_ue_avg': round(rb_per_ue_avg, 2),
             'buffer_size_sum_bytes': total_buffer_bytes, 
             #TODO: временное решение. избавиться как сделаем buffer.get_stats()
-            'dl_prb_utilization_pct': round(prb_utilization_pct, 2)}
+            'dl_prb_utilization_pct': round(prb_utilization_pct, 2),
+            'sch_total_time_us': round(self._last_sch_time_us, 2),
+            'sch_priority_calc_time_us': round(self._last_priority_calc_time_us, 2),
+            'sch_priority_sort_time_us': round(self._last_priority_sort_time_us, 2),
+            'sch_priority_list_size': self._last_priority_list_size,
+            'sch_pdcch_blocked_count': self._last_pdcch_blocked_count,
+            'sch_avg_priority_value': round(self._last_avg_priority_value, 4),}
 
         return stats
 
@@ -684,6 +721,21 @@ class SchedulerInterface:
             'window_size': self.window_size,
             'current_active_count': len(self.active_ue_window[-1]),
             'unique_ues_in_window': len(set.union(*self.active_ue_window))}
+    
+    def _save_timing_stats(self, sch_time_us: float, 
+                       priority_calc_time_us: float,
+                       priority_sort_time_us: float) -> None:
+        """
+        Сохранить timing статистику для get_stats().
+        
+        Args:
+            total_time_us: Полное время schedule() (микросекунды)
+            priority_calc_time_us: Время _calculate_priorities() (микросекунды)
+            priority_sort_time_us: Время _form_priority_list() (микросекунды)
+        """
+        self._last_sch_time_us = sch_time_us
+        self._last_priority_calc_time_us = priority_calc_time_us
+        self._last_priority_sort_time_us = priority_sort_time_us
 
 #===============АБСТРАКТНЫЕ МЕТОДЫ ДЛЯ АЛГОРИТМОВ ПЛАНИРОВАНИЯ=================
 
@@ -1274,8 +1326,15 @@ class AdaptiveModulationAndCoding:
             return {
                 "dl_capacity_bits_sum_tti": 0,
                 "dl_transmitted_bits_sum_tti": 0,
-                "dl_throughput_sum_bps": 0.0,
-                "dl_bits_per_rb_avg": 0.0,}
+                "dl_throughput_sum_kbps": 0.0,
+                "dl_bits_per_rb_avg": 0.0,
+                "dl_cqi_wb_avg_idx": 0.0,
+                "dl_sinr_avg": 0.0,
+                "dl_ue_throughputs": {},
+                "ue_cqi": {},
+                "ue_sinr": {},
+                "ue_rb_allocated": {},
+            }
         
         users = self.scheduler._last_users
         allocation = self.scheduler._last_allocation
@@ -1285,6 +1344,10 @@ class AdaptiveModulationAndCoding:
         total_transmitted_bits = 0
         total_allocated_rbs = 0
 
+        ue_throughputs = {}
+        ue_cqi = {}
+        ue_sinr = {}
+        ue_rb_allocated = {}
         cqi_values = []
         sinr_values = []
 
@@ -1296,9 +1359,11 @@ class AdaptiveModulationAndCoding:
                 continue
 
             throughput_bps = ue.current_dl_throughput
-            total_throughput_bps += throughput_bps
+            ue_throughputs[ue_id] = throughput_bps
+            total_throughput_bps += throughput_bps 
 
             allocated_rbs = len(allocation.get(ue_id, []))
+            ue_rb_allocated[ue_id] = allocated_rbs
             if allocated_rbs > 0:
                 cqi = user.get('cqi', 0)
                 bits_per_rb = self.GET_BITS_PER_RB(cqi)
@@ -1313,9 +1378,11 @@ class AdaptiveModulationAndCoding:
             cqi = user.get('cqi')
             if cqi is not None and 1 <= cqi <= 15:
                 cqi_values.append(cqi)
+                ue_cqi[ue_id] = cqi
 
             if hasattr(ue, 'SINR'):
                 sinr_values.append(ue.SINR)
+                ue_sinr[ue_id] = ue.SINR
         
         # Avg bits per RB (на основе actual)
         if total_allocated_rbs > 0:
@@ -1325,11 +1392,11 @@ class AdaptiveModulationAndCoding:
             
         if cqi_values:
             cqi_avg = sum(cqi_values) / len(cqi_values) 
-        else: 0
+        else: cqi_avg = 0
             
         if sinr_values:
             sinr_avg = sum(sinr_values) / len(sinr_values) 
-        else: 0
+        else: sinr_avg = 0
         
         stats = {
             "dl_capacity_bits_sum_tti": total_capacity_bits,
@@ -1338,7 +1405,10 @@ class AdaptiveModulationAndCoding:
             "dl_bits_per_rb_avg": round(avg_bits_per_rb, 2),
             "dl_cqi_wb_avg_idx": round(cqi_avg, 2),
             "dl_sinr_avg": round(sinr_avg, 2),
-        }
+            "dl_ue_throughputs": ue_throughputs,
+            "ue_cqi": ue_cqi,
+            "ue_sinr": ue_sinr,
+            "ue_rb_allocated": ue_rb_allocated,}
         
         return stats
 

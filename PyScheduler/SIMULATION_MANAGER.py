@@ -41,7 +41,8 @@ class MetricLevel(Enum):
     """
     NONE = 0
     BASIC = 1
-    DETAILED = 2
+    ADVANCED = 2
+    FULL = 3
 
 @dataclass
 class LevelsConfig:
@@ -116,19 +117,19 @@ class StatsManager:
         pdcch_stats = self.scheduler.pdcch_manager.get_stats() if self.config.levels.pdcch != MetricLevel.NONE else {}
         
         snapshot = {
-            # Временная метка и базовые счетчики (ПЕРВЫЕ!)
             "tti": tti,
+            # BASIC метрики
+            # Временная метка и базовые счетчики
             "sch_eligible_ue_count": sched_stats.get("sch_eligible_ue_count", 0),
             "sch_active_ue_count": sched_stats.get("sch_active_ue_count", 0),
             
             # Scheduler метрики (группа RB)
             "dl_rb_allocated_count": sched_stats.get("dl_rb_allocated_count", 0),
             "dl_rb_per_ue_avg": sched_stats.get("dl_rb_per_ue_avg", 0.0),
-            "dl_prb_utilization_pct": sched_stats.get("dl_prb_utilization_pct", 0.0),
             
             # AMC метрики (группа throughput/bits)
             "dl_bits_per_rb_avg": amc_stats.get("dl_bits_per_rb_avg", 0.0),
-            "dl_capacity_bits_sum_tti": amc_stats.get("dl_capacity_bits_sum_tti", 0),      # ✅ НОВОЕ!
+            "dl_capacity_bits_sum_tti": amc_stats.get("dl_capacity_bits_sum_tti", 0),
             "dl_transmitted_bits_sum_tti": amc_stats.get("dl_transmitted_bits_sum_tti", 0),
             "dl_throughput_sum_kbps": amc_stats.get("dl_throughput_sum_kbps", 0.0),
             "dl_cqi_wb_avg_idx": amc_stats.get("dl_cqi_wb_avg_idx", 0.0),
@@ -137,15 +138,315 @@ class StatsManager:
             # Buffer метрики
             "buffer_size_sum_bytes": sched_stats.get("buffer_size_sum_bytes", 0),
             
+            # Time метрики
+            "sch_total_time_us": sched_stats.get("sch_total_time_us", 0.0),
+            #"sch_priority_calc_time_us": sched_stats.get("sch_priority_calc_time_us", 0.0),
+            #"sch_priority_sort_time_us": sched_stats.get("sch_priority_sort_time_us", 0.0),
+            
             # PDCCH метрики (группа CCE)
             "pdcch_cce_total_count": pdcch_stats.get("pdcch_cce_total_count", 0),
             "pdcch_cce_allocated_count": pdcch_stats.get("pdcch_cce_allocated_count", 0),
-            "pdcch_cce_utilization_pct": pdcch_stats.get("pdcch_cce_utilization_pct", 0.0),
         }
         
+        if self.config.levels.pdcch == MetricLevel.ADVANCED:
+            snapshot.update({
+            "pdcch_cce_utilization_pct": pdcch_stats.get("pdcch_cce_utilization_pct", 0.0)})
+            
+        if self.config.levels.scheduler == MetricLevel.ADVANCED:
+            snapshot.update({
+                # Timing детализация
+                "sch_priority_calc_time_us": sched_stats.get("sch_priority_calc_time_us", 0.0),
+                "sch_priority_sort_time_us": sched_stats.get("sch_priority_sort_time_us", 0.0),
+                "dl_prb_utilization_pct": sched_stats.get("dl_prb_utilization_pct", 0.0),
+                "sch_priority_list_size": sched_stats.get("sch_priority_list_size", 0),
+                "sch_pdcch_blocked_count": sched_stats.get("sch_pdcch_blocked_count", 0),
+                "sch_avg_priority_value": sched_stats.get("sch_avg_priority_value", 0.0),
+                "sch_eligible_to_active_ratio": self._calculate_ratio(
+                    sched_stats.get("sch_active_ue_count", 0),
+                    sched_stats.get("sch_eligible_ue_count", 0)
+                ),          
+            })
+
+        if self.config.levels.amc == MetricLevel.ADVANCED:
+            snapshot.update({
+                "dl_capacity_bits_sum_tti": amc_stats.get("dl_capacity_bits_sum_tti", 0),}) 
+            ue_cqi = amc_stats.get('ue_cqi', {})
+            ue_sinr = amc_stats.get('ue_sinr', {})
+            
+            # CQI min/max/std
+            if ue_cqi:
+                cqi_values = list(ue_cqi.values())
+                snapshot.update({
+                    "dl_cqi_wb_min_idx": min(cqi_values),
+                    "dl_cqi_wb_max_idx": max(cqi_values),
+                    "dl_cqi_wb_std": self._calculate_std(cqi_values),
+                })
+            else:
+                snapshot.update({
+                    "dl_cqi_wb_min_idx": 0,
+                    "dl_cqi_wb_max_idx": 0,
+                    "dl_cqi_wb_std": 0.0,
+                })
+            
+            # SINR min/max/std
+            if ue_sinr:
+                sinr_values = list(ue_sinr.values())
+                snapshot.update({
+                    "dl_sinr_min": round(min(sinr_values), 2),
+                    "dl_sinr_max": round(max(sinr_values), 2),
+                    "dl_sinr_std": self._calculate_std(sinr_values),
+                })
+            else:
+                snapshot.update({
+                    "dl_sinr_min": 0.0,
+                    "dl_sinr_max": 0.0,
+                    "dl_sinr_std": 0.0,
+                })
+
+            rb_efficiency = self._calculate_rb_efficiency(
+                capacity_bits=amc_stats.get('dl_capacity_bits_sum_tti', 0),
+                transmitted_bits=amc_stats.get('dl_transmitted_bits_sum_tti', 0),
+                allocated_rbs=sched_stats.get('dl_rb_allocated_count', 0),
+                total_rbs=self.scheduler.lte_grid.rb_per_slot
+            )
+            snapshot.update(rb_efficiency)
+            
+            # Spectral Efficiency
+            ue_throughputs = amc_stats.get('dl_ue_throughputs', {})
+            se_metrics = self._calculate_spectral_efficiency(
+                throughput_sum_bps=amc_stats.get('dl_throughput_sum_kbps', 0.0)*1000,
+                ue_throughputs=ue_throughputs
+            )
+            snapshot.update(se_metrics)
+            
+            # Coefficient of Variation
+            cv_metrics = self._calculate_cv_metrics(
+                ue_throughputs=ue_throughputs,
+                ue_cqi=amc_stats.get('ue_cqi', {}),
+                ue_sinr=amc_stats.get('ue_sinr', {}),
+                ue_rb_allocated=amc_stats.get('ue_rb_allocated', {})
+            )
+            snapshot.update(cv_metrics)
+            
+            # Fairness
+            fairness_metrics = self._calculate_fairness(ue_throughputs)
+            snapshot.update(fairness_metrics)
+
         self.history.append(snapshot)
 
-    def export_csv(self, filename: str = None) -> None:
+    def _calculate_ratio(self, active: int, eligible: int) -> float:
+        """Рассчитать соотношение active/eligible (%)."""
+        if eligible > 0:
+            return round((active / eligible) * 100, 2)
+        return 0.0  # Если eligible = 0, ratio = 0%
+
+
+    def _calculate_rb_efficiency(self, capacity_bits: int, transmitted_bits: int, 
+                                 allocated_rbs: int, total_rbs: int) -> dict:
+        """
+        Рассчитать метрики эффективности использования RB.
+        
+        Args:
+            capacity_bits: Максимальная емкость выделенных RB (из CQI)
+            transmitted_bits: Фактически переданные биты
+            allocated_rbs: Число выделенных RB
+            total_rbs: Всего RB в системе
+        Returns:
+            Dict с метриками:
+                - dl_rb_utilization_pct: Эффективность использования capacity (%)
+                - dl_rb_wasted_count: Недоиспользованные RB
+                - dl_rb_idle_count: Невыделенные RB
+        """
+        # RB utilization (фактически переданные биты / capacity)
+        if capacity_bits > 0:
+            rb_utilization_pct = (transmitted_bits / capacity_bits) * 100
+        else:
+            rb_utilization_pct = 0.0
+        
+        # Wasted RB (выделены но недоиспользованы из-за пустого буфера)
+        if capacity_bits > 0:
+            wasted_capacity_ratio = 1 - (transmitted_bits / capacity_bits)
+            wasted_rbs = int(allocated_rbs * wasted_capacity_ratio)
+        else:
+            wasted_rbs = 0
+        
+        # Idle RB (не выделены вообще)
+        idle_rbs = total_rbs - allocated_rbs
+        
+        return {
+            'dl_rb_utilization_pct': round(rb_utilization_pct, 2),
+            'dl_rb_wasted_count': wasted_rbs,
+            'dl_rb_idle_count': idle_rbs}
+
+    def _calculate_spectral_efficiency(self, throughput_sum_bps: float, 
+                                       ue_throughputs: dict) -> dict:
+        """
+        Рассчитать спектральную эффективность (SE).
+        
+        SE = Throughput (bps) / Bandwidth (Hz)
+        
+        Args:
+            throughput_sum_bps: Суммарный throughput системы (bps)
+            ue_throughputs: Dict[ue_id -> throughput_bps]
+        Returns:
+            Dict с метриками SE (bps/Hz):
+                - dl_spectral_efficiency_bps_hz: Общая SE системы
+                - dl_spectral_efficiency_avg_ue: Средняя SE на UE
+                - dl_spectral_efficiency_peak: Пиковая SE (лучший UE)
+        """
+        bandwidth_mhz = self.scheduler.lte_grid.bandwidth
+        bandwidth_hz = bandwidth_mhz * 1_000_000  # МГц → Гц
+        
+        if bandwidth_hz == 0:
+            return {
+                'dl_spectral_efficiency_bps_hz': 0.0,
+                'dl_spectral_efficiency_avg_ue': 0.0,
+                'dl_spectral_efficiency_peak': 0.0}
+        
+        # Общая SE системы
+        se_total = throughput_sum_bps / bandwidth_hz
+        
+        # SE per-UE
+        if ue_throughputs:
+            active_throughputs = [tp for tp in ue_throughputs.values() if tp > 0]
+            
+            if active_throughputs:
+                se_per_ue = [tp / bandwidth_hz for tp in active_throughputs]
+                se_avg_ue = sum(se_per_ue) / len(se_per_ue)
+                se_peak = max(se_per_ue)
+            else:
+                se_avg_ue = 0.0
+                se_peak = 0.0
+        else:
+            se_avg_ue = 0.0
+            se_peak = 0.0
+        
+        return {
+            'dl_spectral_efficiency_bps_hz': round(se_total, 4),
+            'dl_spectral_efficiency_avg_ue': round(se_avg_ue, 4),
+            'dl_spectral_efficiency_peak': round(se_peak, 4)}
+
+    def _calculate_cv(self, values: list) -> float:
+        """
+        Рассчитать коэффициент вариации (CV). Любой
+        
+        Args:
+            values: Список значений
+        Returns:
+            CV в процентах (0-100+)
+        """
+        if not values or len(values) < 2:
+            return 0.0
+        
+        mean = sum(values) / len(values)
+        if mean == 0:
+            return 0.0
+        
+        variance = sum((x - mean)**2 for x in values) / len(values)
+        std = variance ** 0.5
+        cv = (std / mean) * 100
+        
+        return round(cv, 2)
+
+    def _calculate_cv_metrics(self, ue_throughputs: dict, ue_cqi: dict, 
+                             ue_sinr: dict, ue_rb_allocated: dict) -> dict:
+        """
+        Рассчитать CV метрики для различных параметров.
+        
+        Args:
+            ue_throughputs: Dict[ue_id -> throughput_bps]
+            ue_cqi: Dict[ue_id -> cqi]
+            ue_sinr: Dict[ue_id -> sinr]
+            ue_rb_allocated: Dict[ue_id -> rb_count]
+        Returns:
+            Dict с CV метриками (%)
+        """
+        cv_throughput = self._calculate_cv([tp for tp in ue_throughputs.values() if tp > 0]) if ue_throughputs else 0.0
+        cv_cqi = self._calculate_cv([cqi for cqi in ue_cqi.values() if cqi > 0]) if ue_cqi else 0.0
+        cv_sinr = self._calculate_cv([sinr for sinr in ue_sinr.values() if sinr > 0]) if ue_sinr else 0.0
+        cv_rb = self._calculate_cv([rb for rb in ue_rb_allocated.values() if rb > 0]) if ue_rb_allocated else 0.0
+        cv_se = 0.0
+
+        # CV для SE (рассчитать SE per-UE, затем CV)
+        if ue_throughputs:
+            bandwidth_hz = self.scheduler.lte_grid.bandwidth * 1_000_000
+            if bandwidth_hz > 0:
+                se_per_ue = [tp / bandwidth_hz for tp in ue_throughputs.values() if tp > 0]
+                if se_per_ue:
+                    cv_se = self._calculate_cv(se_per_ue)
+                else:
+                    cv_se = 0.0
+            else:
+                cv_se = 0.0
+        
+        return {
+            'dl_throughput_cv_pct': cv_throughput,
+            'dl_cqi_cv_pct': cv_cqi,
+            'dl_sinr_cv_pct': cv_sinr,
+            'dl_rb_allocation_cv_pct': cv_rb,
+            'dl_spectral_efficiency_cv_pct': cv_se}
+
+    def _calculate_fairness(self, ue_throughputs: dict) -> dict:
+        """
+        Рассчитать Fairness метрики.
+        Jain's Fairness Index = (Σx_i)² / (n × Σx_i²)
+        Значение от 0 до 1, где 1 = идеальная справедливость.
+        
+        Args:
+            ue_throughputs: Dict[ue_id -> throughput_bps]
+        Returns:
+            Dict с метриками:
+                - dl_fairness_jain_index: Jain's Fairness Index [0-1]
+                - dl_throughput_variance: Дисперсия throughput
+                - dl_throughput_std: Стандартное отклонение
+        """
+        if not ue_throughputs or len(ue_throughputs) < 2:
+            return {
+                'dl_fairness_jain_index': 1.0,
+                'dl_throughput_variance': 0.0,
+                'dl_throughput_std': 0.0}
+        
+        throughputs = list(ue_throughputs.values())
+        n = len(throughputs)
+        
+        # Jain's Fairness Index
+        sum_throughput = sum(throughputs)
+        sum_squared = sum(x**2 for x in throughputs)
+        
+        if sum_squared > 0:
+            jain_index = (sum_throughput**2) / (n * sum_squared)
+        else:
+            jain_index = 1.0
+        
+        # Variance and Std
+        mean = sum_throughput / n
+        variance = sum((x - mean)**2 for x in throughputs) / n
+        std = variance ** 0.5
+        
+        return {
+            'dl_fairness_jain_index': round(jain_index, 4),
+            'dl_throughput_variance': round(variance, 2),
+            'dl_throughput_std': round(std, 2)}
+    
+    def _calculate_std(self, values: list) -> float:
+        """
+        Рассчитать стандартное отклонение.
+        
+        Args:
+            values: Список значений
+        Returns:
+            Стандартное отклонение (float)
+        """
+        if not values or len(values) < 2:
+            return 0.0
+        
+        mean = sum(values) / len(values)
+        variance = sum((x - mean) ** 2 for x in values) / len(values)
+        std = variance ** 0.5
+        
+        return round(std, 2)
+
+    def export_csv(self, filename: str = None, locale: str = "ru") -> None:
         """
         Экспорт истории snapshots в CSV файл.
 
@@ -166,20 +467,35 @@ class StatsManager:
         
         first_snapshot = self.history[0]
         headers = list(first_snapshot.keys())
-        
+        delimiter = ';' if locale == "ru" else ','
         rows = []
         for snapshot in self.history:
             row = {}
             for key, value in snapshot.items():
                 if isinstance(value, dict):
-                    row[key] = json.dumps(value, ensure_ascii=False)
+                    json_str = json.dumps(value, ensure_ascii=False)
+                    if locale == "ru":
+                        json_str = json_str.replace('.', ',')
+                    row[key] = json_str
+                elif isinstance(value, float):
+                    if locale == "ru":
+                        row[key] = str(value).replace('.', ',')
+                    else:
+                        row[key] = value
                 else:
                     row[key] = value
             rows.append(row)
-        
+    
+        if locale == "ru":
+            delimiter = ';'      
+            decimal_sep = ','    
+        else:
+            delimiter = ','      
+            decimal_sep = '.'  
+    
         # Запись в CSV
         with open(filename, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=headers)
+            writer = csv.DictWriter(f, fieldnames=headers, delimiter=delimiter)
             writer.writeheader()
             writer.writerows(rows)
         
@@ -282,7 +598,7 @@ class StatsManagerConfig:
     Attributes:
         enabled (bool): Включить StatsManager (False = отключить сбор)
         collect_interval (int): Интервал сбора в TTI
-        scheduler_level (str): Уровень для scheduler ('none'/'basic'/'detailed')
+        scheduler_level (str): Уровень для scheduler ('none'/'basic'/'advanced'/'full')
         amc_level (str): Уровень для AMC
         pdcch_level (str): Уровень для PDCCH
         export_format (str): Формат экспорта ('csv' или 'json')
@@ -540,7 +856,8 @@ class SimulationManager:
                 level_map = {
                     "none": MetricLevel.NONE,
                     "basic": MetricLevel.BASIC,
-                    "detailed": MetricLevel.DETAILED
+                    "advanced": MetricLevel.ADVANCED,
+                    "full": MetricLevel.FULL
                 }
 
                 # Создание конфига для StatsManager
@@ -600,7 +917,7 @@ class SimulationManager:
             if self.stats_manager:
                 # Экспорт в CSV
                 output_filename = f"{self.stats_config.file_prefix}.csv"
-                self.stats_manager.export_csv(output_filename)
+                self.stats_manager.export_csv(output_filename, locale="ru")
 
                 # Вывод summary (если verbose включен)
                 if self.sim_config.verbose:

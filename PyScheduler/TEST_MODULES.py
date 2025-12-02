@@ -376,8 +376,8 @@ def sim_with_manager():
     sim.set_stats_manager(
         enabled=True,                # Включить сбор
         collect_interval=1,         # Собирать каждые 10 TTI
-        scheduler_level="basic",     # Scheduler: только агрегированные метрики
-        amc_level="basic",           # AMC: total throughput + avg bits/RB
+        scheduler_level="advanced",     # Scheduler: только агрегированные метрики
+        amc_level="advanced",           # AMC: total throughput + avg bits/RB
         pdcch_level="basic",          # PDCCH: отключен (можно включить "basic")
         file_prefix="emp_stats"      # Префикс файла: lte_stats.csv
     )
