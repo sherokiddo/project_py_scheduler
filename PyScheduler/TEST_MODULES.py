@@ -196,13 +196,13 @@ def chmdl_test():
     # =============================================================================
 
     # Создание и настройка базовой станции
-    bs = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMi")
+    bs = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMa")
 
     # Создание коллекции пользовательских устройств
     ue_collection = UECollection()
 
     # Установка сида
-    GLOBALS.SEED = 42
+    GLOBALS.SEED = 24
 
     # Генерация заданного числа UE в коллекцию
     ue_collection.ADD_RANDOM_USERS(num_ue=1)
@@ -239,7 +239,7 @@ def chmdl_test():
     sim.set_scheduler(algorithm="RoundRobin")
 
     # Установка длительности симуляции
-    sim.set_sim_duration(3000)
+    sim.set_sim_duration(300000)
 
     # Запуск симуляции
     sim.start_simulation()
