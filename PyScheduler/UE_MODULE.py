@@ -68,11 +68,14 @@
 #      - Добавлено динамическое установление атрибутов в UPD_POSITION.
 #------------------------------------------------------------------------------
 """
-import numpy as np
-import GLOBALS
+
 from collections import deque
-from typing import Dict, List, Optional, Union, Tuple
-from TRAFFIC_MODEL import PoissonModel, OnOffModel, MMPPModel
+from typing import Dict, List, Optional, Tuple
+
+import GLOBALS
+import numpy as np
+from TRAFFIC_MODEL import MMPPModel, OnOffModel, PoissonModel
+
 
 class Packet:
     """Класс для представления сетевого пакета"""
@@ -412,7 +415,7 @@ class UserEquipment:
 
         mobility = MobilityInterface.create(model=model, ue=self, **kwargs)
         self.mobility_model = mobility
-    
+
     # def SET_CH_MODEL(self, model) -> None:
     #     """
     #     Установить модель радиоканала для пользователя.
@@ -422,12 +425,12 @@ class UserEquipment:
 
     #     """
     #     from CHANNEL_MODEL import ChannelModel
-        
+
     #     if not isinstance(model, ChannelModel):
     #         raise TypeError(f"Некорректный тип модели канала: {type(model).__name__}")
-        
+
     #     self.channel_model = model
-    
+
     def SET_TRAFFIC_MODEL(self, model) -> None:
         """
         Установить модель генерации трафика для пользователя.
@@ -476,23 +479,24 @@ class UserEquipment:
 
         """
         from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
-        
+
         if not self.serving_bs:
             raise ValueError("Ошибка! UE не подключен к базовой станции! {}".format(self.UE_ID))
-        
+
         if not self.serving_bs.channel_model:
             raise ValueError("Ошибка! У базовой станции не инициализирована модель канала!")
-        
-        displacement = np.hypot(self.position[0] - self.coordinates[-2][0],
-                                self.position[1] - self.coordinates[-2][1])
-        
+
+        displacement = np.hypot(
+            self.position[0] - self.coordinates[-2][0], self.position[1] - self.coordinates[-2][1]
+        )
+
         if isinstance(self.serving_bs.channel_model, RMaModel):
             if self.UE_height == 0.0:
                 if self.is_indoor == True:
                     self.UE_height = np.random.uniform(1, 10)
                 else:
                     self.UE_height = 1.0
-        
+
         if isinstance(self.serving_bs.channel_model, (UMaModel, UMiModel)):
             if self.UE_height == 0.0:
                 if self.is_indoor == True:
@@ -501,27 +505,32 @@ class UserEquipment:
                     self.UE_height = 3 * (n_fl - 1) + 1.5
                 else:
                     self.UE_height = 1.5
-        
+
         SINR_on_RB = self.serving_bs.channel_model.calculate_SINR(
-            self.UE_ID, displacement, self.dist_to_BS_2D, self.dist_to_BS_2D_in, 
-            self.dist_to_BS_3D, self.UE_height, self.ue_class
+            self.UE_ID,
+            displacement,
+            self.dist_to_BS_2D,
+            self.dist_to_BS_2D_in,
+            self.dist_to_BS_3D,
+            self.UE_height,
+            self.ue_class,
         )
-        
+
         # Wideband SINR и CQI
         self.SINR = np.mean(SINR_on_RB)
         self.cqi = self.SINR_TO_CQI(self.SINR)
-        
+
         subband_size = GLOBALS.SUBBAND_SIZE[self.serving_bs.bandwidth]
-        
+
         # Subband CQI
         self.cqi_subband = []
         for i in range(0, len(SINR_on_RB), subband_size):
-            sinr_subband = np.mean(SINR_on_RB[i:i+subband_size])
+            sinr_subband = np.mean(SINR_on_RB[i : i + subband_size])
             self.cqi_subband.append(self.SINR_TO_CQI(sinr_subband))
-        
+
         self.SINR_values.append(self.SINR)
         self.CQI_values.append(self.cqi)
-        
+
     def GEN_TRFFC(self, current_time: int, update_interval: int) -> None:
         """
         Сгенерировать пакеты трафика согласно модели и добавить их в буфер.
@@ -654,7 +663,7 @@ class UserEquipment:
             # Линейная интерполяция
             step = (22.976 + 6.934) / 14
             return int(1 + (SINR + 6.934) / step)
-        
+
     def _calculate_distances_to_BS(self) -> None:
         """
         Вычисляет расстояние от пользователя до базовой станции с учетом
@@ -666,7 +675,7 @@ class UserEquipment:
 
         ue_x, ue_y = self.position
         bs_x, bs_y = self.serving_bs.position
-        
+
         if (x_min <= bs_x <= x_max) and (y_min <= bs_y <= y_max):
             distance = np.hypot(bs_x - ue_x, bs_y - ue_y)
             self.dist_to_BS_2D = distance
@@ -709,10 +718,7 @@ class UserEquipment:
         self.dist_to_BS_2D = d_total
         self.dist_to_BS_2D_in = d_in
         self.dist_to_BS_2D_out = d_out
-        self.dist_to_BS_3D = np.hypot(
-            self.dist_to_BS_2D, 
-            self.serving_bs.height - self.UE_height
-        )
+        self.dist_to_BS_3D = np.hypot(self.dist_to_BS_2D, self.serving_bs.height - self.UE_height)
 
     def _set_scenario_parameters(self):
         """
@@ -809,7 +815,7 @@ class UECollection:
 
         """
         return list(self.users.values())
-    
+
     def UPDATE_ALL_USERS(self, current_time: int, update_interval: int):
         """
         Обновить состояние всех пользователей в коллекции.
@@ -822,18 +828,16 @@ class UECollection:
         for ue in self.users.values():
             # Обновление позиции
             ue.UPD_POSITION(update_interval)
-            
+
             # Обновление качества канала
             ue.UPD_CH_QUALITY()
-            
+
             # Генерация DL трафика, если задана модель
-            if ue.traffic_model is not None: 
+            if ue.traffic_model is not None:
                 ue.serving_bs.GEN_TRFFC(
-                    current_time=current_time, 
-                    update_interval=update_interval,
-                    ue_id=ue.UE_ID
+                    current_time=current_time, update_interval=update_interval, ue_id=ue.UE_ID
                 )
-    
+
     def GET_ACTIVE_USERS(self) -> List[UserEquipment]:
         """
         Получить список активных пользователей (с данными в буфере).
@@ -919,15 +923,34 @@ class UECollection:
         задан как None, то модель применится ко всем UE в коллекции.
 
         Args:
-            model (MobilityModel): Модель передвижения.
             ue_ids (List[int], optional): Список ID пользователей, к которым
             необходимо применить модель. По умолчанию None.
+            model (str): Название модели движения. Доступные модели:
+                RandomWalk
+                    - pause_time (float, optional): Время паузы между блужданиями.
+                    - velocity_min (float): Минимальная скорость.
+                    - velocity_max (float): Максимальная скорость.
+                RandomWaypoint
+                    - pause_time (float, optional): Время паузы между движениями.
+                    - velocity_min (float): Минимальная скорость.
+                    - velocity_max (float): Максимальная скорость.
+                RandomDirection
+                    - pause_time (float, optional): Время паузы между движениями.
+                GaussMarkov
+                    - alpha (float, optional): Параметр памяти модели.
+                    - boundary_threshold (float, optional): Порог приближения к границе.
+                DiagonalWalk
+                    - pause_time (int): Время паузы.
+                    - bs (BaseStation): Экземпляр базовой станции.
+
+        Пример:
+            SET_MOBILITY_MODEL('RandomWalk', pause_time=2.0, velocity_min=1.0)
 
         """
         for ue in self.users.values():
             if ue_ids is None or ue.UE_ID in ue_ids:
                 ue.SET_MOBILITY_MODEL(model, **kwargs)
-               
+
     def SET_TRAFFIC_MODEL(self, model, ue_ids: List[int] = None):
         """
         Установить модель генерации трафика для пользователей в коллекции. Если

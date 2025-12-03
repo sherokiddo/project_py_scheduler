@@ -18,6 +18,10 @@ import GLOBALS
 import numpy as np
 from BS_MODULE import BaseStation
 
+# class ChannelInterface:
+#     def __init__(self, bs: BaseStation):
+#         self.bs = bs
+
 
 class ChannelModel:
     """
@@ -27,11 +31,16 @@ class ChannelModel:
     SHADOW_FADING_INFO = {}
     CHANNEL_COND_INFO = {}
     O2I_INFO = {}
-    
-    def __init__(self, bs: BaseStation, cond_update_period: float = 0.0, 
-                 freq_fad_nlos_model: str = "TDL-A", 
-                 freq_fad_los_model: str = "TDL-D", ds_profile: str = "normal",
-                 los_arrival_angle: float = np.pi / 4):
+
+    def __init__(
+        self,
+        bs: BaseStation,
+        cond_update_period: float = 0.0,
+        freq_fad_nlos_model: str = "TDL-A",
+        freq_fad_los_model: str = "TDL-D",
+        ds_profile: str = "normal",
+        los_arrival_angle: float = np.pi / 4,
+    ):
         """
         Инициализация базового класса моделей радиоканала.
 
@@ -39,25 +48,26 @@ class ChannelModel:
             bs (BaseStation): Объект базовой станции.
             cond_update_period (float, optional): Период обновления состояния
                 радиоканала (мс) По умолчанию 0.0.
-            freq_fad_nlos_model (str, optional): Модель для получения 
+            freq_fad_nlos_model (str, optional): Модель для получения
             частотно-селективных замираний при NLOS. По умолчанию "TDL-A".
-            freq_fad_los_model (str, optional): Модель для получения 
+            freq_fad_los_model (str, optional): Модель для получения
             частотно-селективных замираний при LOS. По умолчанию "TDL-D"
-            ds_profile (str, optional): Профиль разброса задержек. 
+            ds_profile (str, optional): Профиль разброса задержек.
                 По умолчанию "normal".
-            los_arrival_angle (float, optional): Угол прихода LOS-компоненты. 
+            los_arrival_angle (float, optional): Угол прихода LOS-компоненты.
                 По умолчанию np.pi / 4.
-            
-                
+
+
         """
         self.bs = bs
         self.cond_update_period = cond_update_period
-        self.freq_fading = TDLModel(bs, freq_fad_nlos_model,
-                                    freq_fad_los_model, ds_profile,
-                                    los_arrival_angle)
-        
-    def _get_sigma_sf(self, channel_condition: str, d_2D: float = None, 
-                      UE_height: float = None) -> float:
+        self.freq_fading = TDLModel(
+            bs, freq_fad_nlos_model, freq_fad_los_model, ds_profile, los_arrival_angle
+        )
+
+    def _get_sigma_sf(
+        self, channel_condition: str, d_2D: float = None, UE_height: float = None
+    ) -> float:
         """
         Возвращает стандартное отклонение теневого затенения (SF) для
         заданного состояния канала (LOS/NLOS).
@@ -365,15 +375,14 @@ class ChannelModel:
         P_noise = -174 + 10 * np.log10(self.bs.bandwidth * 1e6)
 
         SINR = P_signal - 10 * np.log10(10 ** (P_interference / 10) + 10 ** (P_noise / 10))
-        
+
         channel_cond = self.CHANNEL_COND_INFO[UE_ID].get("cond")
         channel_model = self.__class__.__name__
-        gain_on_RB = self.freq_fading.calculate_channel_gain(UE_ID, 
-                                                             channel_cond, 
-                                                             channel_model, 
-                                                             ue_class)
+        gain_on_RB = self.freq_fading.calculate_channel_gain(
+            UE_ID, channel_cond, channel_model, ue_class
+        )
         SINR_on_RB = SINR + gain_on_RB
-        
+
         return SINR_on_RB
 
 
@@ -382,10 +391,18 @@ class RMaModel(ChannelModel):
     Модель радиоканала для сельской местности (Rural Macro - RMa).
     Реализует расчеты для сценариев макросотового покрытия в сельской местности.
     """
-    def __init__(self, bs: BaseStation, W: float = 20.0, h: float = 5.0, 
-                 cond_update_period: float = 0.0, freq_fad_nlos_model: str = "TDL-A",
-                 freq_fad_los_model: str = "TDL-D", ds_profile: str = "normal",
-                 los_arrival_angle: float = np.pi / 4):
+
+    def __init__(
+        self,
+        bs: BaseStation,
+        W: float = 20.0,
+        h: float = 5.0,
+        cond_update_period: float = 0.0,
+        freq_fad_nlos_model: str = "TDL-A",
+        freq_fad_los_model: str = "TDL-D",
+        ds_profile: str = "normal",
+        los_arrival_angle: float = np.pi / 4,
+    ):
         """
         Инициализация модели RMa.
 
@@ -395,19 +412,25 @@ class RMaModel(ChannelModel):
             h (float, optional): Средняя высота зданий в метрах. По умолчанию 5.0.
             cond_update_period (float, optional): Период обновления состояния
                 радиоканала (мс). По умолчанию 0.0.
-            freq_fad_nlos_model (str, optional): Модель для получения 
+            freq_fad_nlos_model (str, optional): Модель для получения
             частотно-селективных замираний при NLOS. По умолчанию "TDL-A".
-            freq_fad_los_model (str, optional): Модель для получения 
+            freq_fad_los_model (str, optional): Модель для получения
             частотно-селективных замираний при LOS. По умолчанию "TDL-D"
-            ds_profile (str, optional): Профиль разброса задержек. 
+            ds_profile (str, optional): Профиль разброса задержек.
                 По умолчанию "normal".
-            los_arrival_angle (float, optional): Угол прихода LOS-компоненты. 
+            los_arrival_angle (float, optional): Угол прихода LOS-компоненты.
                 По умолчанию np.pi / 4.
-                
+
         """
-        super().__init__(bs, cond_update_period, freq_fad_nlos_model, 
-                         freq_fad_los_model, ds_profile, los_arrival_angle)
-        
+        super().__init__(
+            bs,
+            cond_update_period,
+            freq_fad_nlos_model,
+            freq_fad_los_model,
+            ds_profile,
+            los_arrival_angle,
+        )
+
         self.W = W
         self.h = h
 
@@ -580,10 +603,17 @@ class UMaModel(ChannelModel):
     Модель радиоканала для городской макросотовой местности (Urban Macro - UMa).
     Реализует расчеты для сценариев макросотового покрытия в городских условиях.
     """
-    def __init__(self, bs: BaseStation, cond_update_period: float = 0.0, 
-                 o2i_model: str = "low", freq_fad_nlos_model: str = "TDL-A",
-                 freq_fad_los_model: str = "TDL-D", ds_profile: str = "normal",
-                 los_arrival_angle: float = np.pi / 4):
+
+    def __init__(
+        self,
+        bs: BaseStation,
+        cond_update_period: float = 0.0,
+        o2i_model: str = "low",
+        freq_fad_nlos_model: str = "TDL-A",
+        freq_fad_los_model: str = "TDL-D",
+        ds_profile: str = "normal",
+        los_arrival_angle: float = np.pi / 4,
+    ):
         """
         Инициализация модели UMa.
 
@@ -593,19 +623,25 @@ class UMaModel(ChannelModel):
                 радиоканала (мс). По умолчанию 0.0.
             o2i_model (str, optional): Модель проникновения в здание ('low' или 'high').
                 По умолчанию "low".
-            freq_fad_nlos_model (str, optional): Модель для получения 
+            freq_fad_nlos_model (str, optional): Модель для получения
             частотно-селективных замираний при NLOS. По умолчанию "TDL-A".
-            freq_fad_los_model (str, optional): Модель для получения 
+            freq_fad_los_model (str, optional): Модель для получения
             частотно-селективных замираний при LOS. По умолчанию "TDL-D"
-            ds_profile (str, optional): Профиль разброса задержек. 
+            ds_profile (str, optional): Профиль разброса задержек.
                 По умолчанию "normal".
-            los_arrival_angle (float, optional): Угол прихода LOS-компоненты. 
+            los_arrival_angle (float, optional): Угол прихода LOS-компоненты.
                 По умолчанию np.pi / 4.
-                
+
         """
-        super().__init__(bs, cond_update_period, freq_fad_nlos_model, 
-                         freq_fad_los_model, ds_profile, los_arrival_angle)
-        
+        super().__init__(
+            bs,
+            cond_update_period,
+            freq_fad_nlos_model,
+            freq_fad_los_model,
+            ds_profile,
+            los_arrival_angle,
+        )
+
         self.bs.tx_power = self.bs.MACROCELL_TX_POWER[self.bs.bandwidth]
         self.bs.height = 25.0
 
@@ -778,10 +814,17 @@ class UMiModel(ChannelModel):
     Модель радиоканала для городской микросотовой местности (Urban Micro - UMi).
     Реализует расчеты для сценариев микросотового покрытия в городских условиях.
     """
-    def __init__(self, bs: BaseStation, cond_update_period: float = 0.0, 
-                 o2i_model: str = "low", freq_fad_nlos_model: str = "TDL-A",
-                 freq_fad_los_model: str = "TDL-D", ds_profile: str = "normal",
-                 los_arrival_angle: float = np.pi / 4):
+
+    def __init__(
+        self,
+        bs: BaseStation,
+        cond_update_period: float = 0.0,
+        o2i_model: str = "low",
+        freq_fad_nlos_model: str = "TDL-A",
+        freq_fad_los_model: str = "TDL-D",
+        ds_profile: str = "normal",
+        los_arrival_angle: float = np.pi / 4,
+    ):
         """
         Инициализация модели UMi.
 
@@ -791,19 +834,25 @@ class UMiModel(ChannelModel):
                 радиоканала (мс). По умолчанию 0.0.
             o2i_model (str, optional): Модель проникновения в здание ('low' или 'high').
                 По умолчанию "low".
-            freq_fad_nlos_model (str, optional): Модель для получения 
+            freq_fad_nlos_model (str, optional): Модель для получения
             частотно-селективных замираний при NLOS. По умолчанию "TDL-A".
-            freq_fad_los_model (str, optional): Модель для получения 
+            freq_fad_los_model (str, optional): Модель для получения
             частотно-селективных замираний при LOS. По умолчанию "TDL-D"
-            ds_profile (str, optional): Профиль разброса задержек. 
+            ds_profile (str, optional): Профиль разброса задержек.
                 По умолчанию "normal".
-            los_arrival_angle (float, optional): Угол прихода LOS-компоненты. 
+            los_arrival_angle (float, optional): Угол прихода LOS-компоненты.
                 По умолчанию np.pi / 4.
-                
+
         """
-        super().__init__(bs, cond_update_period, freq_fad_nlos_model, 
-                         freq_fad_los_model, ds_profile, los_arrival_angle)
-        
+        super().__init__(
+            bs,
+            cond_update_period,
+            freq_fad_nlos_model,
+            freq_fad_los_model,
+            ds_profile,
+            los_arrival_angle,
+        )
+
         self.bs.tx_power = self.bs.MICROCELL_TX_POWER[self.bs.bandwidth]
         self.bs.height = 10.0
 
@@ -937,61 +986,65 @@ class UMiModel(ChannelModel):
             return PL
 
         else:
-            return 10000.0   
-        
-        
+            return 10000.0
+
+
 class TDLModel:
     """
-    Мелкомасштабная модель многолучевого канала на основе Tapped Delay Line 
-    по 3GPP TR 38.901. Выполняет моделирование частотно-селективных замираний 
+    Мелкомасштабная модель многолучевого канала на основе Tapped Delay Line
+    по 3GPP TR 38.901. Выполняет моделирование частотно-селективных замираний
     и расчёт значения услиления/ослабления сигнала на различных частотах.
     """
+
     NUM_SINUSOIDS = 32
-    
-    def __init__(self, bs: BaseStation, nlos_model: str = "TDL-A", 
-                 los_model: str = "TDL-D", delay_spread_profile: str = "normal", 
-                 los_arrival_angle: float = np.pi / 4):
+
+    def __init__(
+        self,
+        bs: BaseStation,
+        nlos_model: str = "TDL-A",
+        los_model: str = "TDL-D",
+        delay_spread_profile: str = "normal",
+        los_arrival_angle: float = np.pi / 4,
+    ):
         """
         Инициализация модели TDL.
 
         Args:
             bs (BaseStation): Объект базовой станции.
-            nlos_model (str, optional): TDL модель для NLOS (TDL-A/B/C). 
+            nlos_model (str, optional): TDL модель для NLOS (TDL-A/B/C).
                 По умолчанию "TDL-A".
             los_model (str, optional): TDL модель для LOS (TDL-D/E).
                 По умолчанию "TDL-D".
-            delay_spread_profile (str, optional): Профиль разброса задержек. 
+            delay_spread_profile (str, optional): Профиль разброса задержек.
                 По умолчанию "normal".
-            los_arrival_angle (float, optional): Угол прихода LOS-компоненты. 
+            los_arrival_angle (float, optional): Угол прихода LOS-компоненты.
                 По умолчанию np.pi / 4.
 
         """
-        self._validate_parameters(
-            nlos_model, los_model, delay_spread_profile, los_arrival_angle
-        )
-        
+        self._validate_parameters(nlos_model, los_model, delay_spread_profile, los_arrival_angle)
+
         self.params_table = GLOBALS.TDL_PARAMS_TABLE
         self.delay_spread_table = GLOBALS.TDL_DELAY_SPREAD_TABLE
-        
+
         self.bs = bs
-        
+
         self.delay_spread_profile = delay_spread_profile
         self.los_arrival_angle = los_arrival_angle
-        
+
         self.nlos_norm_delay = self._get_params_value(nlos_model, "normalized_delay")
-        self.los_norm_delay = self._get_params_value(los_model, "normalized_delay")   
+        self.los_norm_delay = self._get_params_value(los_model, "normalized_delay")
         self.nlos_power_dB = self._get_params_value(nlos_model, "power_dB")
         self.los_power_dB = self._get_params_value(los_model, "power_dB")
         self.K_factor = self._get_params_value(los_model, "K_factor")
-        
+
         self.lam = GLOBALS.SPEED_OF_LIGHT / self.bs.frequency_Hz
         self.rb_freqs = self._get_rb_frequencies()
-        
+
         self.ues_info = {}
-        
-    def _validate_parameters(self, nlos_model: str, los_model: str, 
-                             delay_spread_profile: str, 
-                             los_arrival_angle: float) -> None:
+
+    def _validate_parameters(
+        self, nlos_model: str, los_model: str, delay_spread_profile: str, los_arrival_angle: float
+    ) -> None:
         """
         Валидация входных параметров.
 
@@ -1002,7 +1055,7 @@ class TDLModel:
             los_arrival_angle (float): Угол прихода LOS-компоненты.
 
         Raises:
-            ValueError: Если передана недопустимая TDL модель, профиль разброса 
+            ValueError: Если передана недопустимая TDL модель, профиль разброса
             задержек или угол прихода LOS-компоненты вне диапазона.
             TypeError: Если угол прихода LOS-компоненты не является числом.
 
@@ -1013,32 +1066,30 @@ class TDLModel:
                 f"Недопустимая TDL модель для NLOS: '{nlos_model}'. "
                 f"Разрешённые значения: {valid_nlos_models}"
             )
-        
+
         valid_los_models = ["TDL-D", "TDL-E"]
         if los_model not in valid_los_models:
             raise ValueError(
                 f"Недопустимая TDL модель для LOS: '{los_model}'. "
                 f"Разрешённые значения: {valid_los_models}"
             )
-            
+
         valid_ds_profiles = ["short", "normal", "long"]
         if delay_spread_profile not in valid_ds_profiles:
             raise ValueError(
                 f"Недопустимый профиль задержек: '{delay_spread_profile}'. "
                 f"Разрешённые значения: {valid_ds_profiles}"
             )
-            
+
         if not isinstance(los_arrival_angle, (int, float)):
-            raise TypeError(
-                "Значение los_arrival_angle должно быть числом (радианы)"
-            )
-        
+            raise TypeError("Значение los_arrival_angle должно быть числом (радианы)")
+
         if not (0 <= los_arrival_angle < 2 * np.pi):
             raise ValueError(
-                f"Недопустимое los_arrival_angle: {los_arrival_angle}. " 
+                f"Недопустимое los_arrival_angle: {los_arrival_angle}. "
                 f"Значение должно быть в диапазоне [0, 2π)"
-            )  
-        
+            )
+
     def _get_params_value(self, model: str, key: str):
         """
         Получение значения параметра TDL-модели из таблицы параметров.
@@ -1052,10 +1103,10 @@ class TDLModel:
 
         """
         return self.params_table[model].get(key)
-    
+
     def _get_delay_spread(self, channel_model: str, ue_class: str) -> float:
         """
-        Получение значения разброса задержек на основе крупномасштабной модели 
+        Получение значения разброса задержек на основе крупномасштабной модели
         канала и класса пользователя.
 
         Args:
@@ -1067,18 +1118,21 @@ class TDLModel:
 
         """
         if ue_class in {"car", "indoor"} and channel_model != "RMaModel":
-            table_key = "UMi_UMa_O2I" 
+            table_key = "UMi_UMa_O2I"
         else:
             table_key = channel_model
-            
-        profile = ("normal" if self.delay_spread_profile == "short" and 
-                   table_key == "UMi_UMa_O2I" else self.delay_spread_profile)
-        
+
+        profile = (
+            "normal"
+            if self.delay_spread_profile == "short" and table_key == "UMi_UMa_O2I"
+            else self.delay_spread_profile
+        )
+
         return self.delay_spread_table[table_key].get(profile)
-    
+
     def _get_rb_frequencies(self) -> np.ndarray:
         """
-        Вычисление частотных смещений для ресурсных блоков (RB) относительно 
+        Вычисление частотных смещений для ресурсных блоков (RB) относительно
         несущей.
 
         Returns:
@@ -1087,13 +1141,14 @@ class TDLModel:
         """
         rb_idx = np.arange(-self.bs.rb_per_slot // 2, self.bs.rb_per_slot // 2)
         rb_freqs = rb_idx * GLOBALS.RB_BANDWIDTH
-        
+
         return rb_freqs
-    
-    def _jakes_sum_of_sinusoids(self, f_doppler: float, alpha: np.ndarray, 
-                                phi: np.ndarray) -> np.ndarray:
+
+    def _jakes_sum_of_sinusoids(
+        self, f_doppler: float, alpha: np.ndarray, phi: np.ndarray
+    ) -> np.ndarray:
         """
-        Генерация коэффициентов замирания канала методом суммы синусоид Джейкса. 
+        Генерация коэффициентов замирания канала методом суммы синусоид Джейкса.
 
         Args:
             f_doppler (float): Доплеровская частота (Гц).
@@ -1107,11 +1162,12 @@ class TDLModel:
         t = GLOBALS.CURRENT_TIME * 1e-3
         arg = 2 * np.pi * f_doppler * t * np.cos(alpha) + phi
         tap_coeff = np.exp(1j * arg).sum(axis=1) / np.sqrt(self.NUM_SINUSOIDS)
-        
+
         return tap_coeff
-    
-    def _calculate_freq_response(self, UE_ID: int, channel_cond: str, 
-                                 channel_model: str, ue_class: str) -> np.ndarray:
+
+    def _calculate_freq_response(
+        self, UE_ID: int, channel_cond: str, channel_model: str, ue_class: str
+    ) -> np.ndarray:
         """
         Расчёт частотной характеристики канала для заданного UE на всех RB.
 
@@ -1125,90 +1181,89 @@ class TDLModel:
             np.ndarray: Частотная характеристика канала.
 
         """
-        if (UE_ID not in self.ues_info or 
-            self.ues_info[UE_ID]["cond"] != channel_cond):
-        
+        if UE_ID not in self.ues_info or self.ues_info[UE_ID]["cond"] != channel_cond:
             if channel_cond == "NLOS":
                 powers_lin = 10 ** (self.nlos_power_dB / 10.0)
                 normalized_delay = self.nlos_norm_delay
-            
+
             elif channel_cond == "LOS":
                 powers_lin = 10 ** (self.los_power_dB / 10.0)
                 normalized_delay = self.los_norm_delay
-            
+
             powers_lin = powers_lin / np.sum(powers_lin)
-        
+
             delay_spread = self._get_delay_spread(channel_model, ue_class)
             delays_ns = normalized_delay * delay_spread
 
             sqrt_path_powers = np.sqrt(powers_lin)
-          
+
             if UE_ID not in self.ues_info:
-                max_L = max(len(self.nlos_norm_delay), 
-                            len(self.los_norm_delay))
-                
+                max_L = max(len(self.nlos_norm_delay), len(self.los_norm_delay))
+
                 n = np.arange(1, self.NUM_SINUSOIDS + 1)
                 alpha_base = 2 * np.pi * n / self.NUM_SINUSOIDS
-                theta = np.random.uniform(-np.pi / self.NUM_SINUSOIDS, 
-                                          np.pi / self.NUM_SINUSOIDS, 
-                                          (max_L, self.NUM_SINUSOIDS))
+                theta = np.random.uniform(
+                    -np.pi / self.NUM_SINUSOIDS,
+                    np.pi / self.NUM_SINUSOIDS,
+                    (max_L, self.NUM_SINUSOIDS),
+                )
                 alpha = alpha_base + theta
                 phi = np.random.uniform(-np.pi, np.pi, (max_L, self.NUM_SINUSOIDS))
-                
-                self.ues_info[UE_ID] = {"alpha": alpha,
-                                        "phi": phi}
-            
+
+                self.ues_info[UE_ID] = {"alpha": alpha, "phi": phi}
+
             delays_s = delays_ns * 1e-9
-            path_phase_matrix = np.exp(-1j * 2 * np.pi * (self.rb_freqs[None, :] * 
-                                                          delays_s[:, None]))
-            self.ues_info[UE_ID].update({
-                "cond": channel_cond,
-                "sqrt_path_powers": sqrt_path_powers,
-                "path_phase_matrix": path_phase_matrix
-            })
-            
+            path_phase_matrix = np.exp(
+                -1j * 2 * np.pi * (self.rb_freqs[None, :] * delays_s[:, None])
+            )
+            self.ues_info[UE_ID].update(
+                {
+                    "cond": channel_cond,
+                    "sqrt_path_powers": sqrt_path_powers,
+                    "path_phase_matrix": path_phase_matrix,
+                }
+            )
+
         sqrt_path_powers = self.ues_info[UE_ID]["sqrt_path_powers"]
         alpha = self.ues_info[UE_ID]["alpha"]
         phi = self.ues_info[UE_ID]["phi"]
         path_phase_matrix = self.ues_info[UE_ID]["path_phase_matrix"]
-            
+
         ue = self.bs.registered_ues.get(UE_ID)
-        f_doppler = (ue.velocity / self.lam)  
-        
+        f_doppler = ue.velocity / self.lam
+
         L = len(path_phase_matrix)
-        tap_coeff = self._jakes_sum_of_sinusoids(f_doppler, 
-                                                 alpha[:L, :], 
-                                                 phi[:L, :])
-        
+        tap_coeff = self._jakes_sum_of_sinusoids(f_doppler, alpha[:L, :], phi[:L, :])
+
         if channel_cond == "LOS":
-            K_factor_lin = 10**(self.K_factor / 10)
-            
+            K_factor_lin = 10 ** (self.K_factor / 10)
+
             los_weight = np.sqrt(K_factor_lin / (K_factor_lin + 1.0))
             nlos_weight = np.sqrt(1.0 / (K_factor_lin + 1.0))
-            
+
             if "phi_los" not in self.ues_info[UE_ID]:
                 phi_los = np.random.uniform(-np.pi, np.pi)
                 self.ues_info[UE_ID]["phi_los"] = phi_los
             else:
                 phi_los = self.ues_info[UE_ID]["phi_los"]
- 
+
             t = GLOBALS.CURRENT_TIME * 1e-3
-            los_phase = (2.0 * np.pi * f_doppler * t * 
-                         np.cos(self.los_arrival_angle) + phi_los)
-            
+            los_phase = 2.0 * np.pi * f_doppler * t * np.cos(self.los_arrival_angle) + phi_los
+
             los_comp = np.exp(1j * los_phase)
             tap_coeff[0] = los_weight * los_comp + nlos_weight * tap_coeff[0]
-  
+
         scaled_tap_coeff = sqrt_path_powers * tap_coeff
-        
+
         H_f = (scaled_tap_coeff[:, None] * path_phase_matrix).sum(axis=0)
-        
+
         return H_f
-    
-    def calculate_channel_gain(self, UE_ID: int, channel_cond: str, 
-                               channel_model: str, ue_class: str) -> np.ndarray:
+
+    def calculate_channel_gain(
+        self, UE_ID: int, channel_cond: str, channel_model: str, ue_class: str
+    ) -> np.ndarray:
         """
-        Расчет коэффициента усиления/ослабления канала в дБ для каждого 
+        Расчет коэффициента усиления/ослабления канала в дБ для каждого
         ресурсного блока.
 
         Args:
@@ -1218,12 +1273,10 @@ class TDLModel:
             ue_class (str): Класс UE.
 
         Returns:
-            np.ndarray: Коэффициент усиления канала в дБ для каждого ресурсного 
+            np.ndarray: Коэффициент усиления канала в дБ для каждого ресурсного
             блока.
 
         """
-        H_f = self._calculate_freq_response(UE_ID, channel_cond, 
-                                          channel_model, ue_class)
-        
-        return 10 * np.log10(np.abs(H_f)**2)
-    
+        H_f = self._calculate_freq_response(UE_ID, channel_cond, channel_model, ue_class)
+
+        return 10 * np.log10(np.abs(H_f) ** 2)
