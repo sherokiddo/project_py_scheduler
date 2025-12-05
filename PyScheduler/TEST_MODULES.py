@@ -8,7 +8,7 @@ from BS_MODULE import BaseStation, Packet
 from CHANNEL_MODEL import UMaModel
 from MOBILITY_MODEL import RandomWaypointModel, DiagonalWalkModel
 from RES_GRID import RES_GRID_LTE
-from SCHEDULER import ProportionalFairScheduler, HARQManager
+from SCHEDULER import ProportionalFairScheduler, HARQManager, AdaptiveModulationAndCoding
 from SIMULATION_MANAGER import SimulationManager
 from TRAFFIC_MODEL import PoissonModel
 from UE_MODULE import UECollection, UserEquipment
@@ -418,24 +418,6 @@ def plot_bler_vs_sinr():
     plt.show()
 
 # =============================================================================
-# ТЕСТИРОВАНИЕ MCS_TABLE, MCS_TO_ITBS, CQI_TO_MCS_MAP, TB_SIZE_TABLE ИЗ GLOBALS             
-# =============================================================================
-
-def test_tables():
-    print("Basic table mapping checks:")
-    for cqi in range(1, 16):
-        mcs = GLOBALS.CQI_TO_MCS_MAP[cqi]
-        qam, itbs = GLOBALS.MCS_TO_ITBS[mcs]
-        tbsize = GLOBALS.TB_SIZE_TABLE[itbs][10]      # для nPRB = 11
-        print(f"CQI {cqi}: MCS={mcs}, QAM={qam}, ITBS={itbs}, TBS(11PRB)={tbsize}")
-
-CQI_vals = list(range(1, 16))
-TBS = [GLOBALS.TB_SIZE_TABLE[GLOBALS.MCS_TO_ITBS[GLOBALS.CQI_TO_MCS_MAP[cqi]][1]][10] for cqi in CQI_vals]
-plt.plot(CQI_vals, TBS, label="TBS at 11 RB")
-plt.xlabel("CQI"), plt.ylabel("TB Size (bits)")
-plt.legend(), plt.show()
-
-# =============================================================================
 #                  ТЕСТИРОВАНИЕ RV/IR/RTT/Soft Combining             
 # =============================================================================
 
@@ -495,10 +477,24 @@ def test_channel_model_tables():
         tbs = ch.get_tbs(itbs, 10)
         print(f"CQI={cqi}, BLER@0dB={bler}, MCS={mcs}, ITBS={itbs}, QBAM={qam}, TBS@10RB={tbs}")
 
+# =============================================================================
+#                        ТЕСТИРОВАНИЕ CQI to MCS, ITBS, TBS           
+# =============================================================================
+
+def test_cqi_to_mcs_table():
+    amc = AdaptiveModulationAndCoding()
+    CQI_vals = list(range(1, 16))
+
+    for cqi in CQI_vals:
+        mcs = amc.cqi_to_mcs(cqi)
+        qm, itbs = amc.mcs_to_qm_itbs(mcs)
+        tbs = GLOBALS.TB_SIZE_TABLE[itbs][10]
+        print(f"CQI={cqi:2d} -> MCS={mcs:2d}, Qm={qm}, ITBS={itbs}, TBS(11PRB)={tbs}")
+
 if __name__ == "__main__":
     #debug_simulation()
     #sim_with_ue_collection()
-    sim_with_manager()
+    #sim_with_manager()
     #test_bler_table() #1
     #print_bler_range_by_cqi() #1
     #plot_bler_vs_sinr() #1
@@ -506,3 +502,4 @@ if __name__ == "__main__":
     #test_harq_ir_rtt() #3
     #test_harq_rtt() #4
     #test_channel_model_tables() #5
+    test_cqi_to_mcs_table() #6

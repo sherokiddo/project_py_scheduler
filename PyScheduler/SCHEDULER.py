@@ -90,6 +90,7 @@ from BS_MODULE import BaseStation
 from enum import Enum
 from CHANNEL_MODEL import ChannelModel
 import numpy as np
+import GLOBALS
 
 #==============================================================================
 #                              ИНТЕРФЕЙС МОДУЛЯ
@@ -1512,7 +1513,49 @@ class AdaptiveModulationAndCoding:
     Класс для преобразования CQI в MCS и расчета бит на ресурсный блок.
     """
     
-    # Таблица соответствия CQI → (Modulation Order, Code Rate)
+    def cqi_to_mcs(self, cqi: int) -> int:
+        if not (1 <= cqi <= 15):
+            raise ValueError(f"CQI должен быть в [1, 15], получено {cqi}")
+        se = GLOBALS.SPECTRAL_EFFICIENCY_FOR_CQI[cqi]
+        mcs = 0
+        while mcs + 1 < 29 and GLOBALS.SPECTRAL_EFFICIENCY_FOR_MCS[mcs + 1] <= se:
+            mcs += 1
+        if mcs > 28:
+            mcs = 28
+        if mcs < 0:
+            mcs = 0
+        return mcs
+    
+    def get_qm_from_mcs(self, mcs: int) -> int:
+        if not (0 <= mcs <= 28):
+            raise ValueError(f"MCS должен быть в [0, 28], получено {mcs}")
+        if mcs <= 9:
+            return 2
+        elif mcs <= 16:
+            return 4
+        else:
+            return 6
+        
+    def mcs_to_qm_itbs(self, mcs: int) -> tuple[int, int]:
+        if not (0 <= mcs <= 28):
+            raise ValueError(f"MCS должен быть в [0, 28], получено {mcs}")
+        qm = self.get_qm_from_mcs(mcs)
+        itbs = GLOBALS.MCS_TO_ITBS[mcs]
+        return qm, itbs
+
+    def GET_MCS_FROM_CQI(self, cqi: int) -> int:
+        """
+        CQI (1–15) -> MCS (0–28) через глобальную функцию cqi_to_mcs.
+        """
+        return self.cqi_to_mcs(cqi)
+
+    def GET_QM_ITBS(self, mcs: int) -> tuple[int, int]:
+        """
+        MCS (0–28) -> (Qm, ITBS) через глобальную функцию mcs_to_qm_itbs.
+        """
+        return self.mcs_to_qm_itbs(mcs)
+
+    """# Таблица соответствия CQI → (Modulation Order, Code Rate)
     CQI_TO_MCS = {
         1: (2, 0.152),   # QPSK
         2: (2, 0.234),   # QPSK
@@ -1529,19 +1572,28 @@ class AdaptiveModulationAndCoding:
         13: (6, 0.926),  # 64QAM
         14: (6, 0.953),  # 64QAM
         15: (6, 0.978)   # 64QAM
-    }
+    }"""
 
     def GET_BITS_PER_RB(self, cqi: int) -> int:
         """
-        Рассчитать количество бит на ресурсный блок (RB) для заданного CQI.
+        Количество бит на один RB для данного CQI.
+
+        Использует единую цепочку:
+        CQI -> MCS -> Qm, а затем рассчитывает
+        bits_per_rb = Qm * Nsym_per_RB.
         """
-        if cqi not in self.CQI_TO_MCS:
-            raise ValueError(f"Invalid CQI: {cqi}. Must be 1-15.")
-        
-        modulation, code_rate = self.CQI_TO_MCS[cqi]
-        symbols_per_rb = 12 * 7  # 84 символа в RB (с учетом слотов)
-        return int(symbols_per_rb * modulation * code_rate)
-	#@sherokiddo: "Добавить зависимость от CP"
+        # 1) CQI -> MCS по глобальной таблице/алгоритму (ns‑3‑подобный маппинг)
+        mcs = self.GET_MCS_FROM_CQI(cqi)
+
+        # 2) MCS -> (Qm, ITBS); ITBS здесь не нужен, только Qm
+        qm, _ = self.GET_QM_ITBS(mcs)
+
+        # 3) Количество символов на RB (DL, normal CP): 12 поднесущих * 7 OFDM‑символов
+        symbols_per_rb = 12 * 7  # 84 RE
+
+        # 4) Биты на RB без явного учёта code rate (он уже зашит в ITBS/TBS)
+        return symbols_per_rb * qm
+	    #@sherokiddo: "Добавить зависимость от CP"
     
     def calculate_throughput(self, allocation: Dict, 
                              users: List[Dict], 

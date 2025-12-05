@@ -65,19 +65,13 @@ class ChannelModel:
         CQI (1-15) → MCS (0-28)
         Для Scheduler-а
         """
-        if not (1 <= cqi <= 15):
-            raise ValueError(f"CQI должен быть [1, 15], получено {cqi}")
-        return GLOBALS.CQI_TO_MCS_MAP[cqi]
+        return self.amc.GET_MCS_FROM_CQI(cqi)
 
     def get_itbs_from_mcs(self, mcs: int) -> Tuple[int, int]:
         """
         MCS (0-28) → (Qm, ITBS)
-        Qm: 2=QPSK, 4=16QAM, 6=64QAM
-        ITBS: 0-26
         """
-        if not (0 <= mcs <= 28):
-            raise ValueError(f"MCS должен быть [0, 28], получено {mcs}")
-        return GLOBALS.MCS_TO_ITBS[mcs]
+        return self.amc.GET_QM_ITBS(mcs)
     
     def get_tbs(self, itbs: int, nprb: int) -> int:
         """
@@ -124,10 +118,10 @@ class ChannelModel:
         }
         """
         # Шаг 1: CQI → MCS
-        mcs = GLOBALS.CQI_TO_MCS_MAP[cqi]
+        mcs = self.amc.cqi_to_mcs(cqi)
         
         # Шаг 2: MCS → ITBS
-        qm, itbs = GLOBALS.MCS_TO_ITBS[mcs]
+        qm, itbs = self.amc.mcs_to_qm_itbs(mcs)
         
         # Шаг 3: (ITBS, NPRB) → TBS
         tbs = GLOBALS.TB_SIZE_TABLE[itbs][nprb - 1]
