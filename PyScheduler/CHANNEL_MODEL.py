@@ -18,9 +18,85 @@ import GLOBALS
 import numpy as np
 from BS_MODULE import BaseStation
 
-# class ChannelInterface:
-#     def __init__(self, bs: BaseStation):
-#         self.bs = bs
+
+class ChannelInterface:
+    def __init__(self, bs: BaseStation, **kwargs):
+        self.bs = bs
+
+    @staticmethod
+    def get_conditions():
+        """
+        Возвращает словарь доступных состояний канала.
+        """
+        conditions = {"RMa": RMaModel, "UMa": UMaModel, "UMi": UMiModel}
+        return conditions
+
+    def create(
+        self,
+        cond: str,
+        cond_update_period: float = 0.0,
+        freq_fad_nlos_model: str = "TDL-A",
+        freq_fad_los_model: str = "TDL-D",
+        ds_profile: str = "normal",
+        los_arrival_angle: float = np.pi / 4,
+        o2i_model: str = "low",
+        W: float = 20.0,
+        h: float = 5.0,
+    ):
+        # Валидация
+        if not isinstance(cond, str) or not cond:
+            raise ValueError("cond должен быть непустой строкой")
+        if cond_update_period < 0:
+            raise ValueError("cond_update_period не может быть отрицательным")
+        if not 0 <= los_arrival_angle <= 2 * np.pi:
+            raise ValueError(
+                f"los_arrival_angle должен быть в [0, 2π], получен {los_arrival_angle}"
+            )
+
+        valid_fad_models = {"TDL-A", "TDL-B", "TDL-C", "TDL-D", "TDL-E"}
+        if freq_fad_nlos_model not in valid_fad_models:
+            raise ValueError(f"freq_fad_nlos_model {freq_fad_nlos_model} не поддерживается")
+        if freq_fad_los_model not in valid_fad_models:
+            raise ValueError(f"freq_fad_los_model {freq_fad_los_model} не поддерживается")
+
+        valid_ds_profiles = {"short", "normal", "long"}
+        if ds_profile not in valid_ds_profiles:
+            raise ValueError(f"ds_profile должен быть одним из {valid_ds_profiles}")
+
+        valid_o2i = {"low", "high"}
+        if o2i_model not in valid_o2i:
+            raise ValueError(f"o2i_model должен быть одним из {valid_o2i}")
+
+        conds = self.get_conditions()
+        if cond not in conds:
+            raise ValueError(f"Unknown condition '{cond}'. Valid: {', '.join(conds.keys())}")
+
+        model_cls = conds[cond]
+
+        # Базовые параметры
+        kwargs = {
+            "bs": self.bs,
+            "cond_update_period": cond_update_period,
+            "freq_fad_nlos_model": freq_fad_nlos_model,
+            "freq_fad_los_model": freq_fad_los_model,
+            "ds_profile": ds_profile,
+            "los_arrival_angle": los_arrival_angle,
+        }
+
+        # Специфика моделей
+        if cond == "RMa":
+            kwargs.update({"W": W, "h": h})
+        elif cond in ("UMa", "UMi"):
+            kwargs["o2i_model"] = o2i_model
+
+        return model_cls(**kwargs)
+
+    def get_available_conds():
+        """
+        Выводит на экран список названий доступных моделей.
+        """
+        conds = list(ChannelInterface.get_conditions().keys())
+        print("Доступные модели:", conds)
 
 
 class ChannelModel:

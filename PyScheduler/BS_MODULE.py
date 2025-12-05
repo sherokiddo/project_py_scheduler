@@ -13,11 +13,12 @@
 # Версия Python Kernel: 3.12.9
 #------------------------------------------------------------------------------
 """
-import numpy as np
-import GLOBALS
-from collections import deque, defaultdict
-from typing import Dict, List, Optional, Union, Tuple
 
+from collections import defaultdict, deque
+from typing import Dict, List, Tuple
+
+import GLOBALS
+import numpy as np
 from UE_MODULE import UserEquipment
 
 
@@ -354,24 +355,24 @@ class BaseStation:
     MACROCELL_TX_POWER = {1.4: 39, 3: 41, 5: 43, 10: 44, 15: 45, 20: 46}
 
     # Мощность передачи для микросотовых станций (дБм) по полосам пропускания (МГц)
-    MICROCELL_TX_POWER = {
-        1.4: 30,
-        3: 32,
-        5: 34,
-        10: 36,
-        15: 37,
-        20: 38
-    }
-    
-    def __init__(self, x: float = 0.0, y: float = 0.0, height: float = 35.0,
-                 frequency_GHz: float = 1.8, bandwidth: float = 10,
-                 global_max: int = 1048576, per_ue_max: int = 262144,
-                 ch_model_type: str = None,
-                 ch_model_params: dict = None):
+    MICROCELL_TX_POWER = {1.4: 30, 3: 32, 5: 34, 10: 36, 15: 37, 20: 38}
+
+    def __init__(
+        self,
+        x: float = 0.0,
+        y: float = 0.0,
+        height: float = 35.0,
+        frequency_GHz: float = 1.8,
+        bandwidth: float = 10,
+        global_max: int = 1048576,
+        per_ue_max: int = 262144,
+        ch_model_type: str = None,
+        ch_model_params: dict = None,
+    ):
         """
         Инициализация базовой станции.
         #TODO: Перейти на фабричный паттерн реализации
-        
+
         Args:
             x: Координата X расположения станции
             y: Координата Y расположения станции
@@ -383,11 +384,11 @@ class BaseStation:
         self.height = height  # Высота антенны
 
         # Частотные параметры
-        self.frequency_GHz = frequency_GHz # Частота в ГГц
-        self.frequency_Hz = frequency_GHz * 1e9 # Частота в Гц
-        self.bandwidth = bandwidth # Полоса пропускания
+        self.frequency_GHz = frequency_GHz  # Частота в ГГц
+        self.frequency_Hz = frequency_GHz * 1e9  # Частота в Гц
+        self.bandwidth = bandwidth  # Полоса пропускания
         self.rb_per_slot = GLOBALS.BANDWIDTH_TO_RB[bandwidth]
-        
+
         # Характеристики передачи
         self.tx_power = None  # Мощность передачи (устанавливается отдельно)
         self.antenna_gain = 15  # Коэффициент усиления антенны (дБи)
@@ -397,7 +398,7 @@ class BaseStation:
         self.per_ue_max = per_ue_max
         self.ue_buffers = defaultdict(Buffer)
         self.ue_traffic_models = {}  # {ue_id: traffic_model}
-        
+
         # Связь с моделью канала
         self.ch_model_type = ch_model_type
         self.channel_model = None
@@ -411,78 +412,53 @@ class BaseStation:
         Инициализация модели канала для базовой станции.
         Использует ленивый импорт для избежания циклических зависимостей.
         (от ленивого импорта можно избавиться)
-        
+
         Args:
             params: Параметры для конкретной модели канала
                 - RMa: W (ширина улицы), h (высота здания), cond_update_period
                 - UMa: cond_update_period, o2i_model
                 - UMi: cond_update_period, o2i_model
-        
+
         Raises:
             ValueError: Если указан неизвестный тип модели
         """
         # Ленивый импорт (избегаем циклических зависимостей)
-        #TODO: перейти на фабричный паттерн
-        from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
-        
-        if self.ch_model_type == 'RMa':
-            self.channel_model = RMaModel(
-                bs=self,
-                W=params.get('W', 20.0),
-                h=params.get('h', 5.0),
-                cond_update_period=params.get('cond_update_period', 0.0),
-                freq_fad_nlos_model = params.get('freq_fad_nlos_model', 'TDL-A'),
-                freq_fad_los_model = params.get('freq_fad_los_model', 'TDL-D'),
-                ds_profile = params.get('ds_profile', 'normal'),
-                los_arrival_angle = params.get('los_arrival_angle', np.pi / 4)
-            )
-        elif self.ch_model_type == 'UMa':
-            self.channel_model = UMaModel(
-                bs=self,
-                cond_update_period=params.get('cond_update_period', 0.0),
-                o2i_model=params.get('o2i_model', 'low'),
-                freq_fad_nlos_model = params.get('freq_fad_nlos_model', 'TDL-A'),
-                freq_fad_los_model = params.get('freq_fad_los_model', 'TDL-D'),
-                ds_profile = params.get('ds_profile', 'normal'),
-                los_arrival_angle = params.get('los_arrival_angle', np.pi / 4)
-            )
-        elif self.ch_model_type == 'UMi':
-            self.channel_model = UMiModel(
-                bs=self,
-                cond_update_period=params.get('cond_update_period', 0.0),
-                o2i_model=params.get('o2i_model', 'low'),
-                freq_fad_nlos_model = params.get('freq_fad_nlos_model', 'TDL-A'),
-                freq_fad_los_model = params.get('freq_fad_los_model', 'TDL-D'),
-                ds_profile = params.get('ds_profile', 'normal'),
-                los_arrival_angle = params.get('los_arrival_angle', np.pi / 4)
-            )
-        else:
-            raise ValueError(f"Неизвестный тип модели канала: {self.ch_model_type}")
+        # TODO: перейти на фабричный паттерн
+
+        from CHANNEL_MODEL import ChannelInterface
+
+        self.channel_model = ChannelInterface(bs=self).create(
+            cond=self.ch_model_type,
+            cond_update_period=params.get("cond_update_period", 0.0),
+            o2i_model=params.get("o2i_model", "low"),  # RMa проигнорирует
+            freq_fad_nlos_model=params.get("freq_fad_nlos_model", "TDL-A"),
+            freq_fad_los_model=params.get("freq_fad_los_model", "TDL-D"),
+            ds_profile=params.get("ds_profile", "normal"),
+            los_arrival_angle=params.get("los_arrival_angle", np.pi / 4),
+            **{k: v for k, v in params.items() if k in ("W", "h")},  # только для RMa
+        )
 
     def REG_UE(self, ue: UserEquipment):
         """
         Регистрация пользователя на базовой станции.
-        
+
         Выполняет:
         - Создание буфера для DL данных пользователя
         - Привязку модели трафика пользователя
         - Сохранение ссылки на объект UE (для расчета SINR)
         - Установку обратной связи UE -> BS (для доступа к модели канала)
-        
+
         Args:
             ue: Объект UserEquipment для регистрации
         """
         # Существующая логика (без изменений)
-        self.ue_buffers[ue.UE_ID] = Buffer(
-            global_max=self.global_max, 
-            per_ue_max=self.per_ue_max
-        )
+        self.ue_buffers[ue.UE_ID] = Buffer(global_max=self.global_max, per_ue_max=self.per_ue_max)
         self.ue_traffic_models[ue.UE_ID] = ue.traffic_model
         self.registered_ues[ue.UE_ID] = ue
-        ue.serving_bs = self #теперь UE знает о своей BS
-        
-        #TODO: сделать метод DEREG_UE и сопутствующие изменения
-        
+        ue.serving_bs = self  # теперь UE знает о своей BS
+
+        # TODO: сделать метод DEREG_UE и сопутствующие изменения
+
     def SET_TRAFFIC_MODEL(self, ue: UserEquipment, model):
         """
         Установить модель генерации трафика для конкретного пользователя.

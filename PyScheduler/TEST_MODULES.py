@@ -239,7 +239,7 @@ def chmdl_test():
     sim.set_scheduler(algorithm="RoundRobin")
 
     # Установка длительности симуляции
-    sim.set_sim_duration(300000)
+    sim.set_sim_duration(100000)
 
     # Запуск симуляции
     sim.start_simulation()
