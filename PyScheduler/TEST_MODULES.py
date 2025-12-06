@@ -196,7 +196,7 @@ def chmdl_test():
     # =============================================================================
 
     # Создание и настройка базовой станции
-    bs = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMa")
+    bs = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="RMa-SC")
 
     # Создание коллекции пользовательских устройств
     ue_collection = UECollection()

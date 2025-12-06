@@ -423,19 +423,17 @@ class BaseStation:
             ValueError: Если указан неизвестный тип модели
         """
         # Ленивый импорт (избегаем циклических зависимостей)
-        # TODO: перейти на фабричный паттерн
-
         from CHANNEL_MODEL import ChannelInterface
 
         self.channel_model = ChannelInterface(bs=self).create(
             cond=self.ch_model_type,
             cond_update_period=params.get("cond_update_period", 0.0),
-            o2i_model=params.get("o2i_model", "low"),  # RMa проигнорирует
+            o2i_model=params.get("o2i_model", "low"),
             freq_fad_nlos_model=params.get("freq_fad_nlos_model", "TDL-A"),
             freq_fad_los_model=params.get("freq_fad_los_model", "TDL-D"),
             ds_profile=params.get("ds_profile", "normal"),
             los_arrival_angle=params.get("los_arrival_angle", np.pi / 4),
-            **{k: v for k, v in params.items() if k in ("W", "h")},  # только для RMa
+            **{k: v for k, v in params.items() if k in ("W", "h")},
         )
 
     def REG_UE(self, ue: UserEquipment):
