@@ -91,6 +91,9 @@ from enum import Enum
 from CHANNEL_MODEL import ChannelModel
 import numpy as np
 import GLOBALS
+import bisect
+import random
+from typing import Tuple
 
 #==============================================================================
 #                              ИНТЕРФЕЙС МОДУЛЯ
@@ -1510,8 +1513,17 @@ class HARQManager:
 
 class AdaptiveModulationAndCoding:
     """
-    Класс для преобразования CQI в MCS и расчета бит на ресурсный блок.
+    AMC + BLER + расчёт TBS.
     """
+
+    def __init__(self) -> None:
+        """
+        Явная инициализация AMC-класса.
+        Сейчас не хранит состояния, но конструктор нужен,
+        чтобы в коде явно создавать self.amc = AdaptiveModulationAndCoding().
+        """
+        # Если позже появятся кэш или настройки AMC, их можно будет хранить здесь.
+        pass
     
     def cqi_to_mcs(self, cqi: int) -> int:
         if not (1 <= cqi <= 15):
@@ -1594,7 +1606,89 @@ class AdaptiveModulationAndCoding:
         # 4) Биты на RB без явного учёта code rate (он уже зашит в ITBS/TBS)
         return symbols_per_rb * qm
 	    #@sherokiddo: "Добавить зависимость от CP"
-    
+
+        # ==== BLER и ошибка транспортного блока (из ChannelModel) ====
+
+    @staticmethod
+    def lookup_bler(sinr_dB: float, cqi: int) -> float:
+        """
+        Интерполяция BLER по SINR между точками для заданного CQI.
+        """
+        points = GLOBALS.BLER_TABLE[cqi]
+        xs, ys = zip(*points)
+        idx = bisect.bisect_left(xs, sinr_dB)
+        if idx == 0:
+            return ys[0]
+        if idx >= len(xs):
+            return ys[-1]
+        x0, y0 = xs[idx - 1], ys[idx - 1]
+        x1, y1 = xs[idx], ys[idx]
+        return y0 + (y1 - y0) * (sinr_dB - x0) / (x1 - x0)
+
+    def is_tb_error(self, sinr_avg_dB: float, cqi: int) -> bool:
+        """
+        Генерация ошибки TB. True, если TB ошибочен по BLER-таблице.
+        """
+        bler = self.lookup_bler(sinr_avg_dB, cqi)
+        return random.random() < bler
+
+        # ==== Совместимость со старым интерфейсом ChannelModel ====
+
+    def get_mcs_from_cqi(self, cqi: int) -> int:
+        """
+        CQI (1–15) → MCS (0–28).
+        Раньше был ChannelModel.get_mcs_from_cqi.
+        """
+        return self.cqi_to_mcs(cqi)
+
+    def get_itbs_from_mcs(self, mcs: int) -> Tuple[int, int]:
+        """
+        MCS (0–28) → (Qm, ITBS).
+        Раньше был ChannelModel.get_itbs_from_mcs.
+        """
+        return self.mcs_to_qm_itbs(mcs)
+
+        # ==== ITBS, NPRB -> TBS и полный расчёт ====
+
+    def get_tbs(self, itbs: int, nprb: int) -> int:
+        """
+        (ITBS, NPRB) → TBS (размер блока в битах).
+        """
+        if not (0 <= itbs <= 26):
+            raise ValueError(f"ITBS должен быть [0, 26], получено {itbs}")
+
+        if not (1 <= nprb <= 100):
+            raise ValueError(f"NPRB должен быть [1, 100], получено {nprb}")
+
+        return GLOBALS.TB_SIZE_TABLE[itbs][nprb - 1]
+
+    def calculate_tbs(self, cqi: int, nprb: int) -> dict:
+        """
+        Полный расчёт TBS: CQI → MCS → ITBS → TBS.
+        """
+        # Шаг 1: CQI → MCS
+        mcs = self.cqi_to_mcs(cqi)
+
+        # Шаг 2: MCS → (Qm, ITBS)
+        qm, itbs = self.mcs_to_qm_itbs(mcs)
+
+        # Шаг 3: (ITBS, NPRB) → TBS
+        tbs = GLOBALS.TB_SIZE_TABLE[itbs][nprb - 1]
+
+        # Шаг 4: пропускная способность (TTI = 1 ms)
+        throughput_mbps = tbs * 1000 / 1e6
+
+        return {
+            "cqi": cqi,
+            "mcs": mcs,
+            "itbs": itbs,
+            "qm": qm,
+            "nprb": nprb,
+            "tbs_bits": tbs,
+            "tbs_bytes": tbs // 8,
+            "throughput_mbps": throughput_mbps,
+        }
+
     def calculate_throughput(self, allocation: Dict, 
                              users: List[Dict], 
                              tti: int, bs: BaseStation) -> Dict:

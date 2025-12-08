@@ -40,6 +40,7 @@ class SimulationConfig:
     update_interval: int = 1
     stats_log: bool = False
     verbose: bool = False
+    to_file: bool = False
     
 @dataclass
 class SchedulerConfig:
@@ -207,7 +208,7 @@ class SimulationManager:
 
         """
         self.sim_config.verbose = True
-        self._to_file = to_file
+        self.sim_config.to_file = to_file
         
     def start_simulation(self) -> None:
         """
@@ -226,7 +227,7 @@ class SimulationManager:
 
         """
         # Перевод консольного вывода в текстовый файл
-        if self._to_file:
+        if self.sim_config.to_file:
             self._log_file = open("output.txt", "w", buffering=1, encoding="utf-8")
             self._original_stdout = sys.stdout
             self._original_stderr = sys.stderr
@@ -300,7 +301,7 @@ class SimulationManager:
 
         finally:    
             # Возвращение консольного вывода
-            if self._to_file:
+            if self.sim_config.to_file:
                 sys.stdout = self._original_stdout
                 sys.stderr = self._original_stderr
                 self._log_file.close()
@@ -365,7 +366,8 @@ class SimulationManager:
             with open(filename, 'w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(["TTI", "UE_ID", "Num_RBs", "RBs", "Num_CCE", 
-                                 "Tx_Bits", "Buffer_Size" ,"CQI", "SINR"])
+                                 "Tx_Bits", "Buffer_Size" ,"Wideband CQI", 
+                                 "Subband CQI", "SINR"])
             self._stats_file_initialized = True
         
         with open(filename, 'a', newline='', encoding='utf-8') as file:
@@ -380,9 +382,10 @@ class SimulationManager:
                 tx_bits = int(ue.current_dl_throughput / 1000)
                 buf_size = self.base_station.ue_buffers[ue_id].sizes[ue_id] * 8
                 cqi = ue.cqi
+                subband_cqi = ue.cqi_subband
                 sinr = round(ue.SINR, 4)
                 
                 # Запись в файл
                 row = [GLOBALS.CURRENT_TIME, ue_id, num_rbs, rbs, num_cce, 
-                       tx_bits, buf_size, cqi, sinr]
+                       tx_bits, buf_size, cqi, subband_cqi, sinr]
                 writer.writerow(row)

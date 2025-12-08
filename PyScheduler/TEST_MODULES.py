@@ -6,15 +6,21 @@ import numpy as np
 import GLOBALS
 from BS_MODULE import BaseStation, Packet
 from CHANNEL_MODEL import UMaModel
-from MOBILITY_MODEL import RandomWaypointModel, DiagonalWalkModel
+from MOBILITY_MODEL import MapBorders
 from RES_GRID import RES_GRID_LTE
 from SCHEDULER import ProportionalFairScheduler, HARQManager, AdaptiveModulationAndCoding
 from SIMULATION_MANAGER import SimulationManager
 from TRAFFIC_MODEL import PoissonModel
 from UE_MODULE import UECollection, UserEquipment
 
-def visualize_users_mobility(ue_collection: UECollection, bs: BaseStation,
-                            x_min: float, x_max: float, y_min: float, y_max: float):
+def visualize_users_mobility(
+    ue_collection: UECollection,
+    bs: BaseStation,
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+):
     """
     Функция для построения карты передвижения пользователей.
 
@@ -25,7 +31,7 @@ def visualize_users_mobility(ue_collection: UECollection, bs: BaseStation,
         x_max (float): Максимальная граница отображения по оси X.
         y_min (float): Минимальная граница отображения по оси Y.
         y_max (float): Максимальная граница отображения по оси Y.
-        
+
     """
     x_bs, y_bs = bs.position
 
@@ -65,9 +71,10 @@ def visualize_users_sinr(ue_collection: UECollection, sim_duration: float,
     plt.ylabel("SINR (dB)")
     for ue in ue_collection.GET_ALL_USERS():
         sinr_values = ue.SINR_values
-        plt.plot(tti_range, sinr_values, label=f'UE{ue.UE_ID}')
+        plt.plot(tti_range, sinr_values, label=f"UE{ue.UE_ID}")
     plt.legend()
     plt.grid(True)
+    plt.ylim(-20, 65)
     plt.show()
 
 def print_users_stats(ue_collection: UECollection, tti: int, bs: BaseStation,
@@ -92,8 +99,7 @@ def print_users_stats(ue_collection: UECollection, tti: int, bs: BaseStation,
         num_rbs = len(allocation.get(ue_id, []))
 
         displacement = np.hypot(
-            ue.position[0] - ue.coordinates[-2][0],
-            ue.position[1] - ue.coordinates[-2][1]
+            ue.position[0] - ue.coordinates[-2][0], ue.position[1] - ue.coordinates[-2][1]
         )
 
         print(f"UE {ue_id}:")
@@ -102,7 +108,8 @@ def print_users_stats(ue_collection: UECollection, tti: int, bs: BaseStation,
         print(f"\tСредняя скорость    : {ue.average_throughput:.2f} bit/s")
         print("\t+" + "-" * 35)
         print(f"\tSINR                : {ue.SINR:.2f} dB")
-        print(f"\tCQI                 : {ue.cqi}")
+        print(f"\tWideband CQI        : {ue.cqi}")
+        print(f"\tSubband CQI         : {ue.cqi_subband}")
         print(f"\tРазмер буфера       : {bs.ue_buffers[ue.UE_ID].sizes[ue.UE_ID]} B")
         print("\t+" + "-" * 35)
         print(f"\tПред. позиция       : {ue.coordinates[-2]}")
@@ -110,12 +117,11 @@ def print_users_stats(ue_collection: UECollection, tti: int, bs: BaseStation,
         print(f"\tСмещение            : {displacement} m")
         print("-" * 40)
 
-def debug_simulation():
+
+def sim_with_ue_collection():
     """
-    Симуляция, предназначенная для отладки. 
-    Позволяет проверить корректность взаимодействия компонентов системы при 
-    помощи вывода различных графиков и статистики для каждого пользователя.
-    
+    Пример сценария с использованием коллекций UE.
+
     """
     sim_duration = 3000 # Время симуляции (в мс)
     update_interval = 1 # Интервал обновления параметров пользователя (в мс)
@@ -134,15 +140,13 @@ def debug_simulation():
     ue2 = UserEquipment(UE_ID=2, x=4, y=-2, ue_class="cyclist")
     ue3 = UserEquipment(UE_ID=3, x=-5, y=-5, ue_class="car")
 
-    # Создание модели передвижения пользователей
-    diagonalwalk = DiagonalWalkModel(bs_x=0,
-                                    bs_y=0,
-                                    pause_time = 0)
+    # Через синглтон указываем границы карты
+    MapBorders(-1000, 1000, -1000, 1000)
 
     # Назначение пользователям модели передвижения
-    ue1.SET_MOBILITY_MODEL(diagonalwalk)
-    ue2.SET_MOBILITY_MODEL(diagonalwalk)
-    ue3.SET_MOBILITY_MODEL(diagonalwalk)
+    ue1.SET_MOBILITY_MODEL("DiagonalWalk", bs=bs, pause_time=0)
+    ue2.SET_MOBILITY_MODEL("DiagonalWalk", bs=bs, pause_time=0)
+    ue3.SET_MOBILITY_MODEL("DiagonalWalk", bs=bs, pause_time=0)
 
     # Создание модели радиоканала
     uma = UMaModel(bs=bs, cond_update_period=5)
@@ -212,98 +216,6 @@ def debug_simulation():
     visualize_users_sinr(ue_collection=ue_collection,
                             sim_duration=sim_duration,
                             update_interval=update_interval)
-
-def sim_with_ue_collection():
-    """
-    Пример сценария с использованием коллекций UE.
-
-    """
-    sim_duration = 20 # Время симуляции (в мс)
-    update_interval = 1 # Интервал обновления параметров пользователя (в мс)
-    num_frames = int(np.ceil(sim_duration / 10)) # Кол-во кадров (для ресурсной сетки)
-    bandwidth = 10 # Ширина полосы (в МГц)
-    inf = math.inf
-
-    # Создание и настройка базовой станции
-    bs = BaseStation(
-        x=0, y=0, bandwidth=bandwidth, global_max=inf, 
-        per_ue_max=inf, ch_model_type="UMa", ch_model_params={"cond_update_period": 5}
-    )
-
-    # Создание коллекции пользовательских устройств
-    ue_collection = UECollection()
-
-    # Установка сида. Нужен для того, чтобы ADD_RANDOM_USERS всегда генерировал
-    # одинаковых пользователей в одинаковом месте. Если не задавать сид, пользователи
-    # каждую симуляцию будут генерироваться абсолютно случайно
-    GLOBALS.SEED = 42
-
-    # Генерация заданного числа UE в коллекцию
-    ue_collection.ADD_RANDOM_USERS(num_ue=3)
-
-    # Создание модели передвижения пользователей
-    diagonalwalk = DiagonalWalkModel(bs.position[0], 
-                                     bs.position[1], 
-                                     pause_time=0)
-
-    # Установка модели передвижения для всех пользователей коллекции.
-    # Есть возможность задавать для отдельных пользователей при помощи параметра ue_ids
-    ue_collection.SET_MOBILITY_MODEL(diagonalwalk)
-
-    # Регистрация всех пользователей коллекции в базовой станции.
-    ue_collection.REG_USERS_TO_BS(bs)
-
-    # Имитация Full Buffer
-    for ue in ue_collection.GET_ALL_USERS():
-        bs.ue_buffers[ue.UE_ID].ADD_PACKET(Packet(size=inf,
-                                                  ue_id=ue.UE_ID,
-                                                  creation_time=0), current_time=0)
-
-    # Создание ресурсной сетки
-    lte_grid = RES_GRID_LTE(bandwidth=bandwidth, num_frames=num_frames)
-
-    # Создание планировщика
-    scheduler = ProportionalFairScheduler(lte_grid, bs)
-
-    # Основной цикл симуляции
-    for current_time in range(update_interval, sim_duration + 1, update_interval):
-
-        # Обновление глобальной переменной текущего времени
-        # (Временное решение)
-        GLOBALS.CURRENT_TIME = current_time
-
-        # Обновление состояния пользователей
-        ue_collection.UPDATE_ALL_USERS(current_time=current_time,
-                                       update_interval=update_interval)
-
-        # Цикл для планирования ресурсов (по TTI)
-        for tti in range(current_time - update_interval, current_time):
-
-            # Подготовка данных для планировщика
-            users = ue_collection.GET_USERS_FOR_SCHEDULER()
-
-            # Планирование ресурсов
-            sched_result = scheduler.schedule(tti, users)
-
-            # Вывод статистики для каждого пользователя
-            print_users_stats(ue_collection=ue_collection,
-                              tti=tti,
-                              bs=bs,
-                              sched_result=sched_result)
-
-
-    # Визуализация передвижения пользователей
-    visualize_users_mobility(ue_collection=ue_collection,
-                            bs=bs,
-                            x_min=-1000,
-                            x_max=1000,
-                            y_min=-1000,
-                            y_max=1000)
-
-    # Визуализация SINR пользователей во времени
-    visualize_users_sinr(ue_collection=ue_collection,
-                            sim_duration=sim_duration,
-                            update_interval=update_interval)
     
 def sim_with_manager():
     """
@@ -324,17 +236,12 @@ def sim_with_manager():
     GLOBALS.SEED = 42
     
     # Генерация заданного числа UE в коллекцию
-    ue_collection.ADD_RANDOM_USERS(num_ue=3)    
-    
-    # Создание модели передвижения пользователей
-    random_waypoint = RandomWaypointModel(x_min=-1000, 
-                                          x_max=1000, 
-                                          y_min=-1000, 
-                                          y_max=1000, 
-                                          pause_time=0)
+    ue_collection.ADD_RANDOM_USERS(num_ue=3)
+
+    MapBorders(-1000, 1000, -1000, 1000)    
     
     # Установка модели передвижения для всех пользователей коллекции
-    ue_collection.SET_MOBILITY_MODEL(random_waypoint)    
+    ue_collection.SET_MOBILITY_MODEL("RandomWaypoint")    
     
     # Создание модели генерации трафика
     poisson = PoissonModel(packet_rate=1000)
