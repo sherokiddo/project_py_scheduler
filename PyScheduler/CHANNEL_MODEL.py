@@ -452,14 +452,15 @@ class ChannelModel:
 
         SINR = P_signal - 10 * np.log10(10 ** (P_interference / 10) + 10 ** (P_noise / 10))
 
-        channel_cond = self.CHANNEL_COND_INFO[UE_ID].get("cond")
-        channel_model = self.__class__.__name__
-        gain_on_RB = self.freq_fading.calculate_channel_gain(
-            UE_ID, channel_cond, channel_model, ue_class
-        )
-        SINR_on_RB = SINR + gain_on_RB
-
-        return SINR_on_RB
+        if self.bs.enable_tdl:
+            channel_cond = self.CHANNEL_COND_INFO[UE_ID].get("cond")
+            channel_model = self.__class__.__name__
+            gain_on_RB = self.freq_fading.calculate_channel_gain(
+                UE_ID, channel_cond, channel_model, ue_class
+            )
+            SINR_on_RB = SINR + gain_on_RB
+            return SINR_on_RB
+        return SINR
 
 
 class RMaModel(ChannelModel):

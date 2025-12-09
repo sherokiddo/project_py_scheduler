@@ -368,6 +368,7 @@ class BaseStation:
         per_ue_max: int = 262144,
         ch_model_type: str = None,
         ch_model_params: dict = None,
+        enable_tdl: bool = False,
     ):
         """
         Инициализация базовой станции.
@@ -402,6 +403,7 @@ class BaseStation:
         # Связь с моделью канала
         self.ch_model_type = ch_model_type
         self.channel_model = None
+        self.enable_tdl = enable_tdl
         self.registered_ues = {}
 
         if ch_model_type is not None:

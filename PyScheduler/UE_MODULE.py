@@ -519,14 +519,13 @@ class UserEquipment:
         # Wideband SINR и CQI
         self.SINR = np.mean(SINR_on_RB)
         self.cqi = self.SINR_TO_CQI(self.SINR)
-
-        subband_size = GLOBALS.SUBBAND_SIZE[self.serving_bs.bandwidth]
-
-        # Subband CQI
-        self.cqi_subband = []
-        for i in range(0, len(SINR_on_RB), subband_size):
-            sinr_subband = np.mean(SINR_on_RB[i : i + subband_size])
-            self.cqi_subband.append(self.SINR_TO_CQI(sinr_subband))
+        if self.serving_bs.enable_tdl:
+            subband_size = GLOBALS.SUBBAND_SIZE[self.serving_bs.bandwidth]
+            # Subband CQI
+            self.cqi_subband = []
+            for i in range(0, len(SINR_on_RB), subband_size):
+                sinr_subband = np.mean(SINR_on_RB[i : i + subband_size])
+                self.cqi_subband.append(self.SINR_TO_CQI(sinr_subband))
 
         self.SINR_values.append(self.SINR)
         self.CQI_values.append(self.cqi)
