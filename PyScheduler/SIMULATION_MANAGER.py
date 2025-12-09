@@ -67,13 +67,13 @@ class StatisticsConfig:
         collect_interval (int): Интервал сбора в TTI (напр., 10 = каждые 10 TTI)
         levels (LevelsConfig): Уровни детализации per-метрика
         export_format (str): Формат экспорта ('csv' или 'json')
-        history_maxlen (int): Максимум snapshots в истории (для ограничения памяти)
+        history_max_len (int): Максимум snapshots в истории (для ограничения памяти)
         file_prefix (str): Префикс имени файла для экспорта
     """
     collect_interval: int = 10
     levels: LevelsConfig = None
     export_format: str = "csv"
-    history_maxlen: int = 10000
+    history_max_len: int = 10000
     file_prefix: str = "lte_stats"
 
     def __post_init__(self):
@@ -98,7 +98,7 @@ class StatsManager:
         """
         self.scheduler = scheduler  # Ссылка на scheduler (для вызова get_stats())
         self.config = config or StatisticsConfig()  # Default конфиг если None
-        self.history = deque(maxlen=self.config.history_maxlen)  # История snapshots
+        self.history = deque(maxlen=self.config.history_max_len)  # История snapshots
 
     def collect(self, tti: int) -> None:
         """
@@ -611,6 +611,7 @@ class StatsManagerConfig:
     pdcch_level: str = "none"
     export_format: str = "csv"
     file_prefix: str = "manager_stats"
+    history_max_len: int = 10000
 
 
 class SimulationManager:
@@ -869,7 +870,8 @@ class SimulationManager:
                         pdcch=level_map[self.stats_config.pdcch_level]
                     ),
                     export_format=self.stats_config.export_format,
-                    file_prefix=self.stats_config.file_prefix
+                    file_prefix=self.stats_config.file_prefix,
+                    history_max_len=self.stats_config.history_max_len
                 )
 
                 self.stats_manager = StatsManager(scheduler, stats_config)

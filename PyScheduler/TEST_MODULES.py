@@ -337,7 +337,7 @@ def sim_with_manager():
     ue_collection.SET_MOBILITY_MODEL(random_waypoint)
 
     # Создание модели генерации трафика
-    poisson = PoissonModel(packet_rate=1000)
+    poisson = PoissonModel(packet_rate=5000)
 
     # Установка модели генерации трафика для всех пользователей коллекции
     ue_collection.SET_TRAFFIC_MODEL(poisson)
@@ -360,7 +360,7 @@ def sim_with_manager():
 
     # Установка планировщика. Можно передвать параметры, которые
     # поддерживает SchedulerInterface.
-    sim.set_scheduler(algorithm="RoundRobin")
+    sim.set_scheduler(algorithm="ProportionalFair")
 
     # Установка длительности симуляции
     sim.set_sim_duration(5000)
@@ -376,6 +376,7 @@ def sim_with_manager():
     sim.set_stats_manager(
         enabled=True,                # Включить сбор
         collect_interval=1,         # Собирать каждые 10 TTI
+        history_max_len = 5000,
         scheduler_level="advanced",     # Scheduler: только агрегированные метрики
         amc_level="advanced",           # AMC: total throughput + avg bits/RB
         pdcch_level="basic",          # PDCCH: отключен (можно включить "basic")
