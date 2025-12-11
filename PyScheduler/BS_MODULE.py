@@ -403,6 +403,7 @@ class BaseStation:
         # Связь с моделью канала
         self.ch_model_type = ch_model_type
         self.channel_model = None
+        # TODO: enable_tdl необходимо заменить на Strategy-паттерн
         self.enable_tdl = enable_tdl
         self.registered_ues = {}
 

@@ -31,6 +31,51 @@ class ChannelInterface:
         conditions = {"RMa": RMaModel, "UMa": UMaModel, "UMi": UMiModel, "RMa-SC": RMaModel_SC}
         return conditions
 
+    @staticmethod
+    def validate_parameters(
+        model: str,
+        cond_update_period: float,
+        freq_fad_nlos_model: str,
+        freq_fad_los_model: str,
+        ds_profile: str,
+        los_arrival_angle: float,
+    ) -> None:
+        """
+        Валидация параметров модели канала.
+
+        Args:
+            model (str): Тип модели ('RMa', 'UMa', 'UMi', 'RMa-SC').
+            cond_update_period (float): Период обновления (мс).
+            freq_fad_nlos_model (str): TDL-профиль NLOS.
+            freq_fad_los_model (str): TDL-профиль LOS.
+            ds_profile (str): Профиль задержек.
+            los_arrival_angle (float): Угол прихода LOS (радианы).
+
+        Raises:
+            ValueError: При невалидных параметрах.
+            TypeError: При неправильном типе данных.
+        """
+        if not isinstance(model, str) or not model:
+            raise ValueError("model должен быть непустой строкой")
+
+        if cond_update_period < 0:
+            raise ValueError("cond_update_period не может быть отрицательным")
+
+        if not 0 <= los_arrival_angle <= 2 * np.pi:
+            raise ValueError(
+                f"los_arrival_angle должен быть в [0, 2π], получен {los_arrival_angle}"
+            )
+
+        valid_fad_models = {"TDL-A", "TDL-B", "TDL-C", "TDL-D", "TDL-E"}
+        if freq_fad_nlos_model not in valid_fad_models:
+            raise ValueError(f"freq_fad_nlos_model {freq_fad_nlos_model} не в {valid_fad_models}")
+        if freq_fad_los_model not in valid_fad_models:
+            raise ValueError(f"freq_fad_los_model {freq_fad_los_model} не в {valid_fad_models}")
+
+        valid_ds_profiles = {"short", "normal", "long"}
+        if ds_profile not in valid_ds_profiles:
+            raise ValueError(f"ds_profile {ds_profile} не в {valid_ds_profiles}")
+
     def create(
         self,
         cond: str,
@@ -43,29 +88,14 @@ class ChannelInterface:
         W: float = 20.0,
         h: float = 5.0,
     ):
-        # Валидация
-        if not isinstance(cond, str) or not cond:
-            raise ValueError("cond должен быть непустой строкой")
-        if cond_update_period < 0:
-            raise ValueError("cond_update_period не может быть отрицательным")
-        if not 0 <= los_arrival_angle <= 2 * np.pi:
-            raise ValueError(
-                f"los_arrival_angle должен быть в [0, 2π], получен {los_arrival_angle}"
-            )
-
-        valid_fad_models = {"TDL-A", "TDL-B", "TDL-C", "TDL-D", "TDL-E"}
-        if freq_fad_nlos_model not in valid_fad_models:
-            raise ValueError(f"freq_fad_nlos_model {freq_fad_nlos_model} не поддерживается")
-        if freq_fad_los_model not in valid_fad_models:
-            raise ValueError(f"freq_fad_los_model {freq_fad_los_model} не поддерживается")
-
-        valid_ds_profiles = {"short", "normal", "long"}
-        if ds_profile not in valid_ds_profiles:
-            raise ValueError(f"ds_profile должен быть одним из {valid_ds_profiles}")
-
-        valid_o2i = {"low", "high"}
-        if o2i_model not in valid_o2i:
-            raise ValueError(f"o2i_model должен быть одним из {valid_o2i}")
+        ChannelInterface.validate_parameters(
+            cond,
+            cond_update_period,
+            freq_fad_nlos_model,
+            freq_fad_los_model,
+            ds_profile,
+            los_arrival_angle,
+        )
 
         conds = self.get_conditions()
         if cond not in conds:
