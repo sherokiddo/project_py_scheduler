@@ -542,7 +542,7 @@ class RMaModel(ChannelModel):
         self.h = h
 
         self.bs.tx_power = self.bs.MACROCELL_TX_POWER[self.bs.bandwidth]
-        self.bs.height = 35.0
+        self.default_height = 35.0
 
         self.sigma_SF_LOS_1 = 4.0
         self.sigma_SF_LOS_2 = 6.0
@@ -588,7 +588,7 @@ class RMaModel(ChannelModel):
             float: Дистанция излома (м).
 
         """
-        d_BP = (2 * np.pi * self.bs.height * UE_height * self.bs.frequency_Hz) / 3.0e8
+        d_BP = (2 * np.pi * self.default_height * UE_height * self.bs.frequency_Hz) / 3.0e8
         return d_BP
 
     def _calculate_los_probability(self, UE_height: float, d_2D: float) -> float:
@@ -691,8 +691,9 @@ class RMaModel(ChannelModel):
                 161.04
                 - 7.1 * np.log10(self.W)
                 + 7.5 * np.log10(self.h)
-                - (24.37 - 3.7 * (self.h / self.bs.height) ** 2) * np.log10(self.bs.height)
-                + (43.42 - 3.1 * np.log10(self.bs.height)) * (np.log10(d_3D) - 3)
+                - (24.37 - 3.7 * (self.h / self.default_height) ** 2)
+                * np.log10(self.default_height)
+                + (43.42 - 3.1 * np.log10(self.default_height)) * (np.log10(d_3D) - 3)
                 + 20 * np.log10(self.bs.frequency_GHz)
                 - (3.2 * (np.log10(11.75 * UE_height)) ** 2 - 4.97)
             )
@@ -750,7 +751,7 @@ class UMaModel(ChannelModel):
         )
 
         self.bs.tx_power = self.bs.MACROCELL_TX_POWER[self.bs.bandwidth]
-        self.bs.height = 25.0
+        self.default_height = 25.0
 
         self.sigma_SF_LOS = 4.0
         self.sigma_SF_NLOS = 6.0
@@ -797,7 +798,7 @@ class UMaModel(ChannelModel):
 
             h_E = np.random.choice(h_Es)
 
-        bs_height_prime = self.bs.height - h_E
+        bs_height_prime = self.default_height - h_E
         UE_height_prime = UE_height - h_E
 
         d_BP = (4 * bs_height_prime * UE_height_prime * self.bs.frequency_Hz) / 3.0e8
@@ -865,7 +866,7 @@ class UMaModel(ChannelModel):
                 28
                 + 40 * np.log10(d_3D)
                 + 20 * np.log10(self.bs.frequency_GHz)
-                - 9 * np.log10(d_BP**2 + (self.bs.height - UE_height) ** 2)
+                - 9 * np.log10(d_BP**2 + (self.default_height - UE_height) ** 2)
             )
 
             return PL2
@@ -961,7 +962,7 @@ class UMiModel(ChannelModel):
         )
 
         self.bs.tx_power = self.bs.MICROCELL_TX_POWER[self.bs.bandwidth]
-        self.bs.height = 10.0
+        self.default_height = 10.0
 
         self.sigma_SF_LOS = 4.0
         self.sigma_SF_NLOS = 7.82
@@ -984,7 +985,7 @@ class UMiModel(ChannelModel):
         """
         h_E = 1.0
 
-        bs_height_prime = self.bs.height - h_E
+        bs_height_prime = self.default_height - h_E
         UE_height_prime = UE_height - h_E
 
         d_BP = (4 * bs_height_prime * UE_height_prime * self.bs.frequency_Hz) / 3.0e8
@@ -1045,7 +1046,7 @@ class UMiModel(ChannelModel):
                 32.4
                 + 40 * np.log10(d_3D)
                 + 20 * np.log10(self.bs.frequency_GHz)
-                - 9.5 * np.log10(d_BP**2 + (self.bs.height - UE_height) ** 2)
+                - 9.5 * np.log10(d_BP**2 + (self.default_height - UE_height) ** 2)
             )
 
             return PL2
@@ -1423,7 +1424,7 @@ class RMaModel_SC(ChannelModel):
         self.h = h
 
         self.bs.tx_power = self.bs.MACROCELL_TX_POWER[self.bs.bandwidth]
-        self.bs.height = 35.0
+        self.default_height = 35.0
 
         self.sigma_SF_LOS_1 = 4.0
         self.sigma_SF_LOS_2 = 6.0
@@ -1474,7 +1475,7 @@ class RMaModel_SC(ChannelModel):
             float: Дистанция излома (м).
 
         """
-        d_BP = (2 * np.pi * self.bs.height * UE_height * self.bs.frequency_Hz) / 3.0e8
+        d_BP = (2 * np.pi * self.default_height * UE_height * self.bs.frequency_Hz) / 3.0e8
         return d_BP
 
     def _calculate_los_probability(self, d_2D):
@@ -1577,8 +1578,9 @@ class RMaModel_SC(ChannelModel):
                 161.04
                 - 7.1 * np.log10(self.W)
                 + 7.5 * np.log10(self.h)
-                - (24.37 - 3.7 * (self.h / self.bs.height) ** 2) * np.log10(self.bs.height)
-                + (43.42 - 3.1 * np.log10(self.bs.height)) * (np.log10(d_3D) - 3)
+                - (24.37 - 3.7 * (self.h / self.default_height) ** 2)
+                * np.log10(self.default_height)
+                + (43.42 - 3.1 * np.log10(self.default_height)) * (np.log10(d_3D) - 3)
                 + 20 * np.log10(self.bs.frequency_GHz)
                 - (3.2 * (np.log10(11.75 * UE_height)) ** 2 - 4.97)
             )
@@ -1641,8 +1643,9 @@ class RMaModel_SC(ChannelModel):
                 161.04
                 - 7.1 * np.log10(self.W)
                 + 7.5 * np.log10(self.h)
-                - (24.37 - 3.7 * (self.h / self.bs.height) ** 2) * np.log10(self.bs.height)
-                + (43.42 - 3.1 * np.log10(self.bs.height)) * (np.log10(d_3D) - 3)
+                - (24.37 - 3.7 * (self.h / self.default_height) ** 2)
+                * np.log10(self.default_height)
+                + (43.42 - 3.1 * np.log10(self.default_height)) * (np.log10(d_3D) - 3)
                 + 20 * np.log10(self.bs.frequency_GHz)
                 - (3.2 * (np.log10(11.75 * UE_height)) ** 2 - 4.97)
             )
