@@ -18,62 +18,9 @@
 #------------------------------------------------------------------------------
 """
 
-from enum import Enum
 from typing import Dict, List
 
 import numpy as np
-
-
-class TrafficType(Enum):
-    """
-    Типы трафика согласно 3GPP.
-
-    Каждый тип имеет соответствующий QCI (QoS Class Identifier).
-    """
-
-    VOIP = "voip"  # Голосовые звонки
-    VIDEO_CALL = "video_call"  # Видеозвонки
-    VIDEO_STREAM = "video_stream"  # Потоковое видео
-    WEB = "web"  # Веб-браузинг
-    FILE_TRANSFER = "file_transfer"  # Скачивание файлов
-    GAMING = "gaming"  # Онлайн игры
-    BACKGROUND = "background"  # Фоновый трафик
-
-    def get_qci(self) -> int:
-        """
-        Получить QCI для типа трафика.
-
-        Returns:
-            int: QCI согласно 3GPP TS 23.203
-        """
-        qci_mapping = {
-            TrafficType.VOIP: 1,  # GBR, 100ms delay budget
-            TrafficType.VIDEO_CALL: 2,  # GBR, 150ms delay budget
-            TrafficType.VIDEO_STREAM: 7,  # GBR, 100ms delay budget
-            TrafficType.WEB: 9,  # Non-GBR
-            TrafficType.FILE_TRANSFER: 9,  # Non-GBR
-            TrafficType.GAMING: 3,  # GBR, 50ms delay budget
-            TrafficType.BACKGROUND: 9,  # Non-GBR
-        }
-        return qci_mapping[self]
-
-    def get_delay_budget(self) -> int:
-        """
-        Получить delay budget (мс) для типа трафика.
-
-        Returns:
-            int: Максимальная задержка (мс)
-        """
-        delay_mapping = {
-            TrafficType.VOIP: 100,
-            TrafficType.VIDEO_CALL: 150,
-            TrafficType.VIDEO_STREAM: 300,
-            TrafficType.WEB: 300,
-            TrafficType.FILE_TRANSFER: 1000,
-            TrafficType.GAMING: 50,
-            TrafficType.BACKGROUND: 1000,
-        }
-        return delay_mapping[self]
 
 
 class PoissonModel:
