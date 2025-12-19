@@ -582,6 +582,137 @@ class PoissonModel(ITrafficModel):
         return info
 
 
+class OnOffModel(ITrafficModel):
+    """
+    ON/OFF модель трафика (stateful).
+
+    Устройство чередует активные (ON) и неактивные (OFF) фазы.
+    Хранит состояние для каждого UE отдельно.
+
+    Паттерн: Strategy (конкретная реализация)
+    """
+
+    def __init__(
+        self,
+        duration_on: float,
+        duration_off: float,
+        packet_rate: float,
+        min_packet_size: int = 150,
+        max_packet_size: int = 1500,
+    ):
+        """
+        Args:
+            duration_on: Средняя длительность ON фазы (секунды)
+            duration_off: Средняя длительность OFF фазы (секунды)
+            packet_rate: Интенсивность в ON фазе (пакетов/сек)
+        """
+        super().__init__(min_packet_size, max_packet_size)
+        self.duration_on = duration_on
+        self.duration_off = duration_off
+        self.packet_rate = packet_rate
+
+        # ✅ НОВОЕ: Приватный атрибут (инкапсуляция)
+        self._device_states: Dict[int, Dict] = {}
+
+    def generate_traffic(self, ue_id: int, current_time: int, update_interval: int) -> List[Packet]:
+        """Генерация ON/OFF трафика"""
+
+        # Инициализация состояния для нового UE
+        if ue_id not in self._device_states:
+            self._initialize_state(ue_id, current_time, update_interval)
+
+        state_data = self._device_states[ue_id]
+        packets = []
+        t = current_time - update_interval
+
+        while t < current_time:
+            if state_data["state"] == "ON":
+                end_generate = min(state_data["end_state_time"], current_time)
+                mean_interval_ms = 1000.0 / self.packet_rate
+
+                while t < end_generate:
+                    interval = np.random.exponential(mean_interval_ms)
+                    t += interval
+                    if t > end_generate:
+                        break
+
+                    packet_size = np.random.randint(self.min_packet_size, self.max_packet_size)
+
+                    # ✅ НОВОЕ: Создаём Packet
+                    packet = Packet(
+                        size=packet_size, ue_id=ue_id, creation_time=t, qci=9, priority=0
+                    )
+                    packets.append(packet)
+
+                if state_data["end_state_time"] <= current_time:
+                    self._switch_to_off(ue_id)
+
+            elif state_data["state"] == "OFF":
+                t = min(state_data["end_state_time"], current_time)
+
+                if state_data["end_state_time"] <= current_time:
+                    self._switch_to_on(ue_id)
+
+            state_data = self._device_states[ue_id]
+
+        return packets
+
+    def _initialize_state(self, ue_id: int, current_time: int, update_interval: int):
+        """Инициализация состояния для нового UE"""
+        initial_state = "ON" if np.random.rand() > 0.5 else "OFF"
+
+        if initial_state == "ON":
+            duration = np.random.exponential(self.duration_on) * 1000
+        else:
+            duration = np.random.exponential(self.duration_off) * 1000
+
+        self._device_states[ue_id] = {
+            "state": initial_state,
+            "end_state_time": current_time - update_interval + duration,
+        }
+
+    def _switch_to_off(self, ue_id: int):
+        """Переключение в OFF состояние"""
+        state = self._device_states[ue_id]
+        duration = np.random.exponential(self.duration_off) * 1000
+        state["state"] = "OFF"
+        state["end_state_time"] = state["end_state_time"] + duration
+
+    def _switch_to_on(self, ue_id: int):
+        """Переключение в ON состояние"""
+        state = self._device_states[ue_id]
+        duration = np.random.exponential(self.duration_on) * 1000
+        state["state"] = "ON"
+        state["end_state_time"] = state["end_state_time"] + duration
+
+    def clear_state(self, ue_id: int):
+        """
+        ✅ НОВОЕ: Очистка состояния для удалённого UE.
+
+        Предотвращает утечку памяти!
+
+        Args:
+            ue_id: ID пользователя для очистки
+        """
+        if ue_id in self._device_states:
+            del self._device_states[ue_id]
+
+    def get_model_name(self) -> str:
+        return "OnOff"
+
+    def get_model_info(self) -> Dict:
+        info = super().get_model_info()
+        info.update(
+            {
+                "duration_on": self.duration_on,
+                "duration_off": self.duration_off,
+                "packet_rate": self.packet_rate,
+                "active_devices": len(self._device_states),  # Сколько UE в памяти
+            }
+        )
+        return info
+
+
 def test_traffic_models():
     """
     Тестирование и визуализация работы моделей трафика.
