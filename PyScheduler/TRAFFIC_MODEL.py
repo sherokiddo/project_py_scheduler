@@ -18,8 +18,9 @@
 #------------------------------------------------------------------------------
 """
 
+from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -74,6 +75,96 @@ class TrafficType(Enum):
             TrafficType.BACKGROUND: 1000,
         }
         return delay_mapping[self]
+
+
+@dataclass
+class Packet:
+    """
+    Пакет данных в LTE сети.
+
+    Attributes:
+        size: Размер пакета (байты)
+        ue_id: ID пользователя
+        creation_time: Время создания пакета (мс)
+        qci: Quality Class Identifier (1-9)
+        traffic_type: Тип трафика
+        priority: Приоритет (0 = highest)
+        ttl_ms: Time-to-live (мс)
+        deadline: Абсолютный deadline (creation_time + delay_budget)
+        is_fragment: Является ли пакет фрагментом
+    """
+
+    size: int
+    ue_id: int
+    creation_time: float
+    qci: int = 9
+    traffic_type: Optional[TrafficType] = None
+    priority: int = 0
+    ttl_ms: int = 1000
+    deadline: Optional[float] = None
+    is_fragment: bool = False
+
+    def __post_init__(self):
+        """Вычисляем deadline если не задан"""
+        if self.deadline is None:
+            if self.traffic_type is not None:
+                delay_budget = self.traffic_type.get_delay_budget()
+                self.deadline = self.creation_time + delay_budget
+            else:
+                # Дефолтный deadline
+                self.deadline = self.creation_time + self.ttl_ms
+
+    def age(self, current_time: int) -> int:
+        """
+        Возраст пакета в мс относительно текущего времени симуляции.
+
+        Args:
+            current_time: Текущее время симуляции (мс)
+
+        Returns:
+            int: Возраст пакета в миллисекундах
+        """
+        return current_time - self.creation_time
+
+    def to_dict(self) -> Dict:
+        """
+        Конвертация в dict для legacy совместимости.
+
+        Returns:
+            Dict: Словарь с полями пакета
+        """
+        return {
+            "size": self.size,
+            "creation_time": self.creation_time,
+            "priority": self.priority,
+            "qci": self.qci,
+            "ue_id": self.ue_id,
+            "ttl_ms": self.ttl_ms,
+            "deadline": self.deadline,
+            "is_fragment": self.is_fragment,
+        }
+
+    @staticmethod
+    def from_dict(data: Dict, ue_id: int) -> "Packet":
+        """
+        Создать Packet из dict (для legacy кода).
+
+        Args:
+            data: Словарь с полями пакета
+            ue_id: ID пользователя
+
+        Returns:
+            Packet: Созданный пакет
+        """
+        return Packet(
+            size=data["size"],
+            ue_id=ue_id,
+            creation_time=data["creation_time"],
+            priority=data.get("priority", 0),
+            qci=data.get("qci", 9),
+            ttl_ms=data.get("ttl_ms", 1000),
+            is_fragment=data.get("is_fragment", False),
+        )
 
 
 class PoissonModel:
