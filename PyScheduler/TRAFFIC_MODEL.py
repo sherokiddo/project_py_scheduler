@@ -18,6 +18,7 @@
 #------------------------------------------------------------------------------
 """
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Optional
@@ -165,6 +166,68 @@ class Packet:
             ttl_ms=data.get("ttl_ms", 1000),
             is_fragment=data.get("is_fragment", False),
         )
+
+
+class ITrafficModel(ABC):
+    """
+    Базовый интерфейс для всех моделей трафика.
+
+    Все модели должны наследоваться от этого класса и реализовать
+    абстрактные методы.
+
+    Паттерн: Strategy
+    """
+
+    def __init__(self, min_packet_size: int = 150, max_packet_size: int = 1500):
+        """
+        Базовая инициализация.
+
+        Args:
+            min_packet_size: Минимальный размер пакета (байты)
+            max_packet_size: Максимальный размер пакета (байты)
+        """
+        self.min_packet_size = min_packet_size
+        self.max_packet_size = max_packet_size
+
+    @abstractmethod
+    def generate_traffic(self, ue_id: int, current_time: int, update_interval: int) -> List[Packet]:
+        """
+        Генерация трафика за указанный интервал.
+
+        ⚠️ ВАЖНО: Все модели должны принимать ue_id, даже если не используют!
+
+        Args:
+            ue_id: ID пользователя
+            current_time: Текущее время симуляции (мс)
+            update_interval: Интервал генерации (мс)
+
+        Returns:
+            List[Packet]: Список сгенерированных пакетов
+        """
+        pass
+
+    @abstractmethod
+    def get_model_name(self) -> str:
+        """
+        Получить название модели.
+
+        Returns:
+            str: Название модели (например, 'Poisson', 'OnOff')
+        """
+        pass
+
+    def get_model_info(self) -> Dict:
+        """
+        Получить информацию о модели (параметры, состояние).
+
+        Returns:
+            Dict: Словарь с информацией о модели
+        """
+        return {
+            "name": self.get_model_name(),
+            "min_packet_size": self.min_packet_size,
+            "max_packet_size": self.max_packet_size,
+        }
 
 
 class PoissonModel:
