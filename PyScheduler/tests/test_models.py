@@ -4,7 +4,8 @@ from pathlib import Path
 parent_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(parent_dir))
 
-from TRAFFIC_MODEL import ITrafficModel, OnOffModel, Packet, PoissonModel
+import numpy as np
+from TRAFFIC_MODEL import ITrafficModel, MMPPModel, OnOffModel, Packet, PoissonModel
 
 
 class TestPoissonModel:
@@ -96,3 +97,78 @@ class TestOnOffModel:
         model = OnOffModel(duration_on=2, duration_off=3, packet_rate=25)
         # Не должно быть ошибки
         model.clear_state(ue_id=999)
+
+
+class TestMMPPModel:
+    def test_inherits_from_interface(self):
+        transition_matrix = np.array([[0, 0.07, 0.03], [0.12, 0, 0.08], [0.4, 0.1, 0]])
+        model = MMPPModel(packet_rates=[10, 50, 100], transition_matrix=transition_matrix)
+        assert isinstance(model, ITrafficModel)
+
+    def test_generates_packets(self):
+        transition_matrix = np.array([[0, 0.07, 0.03], [0.12, 0, 0.08], [0.4, 0.1, 0]])
+        model = MMPPModel(packet_rates=[10, 50, 100], transition_matrix=transition_matrix)
+        packets = model.generate_traffic(ue_id=1, current_time=1000, update_interval=100)
+
+        assert isinstance(packets, list)
+        for pkt in packets:
+            assert isinstance(pkt, Packet)
+            assert pkt.ue_id == 1
+
+    def test_maintains_separate_states_for_ues(self):
+        """Разные UE имеют разные состояния"""
+        transition_matrix = np.array([[0, 0.07, 0.03], [0.12, 0, 0.08], [0.4, 0.1, 0]])
+        model = MMPPModel(packet_rates=[10, 50, 100], transition_matrix=transition_matrix)
+
+        # Генерация для UE1
+        model.generate_traffic(ue_id=1, current_time=1000, update_interval=100)
+        # Генерация для UE2
+        model.generate_traffic(ue_id=2, current_time=1000, update_interval=100)
+
+        # Должно быть 2 разных состояния
+        assert len(model._device_states) == 2
+        assert 1 in model._device_states
+        assert 2 in model._device_states
+
+    def test_clear_state_removes_ue(self):
+        """clear_state удаляет состояние UE"""
+        transition_matrix = np.array([[0, 0.07, 0.03], [0.12, 0, 0.08], [0.4, 0.1, 0]])
+        model = MMPPModel(packet_rates=[10, 50, 100], transition_matrix=transition_matrix)
+
+        model.generate_traffic(ue_id=1, current_time=1000, update_interval=100)
+        assert 1 in model._device_states
+
+        # ✅ НОВОЕ: Очистка
+        model.clear_state(ue_id=1)
+        assert 1 not in model._device_states
+
+    def test_clear_state_nonexistent_ue_no_error(self):
+        """clear_state для несуществующего UE не вызывает ошибку"""
+        transition_matrix = np.array([[0, 0.07, 0.03], [0.12, 0, 0.08], [0.4, 0.1, 0]])
+        model = MMPPModel(packet_rates=[10, 50, 100], transition_matrix=transition_matrix)
+        # Не должно быть ошибки
+        model.clear_state(ue_id=999)
+
+    def test_transition_matrix_parameter(self):
+        """transition_matrix передаётся как параметр, а не захардкожена"""
+        custom_matrix = np.array([[0, 0.5, 0.5], [0.3, 0, 0.7], [0.6, 0.4, 0]])
+        model = MMPPModel(packet_rates=[5, 25, 100], transition_matrix=custom_matrix)
+
+        # Проверяем что матрица установлена правильно
+        assert np.array_equal(model.transition_matrix, custom_matrix)
+
+    def test_different_number_of_states(self):
+        """Модель поддерживает произвольное количество состояний"""
+        # 2 состояния
+        transition_matrix_2 = np.array([[0, 0.1], [0.2, 0]])
+        model_2 = MMPPModel(packet_rates=[10, 50], transition_matrix=transition_matrix_2)
+        packets = model_2.generate_traffic(ue_id=1, current_time=1000, update_interval=100)
+        assert isinstance(packets, list)
+
+        # 4 состояния
+        transition_matrix_4 = np.array(
+            [[0, 0.1, 0.2, 0.7], [0.3, 0, 0.4, 0.3], [0.2, 0.5, 0, 0.3], [0.6, 0.2, 0.2, 0]]
+        )
+        model_4 = MMPPModel(packet_rates=[5, 20, 50, 100], transition_matrix=transition_matrix_4)
+        packets = model_4.generate_traffic(ue_id=2, current_time=1000, update_interval=100)
+        assert isinstance(packets, list)

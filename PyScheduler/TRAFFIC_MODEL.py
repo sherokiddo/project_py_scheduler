@@ -713,6 +713,152 @@ class OnOffModel(ITrafficModel):
         return info
 
 
+class MMPPModel(ITrafficModel):
+    """
+    Модель трафика с марковским модулированным пуассоновским процессом (MMPP).
+    Модель описывает систему, которая может находиться в нескольких состояниях,
+    каждое из которых характеризуется своей интенсивностью генерации пакетов.
+    Переходы между состояниями происходят согласно марковскому процессу.
+    """
+
+    def __init__(
+        self,
+        packet_rates: List[float],
+        transition_matrix: np.ndarray,
+        min_packet_size: float = 150,
+        max_packet_size: float = 1500,
+    ):
+        """
+        Инициализация MMPP модели трафика.
+
+        Args:
+            packet_rates: Список интенсивностей трафика для каждого состояния (пакетов/сек)
+            min_packet_size: Минимальный размер пакета (по умолчанию 150 байт)
+            max_packet_size: Максимальный размер пакета (по умолчанию 1500 байт)
+        """
+        super().__init__(min_packet_size, max_packet_size)
+        self.transition_matrix = transition_matrix
+
+        self.packet_rates = packet_rates
+        self._device_states: Dict[int, Dict] = {}
+
+    def _get_next_state(self, current_state: int) -> (int, float):
+        """
+        Определение следующего состояния и времени до перехода.
+
+        Args:
+            current_state: Текущее состояние системы
+
+        Returns:
+            next_state: следующее состояние
+            time_to_transition: время до перехода (мс)
+        """
+        rates = self.transition_matrix[current_state]
+        total_rate = sum(rates)
+        if total_rate == 0:
+            return current_state, float("inf")
+
+        time_to_transition = np.random.exponential(1 / total_rate) * 1000
+
+        probabilities = rates / total_rate
+        next_state = np.random.choice(len(self.packet_rates), p=probabilities)
+
+        return next_state, time_to_transition
+
+    def generate_traffic(self, ue_id: int, current_time: int, update_interval: int) -> List[Packet]:
+        """
+        Генерация трафика для конкретного устройства за указанный интервал времени.
+
+        Args:
+            UE_ID: Идентификатор устройства
+            current_time: Текущее время моделирования (мс)
+            update_interval: Интервал времени для генерации трафика (мс)
+
+        Returns:
+            Список словарей с характеристиками сгенерированных пакетов:
+            [{
+                'size': размер пакета (байт),
+                'creation_time': время создания (мс),
+                'priority': приоритет пакета
+            }]
+        """
+        if ue_id not in self._device_states:
+            initial_state = np.random.randint(0, len(self.packet_rates))
+            next_state, time_to_transition = self._get_next_state(initial_state)
+
+            self._device_states[ue_id] = {
+                "current_state": initial_state,
+                "transition_time": current_time - update_interval + time_to_transition,
+                "next_state": next_state,
+            }
+
+        state_data = self._device_states[ue_id]
+        packets = []
+        t = current_time - update_interval
+
+        while t < current_time:
+            current_state = state_data["current_state"]
+            transition_time = state_data["transition_time"]
+
+            end_time = min(transition_time, current_time)
+
+            if self.packet_rates[current_state] > 0:
+                mean_interval_ms = 1000.0 / self.packet_rates[current_state]
+
+                while t < end_time:
+                    interval = np.random.exponential(mean_interval_ms)
+                    t += interval
+
+                    if t > end_time:
+                        break
+
+                    packet_size = np.random.randint(self.min_packet_size, self.max_packet_size)
+                    packet = Packet(
+                        size=packet_size, ue_id=ue_id, creation_time=t, qci=9, priority=0
+                    )
+                    packets.append(packet)
+            else:
+                t = end_time
+
+            # Если наступило время перехода
+            if transition_time <= current_time:
+                state_data["current_state"] = state_data["next_state"]
+                new_next_state, time_to_transition = self._get_next_state(
+                    state_data["current_state"]
+                )
+                state_data["next_state"] = new_next_state
+                state_data["transition_time"] = transition_time + time_to_transition
+
+        return packets
+
+    def clear_state(self, ue_id: int):
+        """
+        ✅ НОВОЕ: Очистка состояния для удалённого UE.
+
+        Предотвращает утечку памяти!
+
+        Args:
+            ue_id: ID пользователя для очистки
+        """
+        if ue_id in self._device_states:
+            del self._device_states[ue_id]
+
+    def get_model_name(self) -> str:
+        return "MMPP"
+
+    def get_model_info(self) -> Dict:
+        info = super().get_model_info()
+        info.update(
+            {
+                "packet_rates": self.packet_rates,
+                "num_states": len(self.packet_rates),
+                "transition_matrix": self.transition_matrix.tolist(),  # для JSON-сериализации
+                "active_devices": len(self._device_states),
+            }
+        )
+        return info
+
+
 def test_traffic_models():
     """
     Тестирование и визуализация работы моделей трафика.

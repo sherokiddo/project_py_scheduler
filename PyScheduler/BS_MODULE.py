@@ -482,31 +482,17 @@ class BaseStation:
 
             buffer = self.ue_buffers[target_ue_id]
 
-            # Генерация сырых данных через модель трафика
-
+            # Генерация трафика
             raw_data = model.generate_traffic(
-                current_time=current_time, update_interval=update_interval
+                ue_id=target_ue_id, current_time=current_time, update_interval=update_interval
             )
 
-            packets = [
-                Packet(
-                    size=pkt["size"],
-                    ue_id=target_ue_id,
-                    creation_time=pkt.get("creation_time", current_time),
-                    priority=pkt.get("priority", 0),
-                    ttl_ms=ttl_ms,
-                )
-                for pkt in raw_data
-            ]
-
-            total_bytes = sum(pkt.size for pkt in packets)
-            bitrate = (total_bytes * 8) / (update_interval / 1000) if update_interval > 0 else 0
-
-            # Добавление пакетов в буфер BS для конкретного UE
-        for packet in packets:
-            success = buffer.ADD_PACKET(packet, current_time)
-            if not success:
-                print(f"BS: Пакет для UE {target_ue_id} отброшен (буфер полный)")
+            # Добавление пакетов в буфер
+            for packet in raw_data:
+                packet.ttl_ms = ttl_ms
+                success = buffer.ADD_PACKET(packet, current_time)
+                if not success:
+                    print(f"BS: Пакет для UE {target_ue_id} отброшен (буфер полный)")
 
             # Логирование статистики
             # status = buffer.GET_UE_STATUS(current_time)["per_ue"].get(target_ue_id, {})
