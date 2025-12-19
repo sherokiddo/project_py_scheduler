@@ -19,32 +19,8 @@ from typing import Dict, List, Tuple
 
 import GLOBALS
 import numpy as np
+from TRAFFIC_MODEL import Packet
 from UE_MODULE import UserEquipment
-
-
-class Packet:
-    """Класс для представления пакета данных в Downlink-буфере"""
-
-    def __init__(
-        self,
-        size: int,
-        ue_id: int,
-        creation_time: int,  # Время в мс
-        priority: int = 0,
-        ttl_ms: int = 1000,
-        is_fragment: bool = False,
-    ):
-        self.size = size
-        self.ue_id = ue_id
-        self.creation_time = creation_time
-        self.priority = priority
-        self.ttl_ms = ttl_ms  # сделай как тебе удобно
-        self.is_fragment = is_fragment
-
-    @property
-    def age(self, current_time: int) -> int:
-        """Возраст пакета в мс относительно текущего времени симуляции"""
-        return current_time - self.creation_time
 
 
 class Buffer:
@@ -374,6 +350,7 @@ class BaseStation:
         Инициализация базовой станции.
         #TODO: Перейти на фабричный паттерн реализации
 
+
         Args:
             x: Координата X расположения станции
             y: Координата Y расположения станции
@@ -385,6 +362,9 @@ class BaseStation:
         self.height = height  # Высота антенны
 
         # Частотные параметры
+        self.frequency_GHz = frequency_GHz  # Частота в ГГц
+        self.frequency_Hz = frequency_GHz * 1e9  # Частота в Гц
+        self.bandwidth = bandwidth  # Полоса пропускания
         self.frequency_GHz = frequency_GHz  # Частота в ГГц
         self.frequency_Hz = frequency_GHz * 1e9  # Частота в Гц
         self.bandwidth = bandwidth  # Полоса пропускания
@@ -416,11 +396,13 @@ class BaseStation:
         Использует ленивый импорт для избежания циклических зависимостей.
         (от ленивого импорта можно избавиться)
 
+
         Args:
             params: Параметры для конкретной модели канала
                 - RMa: W (ширина улицы), h (высота здания), cond_update_period
                 - UMa: cond_update_period, o2i_model
                 - UMi: cond_update_period, o2i_model
+
 
         Raises:
             ValueError: Если указан неизвестный тип модели
@@ -443,16 +425,19 @@ class BaseStation:
         """
         Регистрация пользователя на базовой станции.
 
+
         Выполняет:
         - Создание буфера для DL данных пользователя
         - Привязку модели трафика пользователя
         - Сохранение ссылки на объект UE (для расчета SINR)
         - Установку обратной связи UE -> BS (для доступа к модели канала)
 
+
         Args:
             ue: Объект UserEquipment для регистрации
         """
         # Существующая логика (без изменений)
+        self.ue_buffers[ue.UE_ID] = Buffer(global_max=self.global_max, per_ue_max=self.per_ue_max)
         self.ue_buffers[ue.UE_ID] = Buffer(global_max=self.global_max, per_ue_max=self.per_ue_max)
         self.ue_traffic_models[ue.UE_ID] = ue.traffic_model
         self.registered_ues[ue.UE_ID] = ue
