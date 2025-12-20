@@ -1,3 +1,6 @@
 [submodule "ui-system"]
 	path = ui-system
 	url = https://github.com/BagreyA/ui-system.git
+[submodule "scheduler-api"]
+	path = scheduler-api
+	url = https://github.com/DmitriyMosk/sim-sched-api.git
