@@ -557,6 +557,186 @@ class MMPPModel(ITrafficModel):
         return info
 
 
+class TrafficModelFactory:
+    """
+    Фабрика для создания моделей трафика.
+
+    Паттерн: Factory
+    """
+
+    @staticmethod
+    def create_model(model_type: str, **kwargs) -> ITrafficModel:
+        """
+        Создать модель трафика по типу.
+
+        Args:
+            model_type: Тип модели ('Poisson', 'OnOff', 'MMPP')
+            **kwargs: Параметры модели
+
+        Returns:
+            ITrafficModel: Созданная модель
+
+        Raises:
+            ValueError: Если model_type неизвестен
+
+        Example:
+            >>> factory = TrafficModelFactory()
+            >>> model = factory.create_model('Poisson', packet_rate=10)
+        """
+        if model_type == "Poisson":
+            return PoissonModel(**kwargs)
+        elif model_type == "OnOff":
+            return OnOffModel(**kwargs)
+        elif model_type == "MMPP":
+            if "transition_matrix" not in kwargs:
+                kwargs["transition_matrix"] = np.array(
+                    [[0, 0.07, 0.03], [0.12, 0, 0.08], [0.4, 0.1, 0]]
+                )
+            return MMPPModel(**kwargs)
+        else:
+            available = TrafficModelFactory.get_available_models()
+            raise ValueError(f"Unknown model type: '{model_type}'. Available: {available}")
+
+    @staticmethod
+    def get_available_models() -> List[str]:
+        """Список доступных моделей"""
+        return ["Poisson", "OnOff", "MMPP"]
+
+    @staticmethod
+    def create_poisson_model(packet_rate: float, **kwargs) -> PoissonModel:
+        """Удобный метод для создания Poisson модели"""
+        return PoissonModel(packet_rate=packet_rate, **kwargs)
+
+    @staticmethod
+    def create_onoff_model(
+        duration_on: float, duration_off: float, packet_rate: float, **kwargs
+    ) -> OnOffModel:
+        """Удобный метод для создания OnOff модели"""
+        return OnOffModel(
+            duration_on=duration_on, duration_off=duration_off, packet_rate=packet_rate, **kwargs
+        )
+
+    @staticmethod
+    def create_mmpp_model(
+        packet_rates: List[float], transition_matrix: Optional[np.ndarray] = None, **kwargs
+    ) -> MMPPModel:
+        """Удобный метод для создания MMPP модели"""
+        return MMPPModel(packet_rates=packet_rates, transition_matrix=transition_matrix, **kwargs)
+
+
+class ITrafficGeneratorInterface(ABC):
+    """
+    Внешний интерфейс для модулей SIMULATOR, BS, UE.
+
+    Паттерн: Facade
+    """
+
+    @abstractmethod
+    def generate_packets(self, ue_id: int, current_time: int, update_interval: int) -> List[Packet]:
+        """Генерация пакетов для UE"""
+        pass
+
+    @abstractmethod
+    def set_model(self, ue_id: int, model_type: str, **params):
+        """Установить модель трафика для UE"""
+        pass
+
+    @abstractmethod
+    def get_statistics(self, ue_id: Optional[int] = None) -> Dict:
+        """Статистика генерации"""
+        pass
+
+    @abstractmethod
+    def reset_ue(self, ue_id: int):
+        """Сброс состояния UE"""
+        pass
+
+
+class SimpleGenerator(ITrafficGeneratorInterface):
+    """
+    Простой генератор трафика для legacy поддержки.
+
+    Особенности:
+    - Один UE = одна модель
+    - Прямое возвращение пакетов (без callback)
+    - Поддержка default/random QCI
+
+    Паттерн: Facade
+    """
+
+    def __init__(self, default_qci: int = 9, assign_random_qci: bool = False):
+        """
+        Args:
+            default_qci: QCI по умолчанию для всех пакетов
+            assign_random_qci: Если True, назначать случайный QCI
+        """
+        self.models: Dict[int, ITrafficModel] = {}
+        self.default_qci = default_qci
+        self.assign_random_qci = assign_random_qci
+
+        # Статистика
+        self._total_packets_generated = 0
+        self._packets_per_ue: Dict[int, int] = {}
+
+    def generate_packets(self, ue_id: int, current_time: int, update_interval: int) -> List[Packet]:
+        """Генерация пакетов для одного UE"""
+        if ue_id not in self.models:
+            return []
+
+        model = self.models[ue_id]
+        packets = model.generate_traffic(ue_id, current_time, update_interval)
+
+        # Установка QCI
+        for pkt in packets:
+            if self.assign_random_qci:
+                import random
+
+                pkt.qci = random.choice([1, 2, 3, 5, 7, 9])
+            else:
+                pkt.qci = self.default_qci
+
+        # Статистика
+        self._total_packets_generated += len(packets)
+        self._packets_per_ue[ue_id] = self._packets_per_ue.get(ue_id, 0) + len(packets)
+
+        return packets
+
+    def set_model(self, ue_id: int, model_type: str, **params):
+        """Установить модель через Factory"""
+        model = TrafficModelFactory.create_model(model_type, **params)
+        self.models[ue_id] = model
+
+    def get_statistics(self, ue_id: Optional[int] = None) -> Dict:
+        """Статистика генерации"""
+        if ue_id is None:
+            return {
+                "total_packets": self._total_packets_generated,
+                "active_ues": len(self.models),
+                "per_ue": self._packets_per_ue.copy(),
+            }
+        else:
+            return {
+                "ue_id": ue_id,
+                "packets_generated": self._packets_per_ue.get(ue_id, 0),
+                "model": self.models[ue_id].get_model_name() if ue_id in self.models else None,
+            }
+
+    def reset_ue(self, ue_id: int):
+        """Сброс состояния UE + очистка памяти"""
+        if ue_id in self.models:
+            model = self.models[ue_id]
+
+            # ✅ Автоматическая очистка состояния (если stateful)
+            if hasattr(model, "clear_state"):
+                model.clear_state(ue_id)
+
+            del self.models[ue_id]
+
+        # Очистка статистики
+        if ue_id in self._packets_per_ue:
+            del self._packets_per_ue[ue_id]
+
+
 def test_traffic_models():
     """
     Тестирование и визуализация работы моделей трафика.
