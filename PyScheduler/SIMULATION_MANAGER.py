@@ -12,36 +12,41 @@
 # Версия Python Kernel: 3.12.9
 #------------------------------------------------------------------------------
 """
+
 import csv
 import sys
-import numpy as np
 from dataclasses import dataclass
 from typing import Optional
 
 import GLOBALS
-from UE_MODULE import UECollection
+import numpy as np
 from BS_MODULE import BaseStation
 from RES_GRID import RES_GRID_LTE
 from SCHEDULER import SchedulerInterface
+from TRAFFIC_MODEL import SimpleGenerator
+from UE_MODULE import UECollection
+
 
 @dataclass
 class SimulationConfig:
     """
     Конфигурация симуляции.
-    
+
     Attributes:
         sim_duration (Optional[int]): Длительность симуляции (мс).
         update_interval (int): Интервал обновления состояния пользователей (мс).
         stats_log (bool): Включение логирования статистики в CSV-файл.
         verbose (bool): Включение подробного verbose логирования.
-        
+
     """
+
     sim_duration: Optional[int] = None
     update_interval: int = 1
     stats_log: bool = False
     verbose: bool = False
     to_file: bool = False
-    
+
+
 @dataclass
 class SchedulerConfig:
     """Конфигурация планировщика.
@@ -53,8 +58,9 @@ class SchedulerConfig:
         max_dl_cce_allowance (Optional[int]): Максимальное число CCE для PDCCH.
         window_size (int): Размер скользящего окна.
         enable_window (bool): Включение скользящего окна.
-        
+
     """
+
     algorithm: Optional[str] = None
     max_dl_ue_tti: Optional[int] = None
     pcfich: int = 2
@@ -62,28 +68,31 @@ class SchedulerConfig:
     window_size: int = 100
     enable_window: bool = True
 
+
 class SimulationManager:
     """
     Менеджер управления симуляцией.
-    
+
     Реализует настройку и запуск симуляции.
-    
+
     """
+
     def __init__(self):
         """
         Инициализация менеджера симуляции.
-        
-        Создаёт объекты конфигураций, а также контейнеры для базовой 
+
+        Создаёт объекты конфигураций, а также контейнеры для базовой
         станции и коллекции пользователей.
-        
+
         """
         self.sim_config = SimulationConfig()
         self.sched_config = SchedulerConfig()
-        
+        self.traffic_gen = SimpleGenerator(default_qci=9)
+
         self.ue_collection = None
         self.base_station = None
-        
-    def set_sim_duration(self, sim_duration: int) -> None:     
+
+    def set_sim_duration(self, sim_duration: int) -> None:
         """
         Установить длительности всей симуляции.
 
@@ -100,9 +109,9 @@ class SimulationManager:
                 f"целым числом. Получено: {sim_duration} "
                 f"({type(sim_duration).__name__})"
             )
-            
+
         self.sim_config.sim_duration = sim_duration
-        
+
     def set_upd_interval(self, update_interval: int) -> None:
         """
         Установить интервал обновления состояний пользователей.
@@ -120,9 +129,9 @@ class SimulationManager:
                 f"целым числом. Получено: {update_interval} "
                 f"({type(update_interval).__name__})"
             )
-        
+
         self.sim_config.update_interval = update_interval
-        
+
     def set_ue_collection(self, ue_collection: UECollection) -> None:
         """
         Установить коллекцию пользователей.
@@ -139,9 +148,9 @@ class SimulationManager:
                 f"Коллекция пользователей должна быть типа UECollection. "
                 f"Получено: {type(ue_collection).__name__}"
             )
-        
+
         self.ue_collection = ue_collection
-        
+
     def set_base_station(self, base_station: BaseStation) -> None:
         """
         Установить базовую станцию.
@@ -158,9 +167,9 @@ class SimulationManager:
                 f"Экземпляр базовой станции должен быть типа BaseStation. "
                 f"Получено: {type(base_station).__name__}"
             )
-    
+
         self.base_station = base_station
-        
+
     def set_scheduler(self, algorithm: str, **kwargs) -> None:
         """
         Установить настройки алгоритма планирования ресурсов.
@@ -190,14 +199,14 @@ class SimulationManager:
                     f"Доступные параметры: "
                     f"{', '.join(self.sched_config.__dataclass_fields__.keys())}"
                 )
-        
+
     def enable_stats_log(self):
         """
         Включить логирование статистики симуляции в CSV-файл.
 
         """
         self.sim_config.stats_log = True
-        
+
     def enable_verbose_log(self, to_file: bool = False):
         """
         Включить подробное логирование симуляции (verbose).
@@ -209,11 +218,11 @@ class SimulationManager:
         """
         self.sim_config.verbose = True
         self.sim_config.to_file = to_file
-        
+
     def start_simulation(self) -> None:
         """
         Запуск основной симуляции.
-        
+
         Основные этапы:
             1. Проверка конфигурации.
             2. Создание ресурсной сетки (RES_GRID_LTE).
@@ -234,30 +243,28 @@ class SimulationManager:
             sys.stdout = self._log_file
             sys.stderr = self._log_file
             self._return_stdout = True
-        
+
         try:
             # Проверка обязательных параметров симуляции
             self._check_required_parameters()
-            
+
             # Расчёт числа кадров для ресурсной сетки
             num_frames = int(np.ceil(self.sim_config.sim_duration / 10))
             if self.sim_config.verbose:
-                print(f"[SIMULATION] Calculated number of frames for resource "
-                      f"grid: {num_frames}")
-                
+                print(f"[SIMULATION] Calculated number of frames for resource grid: {num_frames}")
+
             # Создание ресурсной сетки
-            lte_grid = RES_GRID_LTE(
-                bandwidth=self.base_station.bandwidth,
-                num_frames=num_frames
-            )
+            lte_grid = RES_GRID_LTE(bandwidth=self.base_station.bandwidth, num_frames=num_frames)
             if self.sim_config.verbose and lte_grid:
-                print(f"[SIMULATION] The resource grid has been initialized. "
-                      f"Bandwidth={lte_grid.bandwidth} MHz. RBs={lte_grid.rb_per_slot}")
-    
+                print(
+                    f"[SIMULATION] The resource grid has been initialized. "
+                    f"Bandwidth={lte_grid.bandwidth} MHz. RBs={lte_grid.rb_per_slot}"
+                )
+
             # Создание планировщика
             scheduler = SchedulerInterface.create(
-                algorithm=self.sched_config.algorithm, 
-                lte_grid=lte_grid, 
+                algorithm=self.sched_config.algorithm,
+                lte_grid=lte_grid,
                 bs=self.base_station,
                 max_dl_ue_tti=self.sched_config.max_dl_ue_tti,
                 pcfich=self.sched_config.pcfich,
@@ -265,48 +272,44 @@ class SimulationManager:
                 verbose_pdcch=self.sim_config.verbose,
                 window_size=self.sched_config.window_size,
                 enable_window=self.sched_config.enable_window,
-                verbose=self.sim_config.verbose
+                verbose=self.sim_config.verbose,
             )
-            
+
             # Основной цикл симуляции
             for tti in range(self.sim_config.sim_duration):
-                
                 if self.sim_config.verbose:
                     print(f"\n[SIMULATION] Start TTI {tti}...")
-                
+
                 # Обновление глобальной переменной текущего времени
                 GLOBALS.CURRENT_TIME = tti
-                
+
                 # Условие для обновления состояния пользователей
                 if tti % self.sim_config.update_interval == 0:
-                    
                     if self.sim_config.verbose:
                         print("[SIMULATION] Update UEs states")
-                    
+
                     # Обновление состояния пользователей
                     self.ue_collection.UPDATE_ALL_USERS(
-                        current_time=tti, 
-                        update_interval=self.sim_config.update_interval
+                        current_time=tti, update_interval=self.sim_config.update_interval
                     )
-                            
-                # Подготовка данных для планировщика  
+
+                # Подготовка данных для планировщика
                 users = self.ue_collection.GET_USERS_FOR_SCHEDULER()
-                
+
                 # Планирование ресурсов
                 sched_result = scheduler.schedule(tti, users)
-                
+
                 # Вывод статистики в CSV файл
                 if self.sim_config.stats_log:
                     self._stats_logging(sched_result)
 
-        finally:    
+        finally:
             # Возвращение консольного вывода
             if self.sim_config.to_file:
                 sys.stdout = self._original_stdout
                 sys.stderr = self._original_stderr
                 self._log_file.close()
-            
-                
+
     def _check_required_parameters(self) -> None:
         """
         Проверка наличия всех обязательных параметров симуляции.
@@ -316,38 +319,35 @@ class SimulationManager:
 
         """
         errors = []
-        
+
         if self.sim_config.sim_duration is None:
             errors.append(
                 "Не задана длительность симуляции. "
                 "Используйте set_sim_duration(*) для установки длительности (мс)."
             )
-            
+
         if self.ue_collection is None:
             errors.append(
                 "Не задана коллекция пользователей. "
                 "Используйте set_ue_collection(*) для установки коллекции UE."
             )
-            
+
         if self.base_station is None:
             errors.append(
                 "Не задана базовая станция. "
                 "Используйте set_base_station(*) для установки базовой станции."
             )
-        
+
         if self.sched_config.algorithm is None:
             errors.append(
                 "Не задан алгоритм планирования ресурсов. "
                 "Используйте set_scheduler(*) для настройки планировщика."
             )
-            
+
         if errors:
-            msg = (
-                "Ошибка: не все обязательные параметры симуляции заданы:\n"
-                + "\n".join(errors)
-            )
+            msg = "Ошибка: не все обязательные параметры симуляции заданы:\n" + "\n".join(errors)
             raise RuntimeError(msg)
-            
+
     def _stats_logging(self, sched_result: dict) -> None:
         """
         Логирование статистики симуляции в CSV-файл (stats.csv).
@@ -358,21 +358,32 @@ class SimulationManager:
         """
         allocation = sched_result["allocation"]
         pdcch_allocation = sched_result["pdcch_stats"]["allocations"]
-        
-        filename = 'stats.csv'
-        
+
+        filename = "stats.csv"
+
         # Названия колонок при первом запуске
         if not hasattr(self, "_stats_file_initialized"):
-            with open(filename, 'w', newline='', encoding='utf-8') as file:
+            with open(filename, "w", newline="", encoding="utf-8") as file:
                 writer = csv.writer(file)
-                writer.writerow(["TTI", "UE_ID", "Num_RBs", "RBs", "Num_CCE", 
-                                 "Tx_Bits", "Buffer_Size" ,"Wideband CQI", 
-                                 "Subband CQI", "SINR"])
+                writer.writerow(
+                    [
+                        "TTI",
+                        "UE_ID",
+                        "Num_RBs",
+                        "RBs",
+                        "Num_CCE",
+                        "Tx_Bits",
+                        "Buffer_Size",
+                        "Wideband CQI",
+                        "Subband CQI",
+                        "SINR",
+                    ]
+                )
             self._stats_file_initialized = True
-        
-        with open(filename, 'a', newline='', encoding='utf-8') as file:
+
+        with open(filename, "a", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
-            
+
             # Сбор данных
             for ue in self.ue_collection.GET_ALL_USERS():
                 ue_id = ue.UE_ID
@@ -384,8 +395,30 @@ class SimulationManager:
                 cqi = ue.cqi
                 subband_cqi = ue.cqi_subband
                 sinr = round(ue.SINR, 4)
-                
+
                 # Запись в файл
-                row = [GLOBALS.CURRENT_TIME, ue_id, num_rbs, rbs, num_cce, 
-                       tx_bits, buf_size, cqi, subband_cqi, sinr]
+                row = [
+                    GLOBALS.CURRENT_TIME,
+                    ue_id,
+                    num_rbs,
+                    rbs,
+                    num_cce,
+                    tx_bits,
+                    buf_size,
+                    cqi,
+                    subband_cqi,
+                    sinr,
+                ]
                 writer.writerow(row)
+
+    def setup_ue_traffic(self, ue_id, model_type, **params):
+        """Настройка трафика для UE"""
+        self.traffic_gen.set_model(ue_id, model_type, **params)
+
+    def generate_traffic_for_ue(self, ue_id, current_time, interval):
+        """Генерация трафика"""
+        packets = self.traffic_gen.generate_packets(ue_id, current_time, interval)
+
+        # Добавляем в буфер BS
+        for pkt in packets:
+            self.bs.ue_buffers[ue_id].ADD_PACKET(pkt, current_time)
