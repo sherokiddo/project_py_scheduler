@@ -186,6 +186,7 @@ class SchedulerInterface:
         self._last_tti = -1
         self._last_allocation = None
         self._last_users = None
+        self._last_priority_list = []
         
         self._last_sch_time_us = 0.0
         self._last_priority_calc_time_us = 0.0
@@ -193,6 +194,8 @@ class SchedulerInterface:
         self._last_priority_list_size = 0
         self._last_avg_priority_value = 0.0
         self._last_pdcch_blocked_count = 0
+
+        self.last_ue_transmitted_bits = {}
 
         self.verbose = verbose
 
@@ -217,6 +220,10 @@ class SchedulerInterface:
         3, 6 реализуются в конкретных планировщиках
         """
         t_sch_start = time.perf_counter()
+        print(f"[DEBUG schedule()] BEFORE: self._last_tti = {self._last_tti}, tti = {tti}")
+        self._last_tti = tti
+        print(f"[DEBUG schedule()] AFTER: self._last_tti = {self._last_tti}")
+
 
         # ЭТАП 1: Eligibility checks
         eligible_ues = self._filter_eligible_ues(tti, users)
@@ -269,7 +276,7 @@ class SchedulerInterface:
         self._update_stats(tti, len(eligible_ues), allocated_rbs, active_ues)
         self._last_allocation = allocation.copy()
         self._last_users = users
-        self._last_tti = tti
+        self._last_priority_list = priority_list
         
         t_sch_end = time.perf_counter()
         sch_time_us = (t_sch_end - t_sch_start) * 1_000_000
@@ -307,11 +314,15 @@ class SchedulerInterface:
             if total_rbs > 0 else 0.0)
         
         total_buffer_bytes = 0
+        ue_buffer_sizes = {}
         if hasattr(self, '_last_users') and self._last_users:
             for user in self._last_users:
+                ue_id = user.get('UE_ID')  
                 # bs_buffer_size добавляется в _filter_eligible_ues()
                 buffer_size = user.get('bs_buffer_size', 0)
                 total_buffer_bytes += buffer_size
+                if ue_id is not None:
+                    ue_buffer_sizes[ue_id] = buffer_size
 
         stats = {
             'tti': self._last_tti,
@@ -323,11 +334,22 @@ class SchedulerInterface:
             #TODO: временное решение. избавиться как сделаем buffer.get_stats()
             'dl_prb_utilization_pct': round(prb_utilization_pct, 2),
             'sch_total_time_us': round(self._last_sch_time_us, 2),
+            'sch_priority_list': self._last_priority_list,
             'sch_priority_calc_time_us': round(self._last_priority_calc_time_us, 2),
             'sch_priority_sort_time_us': round(self._last_priority_sort_time_us, 2),
             'sch_priority_list_size': self._last_priority_list_size,
             'sch_pdcch_blocked_count': self._last_pdcch_blocked_count,
-            'sch_avg_priority_value': round(self._last_avg_priority_value, 4),}
+            'sch_avg_priority_value': round(self._last_avg_priority_value, 4),
+            "ue_buffer_sizes": ue_buffer_sizes,
+            "ue_transmitted_bits": self.last_ue_transmitted_bits.copy()}
+
+        if hasattr(self, '_last_priority_list') and self._last_priority_list:
+            stats["ue_priorities"] = {
+                u["UE_ID"]: u["priority"] 
+                for u in self._last_priority_list
+            }
+        else:
+            stats["ue_priorities"] = {}
 
         return stats
 
@@ -461,22 +483,28 @@ class SchedulerInterface:
         # Оставляем 5% запас для overhead и динамики канала
         pdsch_threshold = total_rb * 0.95
 
-        for user in priority_list:
+        for idx, user in enumerate(priority_list):
             bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
             buffer_bits = user['bs_buffer_size'] * 8
             rb_needed = min(buffer_bits / (bits_per_rb * 2), total_rb)
-
-            selected_ues.append(user)
-            estimated_rb += rb_needed
-
-            if estimated_rb >= pdsch_threshold:
+            
+            if idx == 0:
+                selected_ues.append(user)
+                estimated_rb += rb_needed
+                continue
+            
+            if estimated_rb + rb_needed >= pdsch_threshold:
                 if self.verbose:
                     remaining = len(priority_list) - len(selected_ues)
-                    print(f"[SCHEDULER TTI {tti}] PDSCH estimation: threshold reached "
-                          f"({estimated_rb:.0f}/{total_rb} RB ≈ {estimated_rb/total_rb*100:.1f}%), "
+                    print(f"[SCHEDULER TTI {tti}] PDSCH estimation threshold reached "
+                          f"({estimated_rb:.0f}/{total_rb} RB = {estimated_rb/total_rb*100:.1f}%), "
                           f"{remaining} UE excluded")
-                break  # Прекращаем для СЛЕДУЮЩИХ UE
-
+                break
+            
+            # Добавляем UE
+            selected_ues.append(user)
+            estimated_rb += rb_needed
+        
         # Verbose
         if self.verbose and selected_ues:
             excluded = len(priority_list) - len(selected_ues)
@@ -484,7 +512,7 @@ class SchedulerInterface:
                   f"{excluded} UE excluded")
             print(f"[SCHEDULER TTI {tti}] Estimated PDSCH: "
                   f"{estimated_rb:.0f}/{total_rb} RB ({estimated_rb/total_rb*100:.1f}%)")
-
+        
         return selected_ues
 
     def _allocate_pdcch(self, priority_list: List[Dict]) -> List[Dict]:
@@ -548,6 +576,7 @@ class SchedulerInterface:
         total_bits_transmitted = 0
         ues_transmitted = 0
         time_interval_ms = 1
+        self.last_ue_transmitted_bits = {}
 
         for user in users:
             ue = user.get('ue')
@@ -560,10 +589,12 @@ class SchedulerInterface:
 
             if allocated_rbs == 0:
                 ue.UPD_DL_THROUGHPUT_BPS(0, time_interval_ms)
+                self.last_ue_transmitted_bits[ueid] = 0
                 continue  # UE не получил ресурсов - пропускаем
 
             bs_buffer = self.lte_grid.bs.ue_buffers.get(ueid)
             if bs_buffer is None:
+                self.last_ue_transmitted_bits[ueid] = 0
             # UE нет в буферах BS — обновить на 0
                 ue.UPD_DL_THROUGHPUT_BPS(0, time_interval_ms)
                 continue
@@ -577,6 +608,7 @@ class SchedulerInterface:
 
             if max_bytes <= 0:
                 ue.UPD_DL_THROUGHPUT_BPS(0, time_interval_ms)
+                self.last_ue_transmitted_bits[ueid] = 0
                 continue
 
             try:
@@ -589,9 +621,11 @@ class SchedulerInterface:
                 if self.verbose:
                     print(f"[ERROR] TTI {tti} UE {ueid}: Buffer extraction failed - {e}")
                 ue.UPD_DL_THROUGHPUT_BPS(0, time_interval_ms)
+                self.last_ue_transmitted_bits[ueid] = 0
                 continue
 
             transmitted_bits = GLOBALS.bytes_to_bits(total_bytes) + remainder_bits
+            self.last_ue_transmitted_bits[ueid] = transmitted_bits
             ue.UPD_DL_THROUGHPUT_BPS(transmitted_bits, time_interval_ms)
 
             total_bits_transmitted += transmitted_bits
@@ -666,7 +700,7 @@ class SchedulerInterface:
             print("[SCHEDULER] Empty result: No UE to schedule")
         #TODO: можно добавить *reason чтобы возвращал в консоль причину
 
-        self._update_stats(-1, 0, 0, 0)
+        self._update_stats(self._last_tti, 0, 0, 0)
         self._last_allocation = {}
         self._last_users = []
 

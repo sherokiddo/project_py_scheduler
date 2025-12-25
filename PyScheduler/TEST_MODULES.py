@@ -360,7 +360,7 @@ def sim_with_manager():
 
     # Установка планировщика. Можно передвать параметры, которые
     # поддерживает SchedulerInterface.
-    sim.set_scheduler(algorithm="ProportionalFair")
+    sim.set_scheduler(algorithm="RoundRobin")
 
     # Установка длительности симуляции
     sim.set_sim_duration(5000)
@@ -369,16 +369,13 @@ def sim_with_manager():
     # поставить флаг to_file=True.
     sim.enable_verbose_log()
 
-    # Включение логирования статистики в CSV-файл
-    sim.enable_stats_log()
-
     # Установка менеджера статистики
     sim.set_stats_manager(
         enabled=True,                # Включить сбор
         collect_interval=1,         # Собирать каждые 10 TTI
         history_max_len = 5000,
-        scheduler_level="advanced",     # Scheduler: только агрегированные метрики
-        amc_level="advanced",           # AMC: total throughput + avg bits/RB
+        scheduler_level="full",     # Scheduler: только агрегированные метрики
+        amc_level="full",           # AMC: total throughput + avg bits/RB
         pdcch_level="basic",          # PDCCH: отключен (можно включить "basic")
         file_prefix="emp_stats"      # Префикс файла: lte_stats.csv
     )
