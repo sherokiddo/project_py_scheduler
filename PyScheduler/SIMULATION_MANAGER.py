@@ -1164,7 +1164,6 @@ class SimulationManager:
                 if self.sim_config.verbose:
                     print(f"\n[SIMULATION] Start TTI {tti}...")
 
-                # Обновление глобальной переменной текущего времени
                 GLOBALS.CURRENT_TIME = tti
 
                 # Условие для обновления состояния пользователей
@@ -1172,10 +1171,17 @@ class SimulationManager:
                     if self.sim_config.verbose:
                         print("[SIMULATION] Update UEs states")
 
-                    # Обновление состояния пользователей
                     self.ue_collection.UPDATE_ALL_USERS(
-                        current_time=tti, update_interval=self.sim_config.update_interval
+                        current_time=tti,
+                        update_interval=self.sim_config.update_interval,
                     )
+
+                    for ue in self.ue_collection.GET_ALL_USERS():
+                        self.generate_traffic_for_ue(
+                            ue_id=ue.UE_ID,
+                            current_time=tti,
+                            interval=self.sim_config.update_interval,
+                        )
 
                 # Подготовка данных для планировщика
                 users = self.ue_collection.GET_USERS_FOR_SCHEDULER()
@@ -1334,3 +1340,4 @@ class SimulationManager:
         # Добавляем в буфер BS
         for pkt in packets:
             self.bs.ue_buffers[ue_id].ADD_PACKET(pkt, current_time)
+        print(f"[DEBUG_TRAFFIC] UE={ue_id}: вызван generate_packets")
