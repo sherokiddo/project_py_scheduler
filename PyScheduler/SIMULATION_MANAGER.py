@@ -1340,4 +1340,3 @@ class SimulationManager:
         # Добавляем в буфер BS
         for pkt in packets:
             self.bs.ue_buffers[ue_id].ADD_PACKET(pkt, current_time)
-        print(f"[DEBUG_TRAFFIC] UE={ue_id}: вызван generate_packets")
