@@ -19,9 +19,10 @@
 """
 
 from abc import ABC, abstractmethod
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Deque, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -787,6 +788,343 @@ class Bearer:
             "weight": self.weight,
             "enabled": self.enabled,
         }
+
+
+class UeTrafficProfile:
+    """
+    Профиль трафика для одного UE (Composite pattern).
+
+    Управляет всеми bearers одного пользователя.
+    Один UE может иметь несколько потоков трафика одновременно.
+
+    Паттерн: Composite (композиция моделей)
+    """
+
+    def __init__(self, ue_id: int):
+        """
+        Args:
+            ue_id: ID пользователя
+        """
+        self.ue_id = ue_id
+        self.bearers: Dict[int, Bearer] = {}
+        self._next_bearer_id = 1  # Auto-increment для bearer_id
+
+    def add_bearer(
+        self,
+        model: ITrafficModel,
+        qci: int,
+        traffic_type: TrafficType,
+        max_bitrate: Optional[float] = None,
+        weight: float = 1.0,
+        bearer_id: Optional[int] = None,
+    ) -> int:
+        """
+        Добавить bearer.
+
+        Args:
+            model: Модель генерации трафика
+            qci: QoS Class Identifier
+            traffic_type: Тип трафика
+            max_bitrate: Максимальный bitrate (Mbps)
+            weight: Вес для приоритизации
+            bearer_id: ID bearer (если None - auto-increment)
+
+        Returns:
+            int: ID созданного bearer
+        """
+        if bearer_id is None:
+            bearer_id = self._next_bearer_id
+            self._next_bearer_id += 1
+
+        if bearer_id in self.bearers:
+            raise ValueError(f"Bearer {bearer_id} already exists for UE {self.ue_id}")
+
+        bearer = Bearer(
+            bearer_id=bearer_id,
+            model=model,
+            qci=qci,
+            traffic_type=traffic_type,
+            max_bitrate=max_bitrate,
+            weight=weight,
+        )
+
+        self.bearers[bearer_id] = bearer
+        return bearer_id
+
+    def remove_bearer(self, bearer_id: int):
+        """Удалить bearer"""
+        if bearer_id not in self.bearers:
+            raise ValueError(f"Bearer {bearer_id} not found for UE {self.ue_id}")
+
+        bearer = self.bearers[bearer_id]
+
+        # Очистка состояния stateful моделей
+        if hasattr(bearer.model, "clear_state"):
+            bearer.model.clear_state(self.ue_id)
+
+        del self.bearers[bearer_id]
+
+    def generate_all_traffic(self, current_time: int, update_interval: int) -> List[Packet]:
+        """
+        Генерация трафика со ВСЕХ активных bearers.
+
+        Args:
+            current_time: Текущее время (мс)
+            update_interval: Интервал генерации (мс)
+
+        Returns:
+            List[Packet]: Пакеты со всех bearers (с проставленным bearer_id)
+        """
+        all_packets = []
+
+        for bearer_id, bearer in self.bearers.items():
+            if not bearer.enabled:
+                continue
+
+            # Генерация для этого bearer
+            packets = bearer.model.generate_traffic(
+                ue_id=self.ue_id, current_time=current_time, update_interval=update_interval
+            )
+
+            # Проставляем параметры bearer
+            for pkt in packets:
+                pkt.bearer_id = bearer_id
+                pkt.qci = bearer.qci
+                pkt.traffic_type = bearer.traffic_type
+
+                # Обновляем deadline на основе traffic_type
+                if pkt.deadline is None and bearer.traffic_type:
+                    delay_budget = bearer.traffic_type.get_delay_budget()
+                    pkt.deadline = pkt.creation_time + delay_budget
+
+            all_packets.extend(packets)
+
+        return all_packets
+
+    def get_active_bearers(self) -> List[Bearer]:
+        """Список активных bearers"""
+        return [b for b in self.bearers.values() if b.enabled]
+
+    def set_bearer_enabled(self, bearer_id: int, enabled: bool):
+        """Включить/выключить bearer"""
+        if bearer_id not in self.bearers:
+            raise ValueError(f"Bearer {bearer_id} not found")
+        self.bearers[bearer_id].enabled = enabled
+
+    def get_total_bitrate(self, window_ms: int = 1000) -> float:
+        """
+        Расчёт суммарного bitrate всех bearers.
+
+        Примерный расчёт на основе packet_rate моделей.
+        Для точного расчёта нужна статистика.
+
+        Args:
+            window_ms: Окно времени для расчёта (мс)
+
+        Returns:
+            float: Bitrate (bps)
+        """
+        # Упрощённая оценка
+        total_bitrate = 0.0
+
+        for bearer in self.get_active_bearers():
+            model = bearer.model
+            # Если модель имеет packet_rate
+            if hasattr(model, "packet_rate"):
+                avg_packet_size = (model.min_packet_size + model.max_packet_size) / 2
+                bearer_bitrate = model.packet_rate * avg_packet_size * 8  # bps
+                total_bitrate += bearer_bitrate
+
+        return total_bitrate
+
+    def get_profile_info(self) -> Dict:
+        """Информация о профиле"""
+        return {
+            "ue_id": self.ue_id,
+            "num_bearers": len(self.bearers),
+            "active_bearers": len(self.get_active_bearers()),
+            "bearers": {bid: b.get_info() for bid, b in self.bearers.items()},
+        }
+
+    def clear_all(self):
+        """Очистка всех bearers"""
+        for bearer_id in list(self.bearers.keys()):
+            self.remove_bearer(bearer_id)
+
+
+class BitrateController:
+    """
+    Контроллер ограничения bitrate для UE.
+
+    Использует sliding window для подсчёта текущего bitrate.
+    Если превышен лимит - дропает пакеты.
+    """
+
+    def __init__(self, window_ms: int = 1000):
+        """
+        Args:
+            window_ms: Размер окна для подсчёта bitrate (мс)
+        """
+        self.window_ms = window_ms
+
+        # История пакетов: (timestamp, size_bytes)
+        self._packet_history: Dict[int, Deque[Tuple[float, int]]] = {}
+
+        # Лимиты bitrate: ue_id → max_bitrate_bps
+        self._limits: Dict[int, float] = {}
+
+        # Статистика dropped packets
+        self._dropped_count: Dict[int, int] = {}
+        self._dropped_bytes: Dict[int, int] = {}
+
+    def set_limit(self, ue_id: int, max_bitrate_mbps: float):
+        """
+        Установить лимит bitrate для UE.
+
+        Args:
+            ue_id: ID пользователя
+            max_bitrate_mbps: Максимальный bitrate (Mbps)
+        """
+        if max_bitrate_mbps <= 0:
+            raise ValueError(f"max_bitrate_mbps must be > 0, got {max_bitrate_mbps}")
+
+        self._limits[ue_id] = max_bitrate_mbps * 1e6  # Mbps → bps
+
+        # Инициализация структур
+        if ue_id not in self._packet_history:
+            self._packet_history[ue_id] = deque()
+        if ue_id not in self._dropped_count:
+            self._dropped_count[ue_id] = 0
+            self._dropped_bytes[ue_id] = 0
+
+    def remove_limit(self, ue_id: int):
+        """Убрать лимит для UE"""
+        if ue_id in self._limits:
+            del self._limits[ue_id]
+
+    def check_and_throttle(
+        self, ue_id: int, packets: List[Packet], current_time: float
+    ) -> List[Packet]:
+        """
+        Проверить и отфильтровать пакеты согласно лимиту.
+
+        Args:
+            ue_id: ID пользователя
+            packets: Пакеты для проверки
+            current_time: Текущее время (мс)
+
+        Returns:
+            List[Packet]: Пакеты после throttling (может быть меньше)
+        """
+        # Если нет лимита - пропускаем всё
+        if ue_id not in self._limits:
+            return packets
+
+        if ue_id not in self._packet_history:
+            self._packet_history[ue_id] = deque()
+
+        # Очистка старых пакетов из окна
+        self._clean_old_packets(ue_id, current_time)
+
+        # Текущий bitrate
+        current_bitrate = self._get_current_bitrate(ue_id, current_time)
+        limit_bps = self._limits[ue_id]
+
+        # Если текущий bitrate уже превышен - дропаем ВСЕ новые пакеты
+        if current_bitrate >= limit_bps:
+            self._dropped_count[ue_id] += len(packets)
+            self._dropped_bytes[ue_id] += sum(p.size for p in packets)
+            return []
+
+        # Пропускаем пакеты пока не превысим лимит
+        accepted = []
+        total_new_bits = 0
+
+        for pkt in packets:
+            pkt_bits = pkt.size * 8
+
+            # Проверяем не превысим ли лимит
+            if current_bitrate + total_new_bits + pkt_bits <= limit_bps:
+                accepted.append(pkt)
+                total_new_bits += pkt_bits
+
+                # Добавляем в историю
+                self._packet_history[ue_id].append((pkt.creation_time, pkt.size))
+            else:
+                # Лимит превышен - дропаем
+                self._dropped_count[ue_id] += 1
+                self._dropped_bytes[ue_id] += pkt.size
+
+        return accepted
+
+    def _clean_old_packets(self, ue_id: int, current_time: float):
+        """Удалить пакеты старше окна"""
+        window_start = current_time - self.window_ms
+        history = self._packet_history[ue_id]
+
+        while history and history[0][0] < window_start:
+            history.popleft()
+
+    def _get_current_bitrate(self, ue_id: int, current_time: float) -> float:
+        """
+        Подсчитать текущий bitrate (bps) за окно.
+
+        Returns:
+            float: Bitrate (bps)
+        """
+        if ue_id not in self._packet_history:
+            return 0.0
+
+        self._clean_old_packets(ue_id, current_time)
+
+        history = self._packet_history[ue_id]
+        if not history:
+            return 0.0
+
+        # Суммируем байты за окно
+        total_bytes = sum(size for _, size in history)
+        total_bits = total_bytes * 8
+
+        # Bitrate = bits / (window_ms / 1000)
+        bitrate_bps = total_bits / (self.window_ms / 1000.0)
+
+        return bitrate_bps
+
+    def get_current_bitrate(self, ue_id: int, current_time: float) -> float:
+        """
+        Публичный метод для получения текущего bitrate.
+
+        Returns:
+            float: Bitrate (bps)
+        """
+        return self._get_current_bitrate(ue_id, current_time)
+
+    def get_current_bitrate_mbps(self, ue_id: int, current_time: float) -> float:
+        """
+        Текущий bitrate в Mbps.
+
+        Returns:
+            float: Bitrate (Mbps)
+        """
+        return self._get_current_bitrate(ue_id, current_time) / 1e6
+
+    def get_statistics(self, ue_id: int) -> Dict:
+        """Статистика throttling для UE"""
+        return {
+            "ue_id": ue_id,
+            "limit_mbps": self._limits.get(ue_id, None) / 1e6 if ue_id in self._limits else None,
+            "dropped_packets": self._dropped_count.get(ue_id, 0),
+            "dropped_bytes": self._dropped_bytes.get(ue_id, 0),
+            "dropped_mbits": self._dropped_bytes.get(ue_id, 0) * 8 / 1e6,
+        }
+
+    def reset(self, ue_id: int):
+        """Сброс статистики и истории для UE"""
+        if ue_id in self._packet_history:
+            self._packet_history[ue_id].clear()
+        if ue_id in self._dropped_count:
+            self._dropped_count[ue_id] = 0
+            self._dropped_bytes[ue_id] = 0
 
 
 def test_traffic_models():
