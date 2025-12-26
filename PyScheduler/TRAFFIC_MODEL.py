@@ -104,6 +104,7 @@ class Packet:
     ttl_ms: int = 1000
     deadline: Optional[float] = None
     is_fragment: bool = False
+    bearer_id: Optional[int] = None
 
     def __post_init__(self):
         """Вычисляем deadline если не задан"""
@@ -143,6 +144,7 @@ class Packet:
             "ttl_ms": self.ttl_ms,
             "deadline": self.deadline,
             "is_fragment": self.is_fragment,
+            "bearer_id": self.bearer_id,
         }
 
     @staticmethod
@@ -165,6 +167,7 @@ class Packet:
             qci=data.get("qci", 9),
             ttl_ms=data.get("ttl_ms", 1000),
             is_fragment=data.get("is_fragment", False),
+            bearer_id=data.get("bearer_id"),
         )
 
 
@@ -735,6 +738,55 @@ class SimpleGenerator(ITrafficGeneratorInterface):
         # Очистка статистики
         if ue_id in self._packets_per_ue:
             del self._packets_per_ue[ue_id]
+
+
+@dataclass
+class Bearer:
+    """
+    Один поток трафика (bearer) внутри UE.
+
+    В LTE один UE может иметь несколько bearers для разных сервисов:
+    - Default bearer (всегда есть)
+    - Dedicated bearers (для GBR трафика: VOIP, VIDEO)
+
+    Attributes:
+        bearer_id: Уникальный ID bearer внутри UE
+        model: Модель генерации трафика
+        qci: QoS Class Identifier (1-9)
+        traffic_type: Тип трафика
+        max_bitrate: Максимальный bitrate (Mbps), None = unlimited
+        weight: Вес для приоритизации (0.0-1.0)
+        enabled: Активен ли bearer
+    """
+
+    bearer_id: int
+    model: ITrafficModel
+    qci: int
+    traffic_type: TrafficType
+    max_bitrate: Optional[float] = None
+    weight: float = 1.0
+    enabled: bool = True
+
+    def __post_init__(self):
+        """Валидация"""
+        if not 1 <= self.qci <= 9:
+            raise ValueError(f"QCI must be 1-9, got {self.qci}")
+        if not 0.0 <= self.weight <= 1.0:
+            raise ValueError(f"Weight must be 0.0-1.0, got {self.weight}")
+        if self.max_bitrate is not None and self.max_bitrate <= 0:
+            raise ValueError(f"max_bitrate must be > 0, got {self.max_bitrate}")
+
+    def get_info(self) -> Dict:
+        """Информация о bearer"""
+        return {
+            "bearer_id": self.bearer_id,
+            "model": self.model.get_model_name(),
+            "qci": self.qci,
+            "traffic_type": self.traffic_type.value,
+            "max_bitrate": self.max_bitrate,
+            "weight": self.weight,
+            "enabled": self.enabled,
+        }
 
 
 def test_traffic_models():

@@ -32,13 +32,28 @@ def test_packet_to_dict():
     assert d["size"] == 800
     assert d["ue_id"] == 3
     assert d["qci"] == 1
+    assert "bearer_id" in d
+    assert d["bearer_id"] is None
 
 
 def test_packet_from_dict():
-    """Создание из dict (legacy)"""
-    data = {"size": 1200, "creation_time": 300.0, "priority": 1}
-    pkt = Packet.from_dict(data, ue_id=5)
-    assert pkt.size == 1200
-    assert pkt.ue_id == 5
-    assert pkt.creation_time == 300.0
-    assert pkt.priority == 1
+    data_legacy = {"size": 1200, "creation_time": 300.0, "priority": 1}
+    pkt_legacy = Packet.from_dict(data_legacy, ue_id=5)
+    assert pkt_legacy.size == 1200
+    assert pkt_legacy.ue_id == 5
+    assert pkt_legacy.creation_time == 300.0
+    assert pkt_legacy.priority == 1
+    assert pkt_legacy.bearer_id is None
+
+    data_new = {
+        "size": 1300,
+        "creation_time": 400.0,
+        "priority": 2,
+        "bearer_id": 42,
+    }
+    pkt_new = Packet.from_dict(data_new, ue_id=6)
+    assert pkt_new.size == 1300
+    assert pkt_new.ue_id == 6
+    assert pkt_new.creation_time == 400.0
+    assert pkt_new.priority == 2
+    assert pkt_new.bearer_id == 42
