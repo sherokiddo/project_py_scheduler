@@ -19,7 +19,7 @@
 """
 
 from abc import ABC, abstractmethod
-from collections import deque
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import Enum
 from typing import Deque, Dict, List, Optional, Tuple
@@ -1125,6 +1125,199 @@ class BitrateController:
         if ue_id in self._dropped_count:
             self._dropped_count[ue_id] = 0
             self._dropped_bytes[ue_id] = 0
+
+
+class TrafficStatistics:
+    """
+    Сбор детальной статистики по генерации трафика.
+
+    Поддерживает метрики:
+    - По UE (общий bitrate, packets/sec, dropped)
+    - По QCI (bitrate per QCI, latency distribution)
+    - По bearer (индивидуальная статистика)
+    - Глобальные (total bitrate, total packets)
+    """
+
+    def __init__(self, window_ms: int = 1000):
+        """
+        Args:
+            window_ms: Окно для расчёта bitrate (мс)
+        """
+        self.window_ms = window_ms
+        self.start_time = None
+
+        # Per-UE статистика
+        self._ue_packets: Dict[int, int] = defaultdict(int)
+        self._ue_bytes: Dict[int, int] = defaultdict(int)
+        self._ue_first_time: Dict[int, float] = {}
+        self._ue_last_time: Dict[int, float] = {}
+
+        # Per-QCI статистика
+        self._qci_packets: Dict[int, int] = defaultdict(int)
+        self._qci_bytes: Dict[int, int] = defaultdict(int)
+
+        # Per-bearer статистика
+        self._bearer_packets: Dict[tuple, int] = defaultdict(int)  # (ue_id, bearer_id) → count
+        self._bearer_bytes: Dict[tuple, int] = defaultdict(int)
+
+        # Глобальная
+        self._total_packets = 0
+        self._total_bytes = 0
+
+    def update(self, packets: List[Packet]):
+        """
+        Обновить статистику на основе сгенерированных пакетов.
+
+        Args:
+            packets: Список пакетов для учёта
+        """
+        if not packets:
+            return
+
+        if self.start_time is None:
+            self.start_time = min(p.creation_time for p in packets)
+
+        for pkt in packets:
+            ue_id = pkt.ue_id
+            qci = pkt.qci
+            bearer_id = pkt.bearer_id
+            size = pkt.size
+
+            # Per-UE
+            self._ue_packets[ue_id] += 1
+            self._ue_bytes[ue_id] += size
+
+            if ue_id not in self._ue_first_time:
+                self._ue_first_time[ue_id] = pkt.creation_time
+            self._ue_last_time[ue_id] = pkt.creation_time
+
+            # Per-QCI
+            self._qci_packets[qci] += 1
+            self._qci_bytes[qci] += size
+
+            # Per-bearer
+            if bearer_id is not None:
+                key = (ue_id, bearer_id)
+                self._bearer_packets[key] += 1
+                self._bearer_bytes[key] += size
+
+            # Global
+            self._total_packets += 1
+            self._total_bytes += size
+
+    def get_ue_stats(self, ue_id: int) -> Dict:
+        """
+        Статистика по конкретному UE.
+
+        Returns:
+            Dict: {
+                'packets': int,
+                'bytes': int,
+                'avg_packet_size': float,
+                'bitrate_bps': float,
+                'bitrate_mbps': float,
+                'duration_ms': float
+            }
+        """
+        packets = self._ue_packets.get(ue_id, 0)
+        total_bytes = self._ue_bytes.get(ue_id, 0)
+
+        if packets == 0:
+            return {
+                "packets": 0,
+                "bytes": 0,
+                "avg_packet_size": 0.0,
+                "bitrate_bps": 0.0,
+                "bitrate_mbps": 0.0,
+                "duration_ms": 0.0,
+            }
+
+        # Длительность
+        first_time = self._ue_first_time[ue_id]
+        last_time = self._ue_last_time[ue_id]
+        duration_ms = last_time - first_time
+
+        # Bitrate
+        if duration_ms > 0:
+            bitrate_bps = (total_bytes * 8) / (duration_ms / 1000.0)
+        else:
+            bitrate_bps = 0.0
+
+        return {
+            "packets": packets,
+            "bytes": total_bytes,
+            "avg_packet_size": total_bytes / packets,
+            "bitrate_bps": bitrate_bps,
+            "bitrate_mbps": bitrate_bps / 1e6,
+            "duration_ms": duration_ms,
+        }
+
+    def get_qci_stats(self, qci: int) -> Dict:
+        """Статистика по конкретному QCI"""
+        packets = self._qci_packets.get(qci, 0)
+        total_bytes = self._qci_bytes.get(qci, 0)
+
+        return {
+            "qci": qci,
+            "packets": packets,
+            "bytes": total_bytes,
+            "avg_packet_size": total_bytes / packets if packets > 0 else 0.0,
+        }
+
+    def get_bearer_stats(self, ue_id: int, bearer_id: int) -> Dict:
+        """Статистика по конкретному bearer"""
+        key = (ue_id, bearer_id)
+        packets = self._bearer_packets.get(key, 0)
+        total_bytes = self._bearer_bytes.get(key, 0)
+
+        return {
+            "ue_id": ue_id,
+            "bearer_id": bearer_id,
+            "packets": packets,
+            "bytes": total_bytes,
+            "avg_packet_size": total_bytes / packets if packets > 0 else 0.0,
+        }
+
+    def get_global_stats(self) -> Dict:
+        """Глобальная статистика"""
+        return {
+            "total_packets": self._total_packets,
+            "total_bytes": self._total_bytes,
+            "total_mbits": self._total_bytes * 8 / 1e6,
+            "num_ues": len(self._ue_packets),
+            "num_qcis": len(self._qci_packets),
+            "avg_packet_size": self._total_bytes / self._total_packets
+            if self._total_packets > 0
+            else 0.0,
+        }
+
+    def get_qci_distribution(self) -> Dict[int, float]:
+        """
+        Распределение трафика по QCI (%).
+
+        Returns:
+            Dict[int, float]: qci → процент байтов
+        """
+        if self._total_bytes == 0:
+            return {}
+
+        return {
+            qci: (bytes_val / self._total_bytes) * 100 for qci, bytes_val in self._qci_bytes.items()
+        }
+
+    def reset(self):
+        """Сброс всей статистики"""
+        self.start_time = None
+        self._ue_packets.clear()
+        self._ue_bytes.clear()
+        self._ue_first_time.clear()
+        self._ue_last_time.clear()
+        self._qci_packets.clear()
+        self._qci_bytes.clear()
+        self._bearer_packets.clear()
+        self._bearer_bytes.clear()
+        self._total_packets = 0
+        self._total_bytes = 0
 
 
 def test_traffic_models():
