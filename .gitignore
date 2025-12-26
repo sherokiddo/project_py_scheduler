@@ -8,4 +8,4 @@ PyScheduler/emp_stats.json
 PyScheduler/emp_stats_detailed.json
 PyScheduler/stats.csv
 PyScheduler/output.txt
-.spyproject
+.spyproject/**

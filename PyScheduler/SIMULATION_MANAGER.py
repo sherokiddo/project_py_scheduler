@@ -149,7 +149,7 @@ class StatsManager:
         sched_stats = self.scheduler.get_stats() if self.config.levels.scheduler != MetricLevel.NONE else {}
         amc_stats = self.scheduler.amc.get_stats() if self.config.levels.amc != MetricLevel.NONE else {}
         pdcch_stats = self.scheduler.pdcch_manager.get_stats() if self.config.levels.pdcch != MetricLevel.NONE else {}
-        print(f"[DEBUG collect()] tti = {tti}, scheduler._last_tti = {self.scheduler._last_tti}")
+
         # TTI validation
         if sched_stats and 'tti' in sched_stats:
             if sched_stats['tti'] != tti:

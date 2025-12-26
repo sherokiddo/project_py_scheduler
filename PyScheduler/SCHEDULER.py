@@ -220,10 +220,7 @@ class SchedulerInterface:
         3, 6 реализуются в конкретных планировщиках
         """
         t_sch_start = time.perf_counter()
-        print(f"[DEBUG schedule()] BEFORE: self._last_tti = {self._last_tti}, tti = {tti}")
         self._last_tti = tti
-        print(f"[DEBUG schedule()] AFTER: self._last_tti = {self._last_tti}")
-
 
         # ЭТАП 1: Eligibility checks
         eligible_ues = self._filter_eligible_ues(tti, users)
