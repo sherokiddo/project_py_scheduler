@@ -22,7 +22,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import Enum
-from typing import Deque, Dict, List, Optional, Tuple
+from typing import Callable, Deque, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -1318,6 +1318,254 @@ class TrafficStatistics:
         self._bearer_bytes.clear()
         self._total_packets = 0
         self._total_bytes = 0
+
+
+class PacketManager(ITrafficGeneratorInterface):
+    """
+    Advanced генератор трафика с поддержкой:
+    - Multi-bearer per UE
+    - QoS aware traffic generation
+    - Bitrate control
+    - Callback система для буферов
+    - Детальная статистика
+
+    Паттерн: Facade + Observer (callback)
+    """
+
+    def __init__(
+        self,
+        packet_handler: Optional[Callable[[List[Packet]], None]] = None,
+        enable_bitrate_control: bool = True,
+        bitrate_window_ms: int = 1000,
+    ):
+        """
+        Args:
+            packet_handler: Callback для обработки пакетов (отправка в буферы)
+            enable_bitrate_control: Включить контроль bitrate
+            bitrate_window_ms: Окно для расчёта bitrate (мс)
+        """
+        # UE profiles (multi-bearer support)
+        self.ue_profiles: Dict[int, UeTrafficProfile] = {}
+
+        # Callback для пакетов
+        self.packet_handler = packet_handler
+
+        # Bitrate controller
+        self.enable_bitrate_control = enable_bitrate_control
+        if enable_bitrate_control:
+            self.bitrate_controller = BitrateController(window_ms=bitrate_window_ms)
+        else:
+            self.bitrate_controller = None
+
+        # Статистика
+        self.statistics = TrafficStatistics(window_ms=bitrate_window_ms)
+
+    def generate_packets(self, ue_id: int, current_time: int, update_interval: int) -> List[Packet]:
+        """
+        Генерация пакетов для UE (со всех его bearers).
+
+        Args:
+            ue_id: ID пользователя
+            current_time: Текущее время (мс)
+            update_interval: Интервал генерации (мс)
+
+        Returns:
+            List[Packet]: Сгенерированные пакеты (после throttling)
+        """
+        if ue_id not in self.ue_profiles:
+            return []
+
+        profile = self.ue_profiles[ue_id]
+
+        # Генерация со всех bearers
+        packets = profile.generate_all_traffic(current_time, update_interval)
+
+        # Bitrate throttling (если включен)
+        if self.enable_bitrate_control and self.bitrate_controller:
+            packets = self.bitrate_controller.check_and_throttle(ue_id, packets, current_time)
+
+        # Статистика
+        self.statistics.update(packets)
+
+        # Callback (отправка в буферы)
+        if self.packet_handler and packets:
+            self.packet_handler(packets)
+
+        return packets
+
+    def set_model(self, ue_id: int, model_type: str, **params):
+        """
+        Установить ОДНУ модель для UE (legacy support).
+
+        Создаёт default bearer с этой моделью.
+        Для multi-bearer используйте add_bearer()!
+
+        Args:
+            ue_id: ID пользователя
+            model_type: Тип модели ('Poisson', 'OnOff', 'MMPP')
+            **params: Параметры модели
+        """
+        # Создаём профиль если нет
+        if ue_id not in self.ue_profiles:
+            self.ue_profiles[ue_id] = UeTrafficProfile(ue_id)
+
+        # Создаём модель через Factory
+        model = TrafficModelFactory.create_model(model_type, **params)
+
+        # Добавляем default bearer
+        profile = self.ue_profiles[ue_id]
+        profile.add_bearer(
+            model=model,
+            qci=params.get("qci", 9),
+            traffic_type=params.get("traffic_type", TrafficType.BACKGROUND),
+            bearer_id=0,  # Default bearer
+        )
+
+    def add_bearer(
+        self,
+        ue_id: int,
+        model_type: str,
+        qci: int,
+        traffic_type: TrafficType,
+        max_bitrate: Optional[float] = None,
+        weight: float = 1.0,
+        bearer_id: Optional[int] = None,
+        **model_params,
+    ) -> int:
+        """
+        Добавить bearer для UE.
+
+        Args:
+            ue_id: ID пользователя
+            model_type: Тип модели ('Poisson', 'OnOff', 'MMPP')
+            qci: QoS Class Identifier
+            traffic_type: Тип трафика
+            max_bitrate: Максимальный bitrate bearer (Mbps)
+            weight: Вес для приоритизации
+            bearer_id: ID bearer (если None - auto)
+            **model_params: Параметры модели (packet_rate, ...)
+
+        Returns:
+            int: ID созданного bearer
+
+        Example:
+            >>> manager.add_bearer(
+            ...     ue_id=1,
+            ...     model_type='Poisson',
+            ...     qci=1,
+            ...     traffic_type=TrafficType.VOIP,
+            ...     packet_rate=50,
+            ...     max_bitrate=0.064  # 64 Kbps для VOIP
+            ... )
+        """
+        # Создаём профиль если нет
+        if ue_id not in self.ue_profiles:
+            self.ue_profiles[ue_id] = UeTrafficProfile(ue_id)
+
+        # Создаём модель
+        model = TrafficModelFactory.create_model(model_type, **model_params)
+
+        # Добавляем bearer
+        profile = self.ue_profiles[ue_id]
+        bid = profile.add_bearer(
+            model=model,
+            qci=qci,
+            traffic_type=traffic_type,
+            max_bitrate=max_bitrate,
+            weight=weight,
+            bearer_id=bearer_id,
+        )
+
+        return bid
+
+    def remove_bearer(self, ue_id: int, bearer_id: int):
+        """Удалить bearer"""
+        if ue_id not in self.ue_profiles:
+            raise ValueError(f"UE {ue_id} not found")
+
+        self.ue_profiles[ue_id].remove_bearer(bearer_id)
+
+    def set_bitrate_limit(self, ue_id: int, max_bitrate_mbps: float):
+        """
+        Установить лимит bitrate для UE (общий для всех bearers).
+
+        Args:
+            ue_id: ID пользователя
+            max_bitrate_mbps: Максимальный bitrate (Mbps)
+        """
+        if not self.enable_bitrate_control or not self.bitrate_controller:
+            raise RuntimeError("Bitrate control is disabled")
+
+        self.bitrate_controller.set_limit(ue_id, max_bitrate_mbps)
+
+    def get_statistics(self, ue_id: Optional[int] = None) -> Dict:
+        """
+        Получить статистику.
+
+        Args:
+            ue_id: ID пользователя (если None - глобальная статистика)
+
+        Returns:
+            Dict: Статистика
+        """
+        if ue_id is None:
+            return self.statistics.get_global_stats()
+        else:
+            return self.statistics.get_ue_stats(ue_id)
+
+    def get_qos_statistics(self, ue_id: int, qci: Optional[int] = None) -> Dict:
+        """
+        Статистика QoS для UE.
+
+        Args:
+            ue_id: ID пользователя
+            qci: Конкретный QCI (если None - по всем QCI)
+
+        Returns:
+            Dict: QoS статистика
+        """
+        if qci is not None:
+            return self.statistics.get_qci_stats(qci)
+        else:
+            # Статистика по всем QCI для этого UE
+            ue_stats = self.statistics.get_ue_stats(ue_id)
+            qci_dist = self.statistics.get_qci_distribution()
+
+            return {"ue_id": ue_id, "ue_stats": ue_stats, "qci_distribution": qci_dist}
+
+    def reset_ue(self, ue_id: int):
+        """Сброс состояния UE (удаляет все bearers)"""
+        if ue_id in self.ue_profiles:
+            profile = self.ue_profiles[ue_id]
+            profile.clear_all()
+            del self.ue_profiles[ue_id]
+
+        # Сброс bitrate controller
+        if self.bitrate_controller:
+            self.bitrate_controller.reset(ue_id)
+
+    def get_bearer_info(self, ue_id: int, bearer_id: Optional[int] = None) -> Dict:
+        """
+        Информация о bearers UE.
+
+        Args:
+            ue_id: ID пользователя
+            bearer_id: ID bearer (если None - все bearers)
+
+        Returns:
+            Dict: Информация о bearers
+        """
+        if ue_id not in self.ue_profiles:
+            return {}
+
+        profile = self.ue_profiles[ue_id]
+
+        if bearer_id is not None:
+            if bearer_id not in profile.bearers:
+                return {}
+            return profile.bearers[bearer_id].get_info()
+        else:
+            return profile.get_profile_info()
 
 
 def test_traffic_models():

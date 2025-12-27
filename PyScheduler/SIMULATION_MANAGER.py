@@ -34,6 +34,8 @@ import numpy as np
 from BS_MODULE import BaseStation
 from RES_GRID import RES_GRID_LTE
 from SCHEDULER import SchedulerInterface
+from TRAFFIC_MODEL import TrafficType
+from UE_MODULE import UECollection
 
 # ==============================================================================
 #                          ОБРАБОТЧИК СТАТИСТИКИ
@@ -926,6 +928,8 @@ class SimulationManager:
         self._log_file = None
         self._original_stdout = None
         self._original_stderr = None
+        self.scheduler = None
+        self.tti_duration = 1
 
     def set_sim_duration(self, sim_duration: int) -> None:
         """
@@ -1114,7 +1118,7 @@ class SimulationManager:
                 )
 
             # Создание планировщика
-            scheduler = SchedulerInterface.create(
+            self.scheduler = SchedulerInterface.create(
                 algorithm=self.sched_config.algorithm,
                 lte_grid=lte_grid,
                 bs=self.base_station,
@@ -1166,28 +1170,7 @@ class SimulationManager:
 
                 GLOBALS.CURRENT_TIME = tti
 
-                # Условие для обновления состояния пользователей
-                if tti % self.sim_config.update_interval == 0:
-                    if self.sim_config.verbose:
-                        print("[SIMULATION] Update UEs states")
-
-                    self.ue_collection.UPDATE_ALL_USERS(
-                        current_time=tti,
-                        update_interval=self.sim_config.update_interval,
-                    )
-
-                    for ue in self.ue_collection.GET_ALL_USERS():
-                        self.generate_traffic_for_ue(
-                            ue_id=ue.UE_ID,
-                            current_time=tti,
-                            interval=self.sim_config.update_interval,
-                        )
-
-                # Подготовка данных для планировщика
-                users = self.ue_collection.GET_USERS_FOR_SCHEDULER()
-
-                # Планирование ресурсов
-                sched_result = scheduler.schedule(tti, users)
+                sched_result = self.run_tti(current_time=tti)
 
                 # Вывод статистики в CSV файл
                 if self.stats_manager and tti % self.stats_manager.config.collect_interval == 0:
@@ -1340,3 +1323,88 @@ class SimulationManager:
         # Добавляем в буфер BS
         for pkt in packets:
             self.bs.ue_buffers[ue_id].ADD_PACKET(pkt, current_time)
+
+    def setup_simulation_with_qos_traffic(self):
+        """
+        Настройка QoS multi-bearer трафика перед стартом симуляции.
+
+        Инициализирует bearers для каждого UE через PacketManager.
+        """
+        print("\n" + "=" * 60)
+        print("[SETUP] setup_simulation_with_qos_traffic НАЧАЛО")
+        print("=" * 60)
+        if not self.base_station:
+            raise RuntimeError("BaseStation не инициализирована")
+
+        # UE 1: VOIP + Background
+        self.base_station.setup_ue_traffic_multi_bearer(
+            ue_id=1,
+            bearers=[
+                {
+                    "model_type": "Poisson",
+                    "qci": 1,
+                    "traffic_type": TrafficType.VOIP,
+                    "packet_rate": 50,  # 50 packets/sec
+                    "max_bitrate": 0.064,  # 64 Kbps
+                },
+                {
+                    "model_type": "Poisson",
+                    "qci": 9,
+                    "traffic_type": TrafficType.BACKGROUND,
+                    "packet_rate": 10,
+                },
+            ],
+        )
+
+        # UE 2: Video streaming
+        self.base_station.setup_ue_traffic_multi_bearer(
+            ue_id=2,
+            bearers=[
+                {
+                    "model_type": "OnOff",
+                    "qci": 7,
+                    "traffic_type": TrafficType.VIDEO_STREAM,
+                    "duration_on": 2,
+                    "duration_off": 3,
+                    "packet_rate": 200,
+                    "max_bitrate": 2.0,  # 2 Mbps
+                }
+            ],
+        )
+
+        # Установка лимитов bitrate для каждого UE
+        self.base_station.traffic_manager.set_bitrate_limit(ue_id=1, max_bitrate_mbps=1.0)
+        self.base_station.traffic_manager.set_bitrate_limit(ue_id=2, max_bitrate_mbps=5.0)
+
+        if self.sim_config.verbose:
+            print("[SIMULATION] QoS traffic setup completed")
+
+    def run_tti(self, current_time: int):
+        """
+        Выполнение одного TTI (Transmission Time Interval).
+
+        Инкапсулирует основную логику обработки одного TTI.
+        """
+        # 1. Обновление состояния UE (мобильность, каналы) - каждый update_interval
+
+        if current_time % self.sim_config.update_interval == 0:
+            if self.sim_config.verbose:
+                print("[SIMULATION] Update UEs states")
+
+            self.ue_collection.UPDATE_ALL_USERS(
+                current_time=current_time,
+                update_interval=self.sim_config.update_interval,
+            )
+
+        # 2. ✅ ГЕНЕРАЦИЯ ТРАФИКА ДЛЯ ВСЕХ UE (НОВЫЙ КОД!)
+        self.base_station.generate_traffic_all_ues(
+            current_time=current_time, update_interval=self.tti_duration
+        )
+
+        # 3. Подготовка данных для планировщика
+        users = self.ue_collection.GET_USERS_FOR_SCHEDULER()
+
+        # 4. Планирование ресурсов
+        sched_result = self.scheduler.schedule(current_time, users)
+
+        return sched_result

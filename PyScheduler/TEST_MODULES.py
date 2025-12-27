@@ -1,5 +1,4 @@
 import GLOBALS
-import math
 import matplotlib.pyplot as plt
 import numpy as np
 from BS_MODULE import BaseStation
@@ -182,13 +181,13 @@ def sim_with_manager():
 
     # Установка менеджера статистики
     sim.set_stats_manager(
-        enabled=True,                # Включить сбор
-        collect_interval=1,         # Собирать каждые 10 TTI
-        history_max_len = 5000,
-        scheduler_level="full",     # Scheduler: только агрегированные метрики
-        amc_level="full",           # AMC: total throughput + avg bits/RB
-        pdcch_level="basic",          # PDCCH: отключен (можно включить "basic")
-        file_prefix="emp_stats"      # Префикс файла: lte_stats.csv
+        enabled=True,  # Включить сбор
+        collect_interval=1,  # Собирать каждые 10 TTI
+        history_max_len=5000,
+        scheduler_level="full",  # Scheduler: только агрегированные метрики
+        amc_level="full",  # AMC: total throughput + avg bits/RB
+        pdcch_level="basic",  # PDCCH: отключен (можно включить "basic")
+        file_prefix="emp_stats",  # Префикс файла: lte_stats.csv
     )
 
     # Запуск симуляции
@@ -245,12 +244,14 @@ def chmdl_test():
 
     # Установка планировщика. Можно передвать параметры, которые
     # поддерживает SchedulerInterface.
-    sim.set_scheduler(algorithm="ProportionalFair",
-                      max_dl_ue_tti=None,
-                      pcfich=2,
-                      enable_window = False,
-                      window_size=4,
-                      max_dl_cce_allowance=None)
+    sim.set_scheduler(
+        algorithm="ProportionalFair",
+        max_dl_ue_tti=None,
+        pcfich=2,
+        enable_window=False,
+        window_size=4,
+        max_dl_cce_allowance=None,
+    )
 
     # Установка длительности симуляции
     sim.set_sim_duration(5000)
@@ -259,15 +260,15 @@ def chmdl_test():
     # поставить флаг to_file=True.
     sim.enable_verbose_log(to_file=True)
 
-        # Установка менеджера статистики
+    # Установка менеджера статистики
     sim.set_stats_manager(
-        enabled=True,                # Включить сбор
-        collect_interval=1,         # Собирать каждые n TTI
-        history_max_len = 5000,
-        scheduler_level="advanced",     # Scheduler: только агрегированные метрики
-        amc_level="advanced",           # AMC: total throughput + avg bits/RB
-        pdcch_level="advanced",          # PDCCH: отключен (можно включить "basic")
-        file_prefix="emp_stats"      # Префикс файла: lte_stats.csv
+        enabled=True,  # Включить сбор
+        collect_interval=1,  # Собирать каждые n TTI
+        history_max_len=5000,
+        scheduler_level="advanced",  # Scheduler: только агрегированные метрики
+        amc_level="advanced",  # AMC: total throughput + avg bits/RB
+        pdcch_level="advanced",  # PDCCH: отключен (можно включить "basic")
+        file_prefix="emp_stats",  # Префикс файла: lte_stats.csv
     )
 
     # Запуск симуляции

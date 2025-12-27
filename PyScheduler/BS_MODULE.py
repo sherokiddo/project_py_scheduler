@@ -19,7 +19,7 @@ from typing import Dict, List, Tuple
 
 import GLOBALS
 import numpy as np
-from TRAFFIC_MODEL import Packet
+from TRAFFIC_MODEL import Packet, PacketManager
 from UE_MODULE import UserEquipment
 
 
@@ -379,6 +379,9 @@ class BaseStation:
         self.per_ue_max = per_ue_max
         self.ue_buffers = defaultdict(Buffer)
         self.ue_traffic_models = {}  # {ue_id: traffic_model}
+        self.traffic_manager = PacketManager(
+            packet_handler=self._handle_generated_packets, enable_bitrate_control=True
+        )
 
         # Связь с моделью канала
         self.ch_model_type = ch_model_type
@@ -596,6 +599,77 @@ class BaseStation:
             buffer.DESTROY_UE_PACKETS(ue_id)  # Очистка буфера конкретного UE
 
         print("Все буферы базовой станции успешно очищены")
+
+    def _handle_generated_packets(self, packets: List[Packet]):
+        """
+        Callback для обработки сгенерированных пакетов.
+
+        Автоматически вызывается PacketManager при генерации.
+        Маршрутизирует пакеты в правильные буферы.
+        """
+        print(f"[✓ CALLBACK] _handle_generated_packets вызван! {len(packets)} пакетов")
+        for pkt in packets:
+            # Получаем буфер для UE
+            if pkt.ue_id not in self.ue_buffers:
+                continue
+
+            buffer = self.ue_buffers[pkt.ue_id]
+
+            # TODO: Если есть LayeredBuffer - маршрутизация по QCI
+            # buffer_layer = buffer.get_buffer_for_qci(pkt.qci)
+            # buffer_layer.ADD_PACKET(pkt, pkt.creation_time)
+
+            # Пока просто добавляем в общий буфер
+            success = buffer.ADD_PACKET(pkt, pkt.creation_time)
+
+            if not success:
+                # Пакет задропан буфером
+                pass
+
+    def setup_ue_traffic_multi_bearer(self, ue_id: int, bearers: List[Dict]):
+        """
+        Настройка multi-bearer трафика для UE.
+
+        Args:
+            ue_id: ID пользователя
+            bearers: Список конфигураций bearers
+
+        Example:
+            bs.setup_ue_traffic_multi_bearer(
+                 ue_id=1,
+                 bearers=[
+                     {
+                         'model_type': 'Poisson',
+                         'qci': 1,
+                         'traffic_type': TrafficType.VOIP,
+                         'packet_rate': 50,
+                         'max_bitrate': 0.064
+                     },
+                     {
+                         'model_type': 'OnOff',
+                         'qci': 7,
+                         'traffic_type': TrafficType.VIDEO_STREAM,
+                         'duration_on': 2,
+                         'duration_off': 3,
+                         'packet_rate': 200,
+                         'max_bitrate': 2.0
+                     }
+                 ]
+             )
+        """
+        for bearer_config in bearers:
+            self.traffic_manager.add_bearer(ue_id=ue_id, **bearer_config)
+
+    def generate_traffic_all_ues(self, current_time: int, update_interval: int):
+        """Генерация трафика для ВСЕХ UE."""
+        for ue_id in self.registered_ues:
+            packets = self.traffic_manager.generate_packets(
+                ue_id=ue_id, current_time=current_time, update_interval=update_interval
+            )
+            # Если callback не вызван (почему-то), добавляем вручную
+            if packets:
+                for pkt in packets:
+                    self.ue_buffers[ue_id].ADD_PACKET(pkt, current_time)
 
 
 def test_bs_buffer_fifo():
