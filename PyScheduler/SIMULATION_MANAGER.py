@@ -1014,7 +1014,7 @@ class SimulationManager:
 
         """
         # Перевод консольного вывода в текстовый файл
-        if self._to_file:
+        if self.sim_config.to_file:
             self._log_file = open("output.txt", "w", buffering=1, encoding="utf-8")
             self._original_stdout = sys.stdout
             self._original_stderr = sys.stderr
@@ -1140,7 +1140,7 @@ class SimulationManager:
 
         finally:
             # Возвращение консольного вывода
-            if self._to_file:
+            if self.sim_config.to_file:
                 sys.stdout = self._original_stdout
                 sys.stderr = self._original_stderr
                 self._log_file.close()
