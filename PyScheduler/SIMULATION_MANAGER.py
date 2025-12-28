@@ -6,9 +6,17 @@
 # Отвечает за настройку параметров симуляции, запуск основного цикла симуляции,
 # а также логирование статистик в файл.
 #
-# Версия: 1.0.0
-# Дата последнего изменения: 2025-10-31
-# Автор: Норицин Иван
+# Изменения v1.1.0:
+# - Обновлен планировщик RR в связи с изменением принципа работы буфера
+# и изменения UE_MODULE.
+# - Добавлен модуль AMC
+# - Добавлены тесты планировщика
+# - По итогам тестов оказалось, что АМС не работает полноценно. Это печально.
+# - Для дальнейшей коррекции работы, необходимо ввести фрагментацию пакетов.
+#
+# Версия: 1.1.0
+# Дата последнего изменения: 2025-12-28
+# Автор: Норицин Иван, Брагин Кирилл
 # Версия Python Kernel: 3.12.9
 #------------------------------------------------------------------------------
 """
@@ -17,7 +25,7 @@ import sys
 import numpy as np
 import warnings
 from dataclasses import dataclass
-from typing import Optional, Dict
+from typing import Optional
 
 import GLOBALS
 from UE_MODULE import UECollection
@@ -82,7 +90,7 @@ class StatisticsConfig:
         """Инициализация levels, если не передан"""
         if self.levels is None:
             self.levels = LevelsConfig()
-            
+
         if self.export_detailed_format not in ["csv", "json"]:
             raise ValueError(f"Invalid export_detailed_format: {self.export_detailed_format}")
 
@@ -109,14 +117,14 @@ class StatsManager:
     def _validate_sched_stats(self, sched_stats: dict, tti: int) -> bool:
         """Валидация что данные sched_stats полноценные и корректные"""
         import warnings
-        
+
         required_fields = [
             'tti',
             'sch_eligible_ue_count',
             'sch_active_ue_count',
             'dl_rb_allocated_count'
         ]
-        
+
         for field in required_fields:
             if field not in sched_stats:
                 warnings.warn(
@@ -124,14 +132,14 @@ class StatsManager:
                     UserWarning
                 )
                 return False
-        
+
         if sched_stats['tti'] != tti:
             warnings.warn(
                 f"[StatsManager] TTI mismatch at {tti}: sched_stats has TTI {sched_stats['tti']}",
                 UserWarning
             )
             return False
-        
+
         return True
 
     def collect(self, tti: int) -> None:
@@ -144,7 +152,7 @@ class StatsManager:
         Args:
             tti (int): Номер текущего TTI (для timestamp)
         """
-        
+
         # Получить метрики из источников
         sched_stats = self.scheduler.get_stats() if self.config.levels.scheduler != MetricLevel.NONE else {}
         amc_stats = self.scheduler.amc.get_stats() if self.config.levels.amc != MetricLevel.NONE else {}
@@ -167,22 +175,22 @@ class StatsManager:
                     f"Skipping collection."
                 )
                 return
-        
+
         if sched_stats and not self._validate_sched_stats(sched_stats, tti):
             return  # Skip
-        
-        # Continue with snapshot creation        
+
+        # Continue with snapshot creation
         snapshot = {
             "tti": tti,
             # BASIC метрики
             # Временная метка и базовые счетчики
             "sch_eligible_ue_count": sched_stats.get("sch_eligible_ue_count", 0),
             "sch_active_ue_count": sched_stats.get("sch_active_ue_count", 0),
-            
+
             # Scheduler метрики (группа RB)
             "dl_rb_allocated_count": sched_stats.get("dl_rb_allocated_count", 0),
             "dl_rb_per_ue_avg": sched_stats.get("dl_rb_per_ue_avg", 0.0),
-            
+
             # AMC метрики (группа throughput/bits)
             "dl_bits_per_rb_avg": amc_stats.get("dl_bits_per_rb_avg", 0.0),
             "dl_capacity_bits_sum_tti": amc_stats.get("dl_capacity_bits_sum_tti", 0),
@@ -190,24 +198,24 @@ class StatsManager:
             "dl_throughput_sum_kbps": amc_stats.get("dl_throughput_sum_kbps", 0.0),
             "dl_cqi_wb_avg_idx": amc_stats.get("dl_cqi_wb_avg_idx", 0.0),
             "dl_sinr_avg": amc_stats.get("dl_sinr_avg", 0.0),
-            
+
             # Buffer метрики
             "buffer_size_sum_bytes": sched_stats.get("buffer_size_sum_bytes", 0),
-            
+
             # Time метрики
             "sch_total_time_us": sched_stats.get("sch_total_time_us", 0.0),
             #"sch_priority_calc_time_us": sched_stats.get("sch_priority_calc_time_us", 0.0),
             #"sch_priority_sort_time_us": sched_stats.get("sch_priority_sort_time_us", 0.0),
-            
+
             # PDCCH метрики (группа CCE)
             "pdcch_cce_total_count": pdcch_stats.get("pdcch_cce_total_count", 0),
             "pdcch_cce_allocated_count": pdcch_stats.get("pdcch_cce_allocated_count", 0),
         }
-        
+
         if self.config.levels.pdcch >= MetricLevel.ADVANCED:
             snapshot.update({
             "pdcch_cce_utilization_pct": pdcch_stats.get("pdcch_cce_utilization_pct", 0.0)})
-            
+
         if self.config.levels.scheduler >= MetricLevel.ADVANCED:
             snapshot.update({
                 # Timing детализация
@@ -220,7 +228,7 @@ class StatsManager:
                 "sch_eligible_to_active_ratio": self._calculate_ratio(
                     sched_stats.get("sch_active_ue_count", 0),
                     sched_stats.get("sch_eligible_ue_count", 0)
-                ),          
+                ),
             })
 
         priority_list = sched_stats.get("sch_priority_list", [])
@@ -240,31 +248,31 @@ class StatsManager:
 
         if self.config.levels.amc >= MetricLevel.ADVANCED:
             snapshot.update({
-                "dl_capacity_bits_sum_tti": amc_stats.get("dl_capacity_bits_sum_tti", 0),}) 
+                "dl_capacity_bits_sum_tti": amc_stats.get("dl_capacity_bits_sum_tti", 0),})
             ue_cqi = amc_stats.get('ue_cqi', {})
             ue_sinr = amc_stats.get('ue_sinr', {})
             ue_throughputs = amc_stats.get("dl_ue_throughputs", {})
-            
+
             # Throughput min/max/std
             snapshot.update(self._safe_stats_from_dict(
-                ue_throughputs, 
-                "dl_throughput_kbps", 
-                scale=1000.0, 
+                ue_throughputs,
+                "dl_throughput_kbps",
+                scale=1000.0,
                 filter_zeros=True
             ))
-            
+
             # CQI min/max/std
             snapshot.update(self._safe_stats_from_dict(
-                ue_cqi, 
-                "dl_cqi_wb_idx", 
+                ue_cqi,
+                "dl_cqi_wb_idx",
                 precision=0,      # CQI - целое число
                 filter_zeros=False # CQI=0 тоже валидное значение
             ))
-            
+
             # SINR min/max/std
             snapshot.update(self._safe_stats_from_dict(
-                ue_sinr, 
-                "dl_sinr", 
+                ue_sinr,
+                "dl_sinr",
                 precision=2,
                 filter_zeros=False  # SINR может быть отрицательным
             ))
@@ -276,7 +284,7 @@ class StatsManager:
                 total_rbs=self.scheduler.lte_grid.rb_per_slot
             )
             snapshot.update(rb_efficiency)
-            
+
             # Spectral Efficiency
             ue_throughputs = amc_stats.get('dl_ue_throughputs', {})
             se_metrics = self._calculate_spectral_efficiency(
@@ -284,7 +292,7 @@ class StatsManager:
                 ue_throughputs=ue_throughputs
             )
             snapshot.update(se_metrics)
-            
+
             # Coefficient of Variation
             cv_metrics = self._calculate_cv_metrics(
                 ue_throughputs=ue_throughputs,
@@ -293,13 +301,13 @@ class StatsManager:
                 ue_rb_allocated=amc_stats.get('ue_rb_allocated', {})
             )
             snapshot.update(cv_metrics)
-            
+
             # Fairness
             fairness_metrics = self._calculate_fairness(ue_throughputs)
             snapshot.update(fairness_metrics)
 
         self.history.append(snapshot)
-        
+
         if self.config.levels.scheduler >= MetricLevel.FULL or \
            self.config.levels.amc >= MetricLevel.FULL:
             detailed = self._collect_detailed_metrics(
@@ -313,7 +321,7 @@ class StatsManager:
     def _collect_detailed_metrics(self, tti: int, sched_stats: dict, amc_stats: dict, snapshot: dict) -> dict:
         """
         Собрать детальную per-UE статистику для FULL level.
-        
+
         Returns:
             Dict в формате:
             {
@@ -325,21 +333,21 @@ class StatsManager:
             }
         """
         detailed = {"tti": tti, "ue_metrics": {}}
-            
+
         # Priority list (если SCHEDULER == FULL)
         priority_list = sched_stats.get("sch_priority_list", [])
         ue_priorities = {u["UE_ID"]: u["priority"] for u in priority_list}
-        
+
         ue_buffer_sizes = sched_stats.get("ue_buffer_sizes", {})
         ue_transmitted_bits = sched_stats.get("ue_transmitted_bits", {})
-        
+
         # Per-UE данные (если AMC == FULL)
         ue_throughputs = amc_stats.get("dl_ue_throughputs", {})
         ue_cqi = amc_stats.get("ue_cqi", {})
         ue_sinr = amc_stats.get("ue_sinr", {})
         ue_rb = amc_stats.get("ue_rb_allocated", {})
         ue_cce_alloc = snapshot.get("ue_cce_allocations", {})
-        
+
         # Собрать все unique UE IDs
         all_ue_ids = (
             set(ue_priorities.keys())
@@ -351,7 +359,7 @@ class StatsManager:
             | set(ue_transmitted_bits.keys())
             | set(ue_cce_alloc.keys())
         )
-            
+
         for ue_id in all_ue_ids:
             detailed["ue_metrics"][str(ue_id)] = {
                 "priority": ue_priorities.get(ue_id, 0.0),
@@ -363,7 +371,7 @@ class StatsManager:
                 "buffer_size_bytes": ue_buffer_sizes.get(ue_id, 0),
                 "bits_transmitted": ue_transmitted_bits.get(ue_id, 0),
             }
-        
+
         return detailed
 
     def _safe_stats_from_dict(self,
@@ -373,7 +381,7 @@ class StatsManager:
                               scale: float = 1.0,
                               filter_zeros: bool = True) -> dict:
         """Универсально считает min/max/avg/std из словаря значений."""
-        
+
         # ЭТАП 1: Проверка пустого входа
         if not values_dict:
             return {
@@ -382,13 +390,13 @@ class StatsManager:
                 f'{prefix}_avg': 0.0,
                 f'{prefix}_std': 0.0
             }
-        
+
         # ЭТАП 2: Извлечь values из dict и применить фильтр
         if filter_zeros:
             values = [v / scale for v in values_dict.values() if v > 0]
         else:
             values = [v / scale for v in values_dict.values()]
-        
+
         # ЭТАП 3: Проверка после фильтрации
         if not values:
             return {
@@ -397,16 +405,16 @@ class StatsManager:
                 f'{prefix}_avg': 0.0,
                 f'{prefix}_std': 0.0
             }
-        
+
         # ЭТАП 4: Рассчитать min/max/avg
         min_val = min(values)
         max_val = max(values)
         avg_val = sum(values) / len(values)
-        
+
         # ЭТАП 5: Рассчитать std (standard deviation)
         variance = sum((x - avg_val)**2 for x in values) / len(values)
         std_val = variance ** 0.5
-        
+
         # ЭТАП 6: Вернуть результат с округлением
         return {
             f'{prefix}_min': round(min_val, precision),
@@ -420,12 +428,12 @@ class StatsManager:
         if eligible > 0:
             return round((active / eligible) * 100, 2)
         return 0.0  # Если eligible = 0, ratio = 0%
-    
-    def _calculate_rb_efficiency(self, capacity_bits: int, transmitted_bits: int, 
+
+    def _calculate_rb_efficiency(self, capacity_bits: int, transmitted_bits: int,
                                  allocated_rbs: int, total_rbs: int) -> dict:
         """
         Рассчитать метрики эффективности использования RB.
-        
+
         Args:
             capacity_bits: Максимальная емкость выделенных RB (из CQI)
             transmitted_bits: Фактически переданные биты
@@ -442,29 +450,29 @@ class StatsManager:
             rb_utilization_pct = (transmitted_bits / capacity_bits) * 100
         else:
             rb_utilization_pct = 0.0
-        
+
         # Wasted RB (выделены но недоиспользованы из-за пустого буфера)
         if capacity_bits > 0:
             wasted_capacity_ratio = 1 - (transmitted_bits / capacity_bits)
             wasted_rbs = int(allocated_rbs * wasted_capacity_ratio)
         else:
             wasted_rbs = 0
-        
+
         # Idle RB (не выделены вообще)
         idle_rbs = total_rbs - allocated_rbs
-        
+
         return {
             'dl_rb_utilization_pct': round(rb_utilization_pct, 2),
             'dl_rb_wasted_count': wasted_rbs,
             'dl_rb_idle_count': idle_rbs}
 
-    def _calculate_spectral_efficiency(self, throughput_sum_bps: float, 
+    def _calculate_spectral_efficiency(self, throughput_sum_bps: float,
                                        ue_throughputs: dict) -> dict:
         """
         Рассчитать спектральную эффективность (SE).
-        
+
         SE = Throughput (bps) / Bandwidth (Hz)
-        
+
         Args:
             throughput_sum_bps: Суммарный throughput системы (bps)
             ue_throughputs: Dict[ue_id -> throughput_bps]
@@ -476,20 +484,20 @@ class StatsManager:
         """
         bandwidth_mhz = self.scheduler.lte_grid.bandwidth
         bandwidth_hz = bandwidth_mhz * 1_000_000  # МГц → Гц
-        
+
         if bandwidth_hz == 0:
             return {
                 'dl_spectral_efficiency_bps_hz': 0.0,
                 'dl_spectral_efficiency_avg_ue': 0.0,
                 'dl_spectral_efficiency_peak': 0.0}
-        
+
         # Общая SE системы
         se_total = throughput_sum_bps / bandwidth_hz
-        
+
         # SE per-UE
         if ue_throughputs:
             active_throughputs = [tp for tp in ue_throughputs.values() if tp > 0]
-            
+
             if active_throughputs:
                 se_per_ue = [tp / bandwidth_hz for tp in active_throughputs]
                 se_avg_ue = sum(se_per_ue) / len(se_per_ue)
@@ -500,7 +508,7 @@ class StatsManager:
         else:
             se_avg_ue = 0.0
             se_peak = 0.0
-        
+
         return {
             'dl_spectral_efficiency_bps_hz': round(se_total, 4),
             'dl_spectral_efficiency_avg_ue': round(se_avg_ue, 4),
@@ -509,7 +517,7 @@ class StatsManager:
     def _calculate_cv(self, values: list) -> float:
         """
         Рассчитать коэффициент вариации (CV). Любой
-        
+
         Args:
             values: Список значений
         Returns:
@@ -517,22 +525,22 @@ class StatsManager:
         """
         if not values or len(values) < 2:
             return 0.0
-        
+
         mean = sum(values) / len(values)
         if mean == 0:
             return 0.0
-        
+
         variance = sum((x - mean)**2 for x in values) / len(values)
         std = variance ** 0.5
         cv = (std / mean) * 100
-        
+
         return round(cv, 2)
 
-    def _calculate_cv_metrics(self, ue_throughputs: dict, ue_cqi: dict, 
+    def _calculate_cv_metrics(self, ue_throughputs: dict, ue_cqi: dict,
                              ue_sinr: dict, ue_rb_allocated: dict) -> dict:
         """
         Рассчитать CV метрики для различных параметров.
-        
+
         Args:
             ue_throughputs: Dict[ue_id -> throughput_bps]
             ue_cqi: Dict[ue_id -> cqi]
@@ -558,7 +566,7 @@ class StatsManager:
                     cv_se = 0.0
             else:
                 cv_se = 0.0
-        
+
         return {
             'dl_throughput_cv_pct': cv_throughput,
             'dl_cqi_cv_pct': cv_cqi,
@@ -571,7 +579,7 @@ class StatsManager:
         Рассчитать Fairness метрики.
         Jain's Fairness Index = (Σx_i)² / (n × Σx_i²)
         Значение от 0 до 1, где 1 = идеальная справедливость.
-        
+
         Args:
             ue_throughputs: Dict[ue_id -> throughput_bps]
         Returns:
@@ -585,33 +593,33 @@ class StatsManager:
                 'dl_fairness_jain_index': 1.0,
                 'dl_throughput_variance': 0.0,
                 'dl_throughput_std': 0.0}
-        
+
         throughputs = list(ue_throughputs.values())
         n = len(throughputs)
-        
+
         # Jain's Fairness Index
         sum_throughput = sum(throughputs)
         sum_squared = sum(x**2 for x in throughputs)
-        
+
         if sum_squared > 0:
             jain_index = (sum_throughput**2) / (n * sum_squared)
         else:
             jain_index = 1.0
-        
+
         # Variance and Std
         mean = sum_throughput / n
         variance = sum((x - mean)**2 for x in throughputs) / n
         std = variance ** 0.5
-        
+
         return {
             'dl_fairness_jain_index': round(jain_index, 4),
             'dl_throughput_variance': round(variance, 2),
             'dl_throughput_std': round(std, 2)}
-    
+
     def _calculate_std(self, values: list) -> float:
         """
         Рассчитать стандартное отклонение.
-        
+
         Args:
             values: Список значений
         Returns:
@@ -619,11 +627,11 @@ class StatsManager:
         """
         if not values or len(values) < 2:
             return 0.0
-        
+
         mean = sum(values) / len(values)
         variance = sum((x - mean) ** 2 for x in values) / len(values)
         std = variance ** 0.5
-        
+
         return round(std, 2)
 
     def export_csv(self, filename: str = None, locale: str = "ru") -> None:
@@ -639,12 +647,12 @@ class StatsManager:
         if not self.history:
             print("StatsManager: No data to export (history is empty)")
             return
-        
+
         if filename is None:
             filename = f"{self.config.file_prefix}.csv"
-        
+
         import json
-        
+
         first_snapshot = self.history[0]
         headers = list(first_snapshot.keys())
         delimiter = ';' if locale == "ru" else ','
@@ -665,57 +673,57 @@ class StatsManager:
                 else:
                     row[key] = value
             rows.append(row)
-    
+
         if locale == "ru":
-            delimiter = ';'      
+            delimiter = ';'
         else:
-            delimiter = ','      
-    
+            delimiter = ','
+
         # Запись в CSV
         with open(filename, 'w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=headers, delimiter=delimiter)
             writer.writeheader()
             writer.writerows(rows)
-        
+
         print(f"StatsManager: Exported {len(rows)} snapshots to {filename}")
 
     def export_detailed_csv(self, filename: str = None, locale: str = "ru") -> None:
         """
         Экспортировать детальную статистику в CSV (per-UE rows).
-        
+
         Формат: tti, ue_id, priority, cqi, sinr, rb_allocated, throughput_bps
         """
         if not self.detailed_history:
             print("[StatsManager] No detailed data to export (detailed_history is empty)")
             return
-        
+
         if filename is None:
             filename = f"{self.config.file_prefix}_detailed.csv"
-        
+
         if locale == "ru":
             delimiter = ';'
         else:
             delimiter = ','
-        
+
         with open(filename, 'w', newline='', encoding='utf-8') as f:
-            fieldnames = ['tti', 'ue_id', 'priority', 'cqi', 'sinr', 'rb_allocated',  'cce_allocated', 
+            fieldnames = ['tti', 'ue_id', 'priority', 'cqi', 'sinr', 'rb_allocated',  'cce_allocated',
                           'throughput_bps', 'buffer_size_bytes', 'bits_transmitted']
             writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=delimiter)
             writer.writeheader()
-            
+
             for snapshot in self.detailed_history:
                 tti = snapshot['tti']
                 for ue_id, metrics in snapshot['ue_metrics'].items():
                     priority = metrics.get('priority', 0.0)
                     sinr = metrics.get('sinr', 0.0)
-                    
+
                     if locale == "ru":
                         priority_str = str(priority).replace('.', ',')
                         sinr_str = str(sinr).replace('.', ',')
                     else:
                         priority_str = priority
                         sinr_str = sinr
-                    
+
                     row = {
                         'tti': tti,
                         'ue_id': ue_id,
@@ -729,31 +737,31 @@ class StatsManager:
                         'bits_transmitted': metrics.get('bits_transmitted', 0),
                     }
                     writer.writerow(row)
-        
+
         print(f"[StatsManager] Exported {len(self.detailed_history)} TTI snapshots "
               f"to {filename} (per-UE format, locale={locale})")
-    
+
     def export_detailed_json(self, filename: str = None) -> None:
         """
         Экспортировать детальную статистику в JSON.
-        
+
         Формат: {tti: {ue_id: {metrics}}}
         """
         if not self.detailed_history:
             print("[StatsManager] No detailed data to export (detailed_history is empty)")
             return
-        
+
         if filename is None:
             filename = f"{self.config.file_prefix}_detailed.json"
-        
+
         import json
-        
+
         # Конвертировать в dict для JSON
         data = {str(snapshot['tti']): snapshot['ue_metrics'] for snapshot in self.detailed_history}
-        
+
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
-        
+
         print(f"[StatsManager] Exported {len(self.detailed_history)} TTI snapshots "
               f"to {filename} (JSON format)")
 
@@ -1014,7 +1022,7 @@ class SimulationManager:
 
         """
         # Перевод консольного вывода в текстовый файл
-        if self.sim_config.to_file:
+        if self._to_file:
             self._log_file = open("output.txt", "w", buffering=1, encoding="utf-8")
             self._original_stdout = sys.stdout
             self._original_stderr = sys.stderr
@@ -1130,17 +1138,10 @@ class SimulationManager:
                     elif self.stats_config.export_detailed_format == "json":
                         detailed_filename = f"{self.stats_config.file_prefix}_detailed.json"
                         self.stats_manager.export_detailed_json(detailed_filename)
-                
-                # Вывод summary (если verbose включен)
-                # if self.sim_config.verbose:
-                #     summary = self.stats_manager.get_summary()
-                #     print(f"\n[StatsManager] Collected {summary.get('total_ttis_collected', 0)} snapshots, "
-                #           f"avg throughput {summary.get('avg_throughput_bps', 0) / 1e6:.2f} Mbps, "
-                #           f"max throughput {summary.get('max_throughput_bps', 0) / 1e6:.2f} Mbps")
 
         finally:
             # Возвращение консольного вывода
-            if self.sim_config.to_file:
+            if self._to_file:
                 sys.stdout = self._original_stdout
                 sys.stderr = self._original_stderr
                 self._log_file.close()

@@ -1,5 +1,4 @@
 import math
-
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -216,7 +215,7 @@ def sim_with_ue_collection():
     visualize_users_sinr(ue_collection=ue_collection,
                             sim_duration=sim_duration,
                             update_interval=update_interval)
-    
+
 def sim_with_manager():
     """
     Пример запуска симуляции с использованием менеджера.
@@ -238,11 +237,11 @@ def sim_with_manager():
     # Генерация заданного числа UE в коллекцию
     ue_collection.ADD_RANDOM_USERS(num_ue=3)
 
-    MapBorders(-1000, 1000, -1000, 1000)    
-    
+    MapBorders(-1000, 1000, -1000, 1000)
+
     # Установка модели передвижения для всех пользователей коллекции
-    ue_collection.SET_MOBILITY_MODEL("RandomWaypoint")    
-    
+    ue_collection.SET_MOBILITY_MODEL("RandomWaypoint")
+
     # Создание модели генерации трафика
     poisson = PoissonModel(packet_rate=5000)
 
@@ -295,4 +294,3 @@ if __name__ == "__main__":
     # debug_simulation()
     # sim_with_ue_collection()
     sim_with_manager()
-    

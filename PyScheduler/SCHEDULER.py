@@ -187,7 +187,7 @@ class SchedulerInterface:
         self._last_allocation = None
         self._last_users = None
         self._last_priority_list = []
-        
+
         self._last_sch_time_us = 0.0
         self._last_priority_calc_time_us = 0.0
         self._last_priority_sort_time_us = 0.0
@@ -232,17 +232,17 @@ class SchedulerInterface:
 
         # ЭТАП 3: Priority calculation
         t_priority_start = time.perf_counter()
-        
+
         prioritized_ues = self._calculate_priorities(eligible_ues, tti)
-       
+
         t_priority_end = time.perf_counter()
         priority_calc_time_us = (t_priority_end - t_priority_start) * 1_000_000
 
         # ЭТАП 4: PList formation
         t_sort_start = time.perf_counter()
-        
+
         priority_list = self._form_priority_list(prioritized_ues, tti)
-        
+
         t_sort_end = time.perf_counter()
         priority_sort_time_us = (t_sort_end - t_sort_start) * 1_000_000
 
@@ -274,15 +274,15 @@ class SchedulerInterface:
         self._last_allocation = allocation.copy()
         self._last_users = users
         self._last_priority_list = priority_list
-        
+
         t_sch_end = time.perf_counter()
         sch_time_us = (t_sch_end - t_sch_start) * 1_000_000
-        self._save_timing_stats(sch_time_us, 
-                                priority_calc_time_us, 
+        self._save_timing_stats(sch_time_us,
+                                priority_calc_time_us,
                                 priority_sort_time_us)
 
         # ЭТАП 8: Result formation
-        return self._build_result(allocation, users, eligible_ues, tti) 
+        return self._build_result(allocation, users, eligible_ues, tti)
 
     def get_stats(self) -> Dict:
         """
@@ -307,14 +307,14 @@ class SchedulerInterface:
 
         total_rbs = self.lte_grid.rb_per_slot
         prb_utilization_pct = (
-            (self._last_allocated_rb_count / total_rbs * 100) 
+            (self._last_allocated_rb_count / total_rbs * 100)
             if total_rbs > 0 else 0.0)
-        
+
         total_buffer_bytes = 0
         ue_buffer_sizes = {}
         if hasattr(self, '_last_users') and self._last_users:
             for user in self._last_users:
-                ue_id = user.get('UE_ID')  
+                ue_id = user.get('UE_ID')
                 # bs_buffer_size добавляется в _filter_eligible_ues()
                 buffer_size = user.get('bs_buffer_size', 0)
                 total_buffer_bytes += buffer_size
@@ -327,7 +327,7 @@ class SchedulerInterface:
             'sch_active_ue_count': self._last_active_ue_count,
             'dl_rb_allocated_count': self._last_allocated_rb_count,
             'dl_rb_per_ue_avg': round(rb_per_ue_avg, 2),
-            'buffer_size_sum_bytes': total_buffer_bytes, 
+            'buffer_size_sum_bytes': total_buffer_bytes,
             #TODO: временное решение. избавиться как сделаем buffer.get_stats()
             'dl_prb_utilization_pct': round(prb_utilization_pct, 2),
             'sch_total_time_us': round(self._last_sch_time_us, 2),
@@ -484,12 +484,12 @@ class SchedulerInterface:
             bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
             buffer_bits = user['bs_buffer_size'] * 8
             rb_needed = min(buffer_bits / (bits_per_rb * 2), total_rb)
-            
+
             if idx == 0:
                 selected_ues.append(user)
                 estimated_rb += rb_needed
                 continue
-            
+
             if estimated_rb + rb_needed >= pdsch_threshold:
                 if self.verbose:
                     remaining = len(priority_list) - len(selected_ues)
@@ -497,11 +497,11 @@ class SchedulerInterface:
                           f"({estimated_rb:.0f}/{total_rb} RB = {estimated_rb/total_rb*100:.1f}%), "
                           f"{remaining} UE excluded")
                 break
-            
+
             # Добавляем UE
             selected_ues.append(user)
             estimated_rb += rb_needed
-        
+
         # Verbose
         if self.verbose and selected_ues:
             excluded = len(priority_list) - len(selected_ues)
@@ -509,7 +509,7 @@ class SchedulerInterface:
                   f"{excluded} UE excluded")
             print(f"[SCHEDULER TTI {tti}] Estimated PDSCH: "
                   f"{estimated_rb:.0f}/{total_rb} RB ({estimated_rb/total_rb*100:.1f}%)")
-        
+
         return selected_ues
 
     def _allocate_pdcch(self, priority_list: List[Dict]) -> List[Dict]:
@@ -725,13 +725,13 @@ class SchedulerInterface:
     def _get_active_ue_stats(self) -> Dict:
         """
         Статистика скользящего окна.
-        
+
         Вспомогательный метод для отладки и анализа активности UE.
         Возвращает информацию о скользящем окне:
         - Включено ли окно
         - Текущее количество активных UE
         - Уникальные UE за весь период окна
-        
+
         Returns:
             Dict со статистикой окна или None если окно отключено
         """
@@ -739,26 +739,26 @@ class SchedulerInterface:
             return {
                 'window_enabled': False,
                 'message': 'Sliding window is disabled'}
-        
+
         if not self.active_ue_window:
             return {
                 'window_enabled': True,
                 'window_size': self.window_size,
                 'current_active_count': 0,
                 'unique_ues_in_window': 0}
-        
+
         return {
             'window_enabled': True,
             'window_size': self.window_size,
             'current_active_count': len(self.active_ue_window[-1]),
             'unique_ues_in_window': len(set.union(*self.active_ue_window))}
-    
+
     def _save_timing_stats(self, sch_time_us: float, 
                        priority_calc_time_us: float,
                        priority_sort_time_us: float) -> None:
         """
         Сохранить timing статистику для get_stats().
-        
+
         Args:
             total_time_us: Полное время schedule() (микросекунды)
             priority_calc_time_us: Время _calculate_priorities() (микросекунды)
@@ -855,15 +855,15 @@ class SchedulerInterface:
 
 #TODO: Задачка оптимизаторам. С секретом. Посмотрите как сортируется
 # priority_list. Интересно, почему же он не ограничен по количеству элементов?
-            
+
 #==============================================================================
 #                              ЛОГИКА PDCCH
 #==============================================================================
 
 class PDCCHManager:
-    def __init__(self, bandwidth: int, 
-                 pcfich: int = 2, 
-                 max_dl_cce_allowance: Optional[int] = None, 
+    def __init__(self, bandwidth: int,
+                 pcfich: int = 2,
+                 max_dl_cce_allowance: Optional[int] = None,
                  verbose: bool = False):
         """
         Args:
@@ -1018,7 +1018,7 @@ class PDCCHManager:
         """
         Определение Aggregation Level (уровня агрегации CCE) на основе CQI.
 
-        Aggregation Level показывает, сколько CCE требуется для передачи PDCCH 
+        Aggregation Level показывает, сколько CCE требуется для передачи PDCCH
         одному пользователю. Зависит от качества канала (CQI): чем хуже канал,
         тем больше CCE нужно для надежной передачи управляющей информации.
 
