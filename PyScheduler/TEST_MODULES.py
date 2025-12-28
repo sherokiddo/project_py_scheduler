@@ -221,20 +221,20 @@ def sim_with_manager():
     """
     Пример запуска симуляции с использованием менеджера.
 
-    """    
+    """
 # =============================================================================
-#             НАСТРОЙКА БАЗОВОЙ СТАНЦИИ И КОЛЛЕКЦИИ ПОЛЬЗОВАТЕЛЕЙ                
+#             НАСТРОЙКА БАЗОВОЙ СТАНЦИИ И КОЛЛЕКЦИИ ПОЛЬЗОВАТЕЛЕЙ
 # =============================================================================
-    
+
     # Создание и настройка базовой станции
     bs = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMa")
-    
+
     # Создание коллекции пользовательских устройств
     ue_collection = UECollection()
-    
+
     # Установка сида
     GLOBALS.SEED = 42
-    
+
     # Генерация заданного числа UE в коллекцию
     ue_collection.ADD_RANDOM_USERS(num_ue=3)
 
@@ -244,45 +244,53 @@ def sim_with_manager():
     ue_collection.SET_MOBILITY_MODEL("RandomWaypoint")    
     
     # Создание модели генерации трафика
-    poisson = PoissonModel(packet_rate=1000)
-    
+    poisson = PoissonModel(packet_rate=5000)
+
     # Установка модели генерации трафика для всех пользователей коллекции
     ue_collection.SET_TRAFFIC_MODEL(poisson)
-    
+
     # Регистрация всех пользователей коллекции в базовой станции
     ue_collection.REG_USERS_TO_BS(bs)
-    
+
 # =============================================================================
-#                        НАСТРОЙКА МЕНЕДЖЕРА СИМУЛЯЦИИ                
+#                        НАСТРОЙКА МЕНЕДЖЕРА СИМУЛЯЦИИ
 # =============================================================================
-    
+
     # Создание менеджера симуляции
     sim = SimulationManager()
-    
+
     # Установка базовой станции
     sim.set_base_station(bs)
-    
+
     # Установка коллекции пользователей
     sim.set_ue_collection(ue_collection)
-    
-    # Установка планировщика. Можно передвать параметры, которые 
+
+    # Установка планировщика. Можно передвать параметры, которые
     # поддерживает SchedulerInterface.
     sim.set_scheduler(algorithm="RoundRobin")
-    
+
     # Установка длительности симуляции
     sim.set_sim_duration(5000)
-    
+
     # Включение verbose логирования. Для вывода всех логов в файл нужно
     # поставить флаг to_file=True.
     sim.enable_verbose_log()
-    
-    # Включение логирования статистики в CSV-файл
-    sim.enable_stats_log()
-    
+
+    # Установка менеджера статистики
+    sim.set_stats_manager(
+        enabled=True,                # Включить сбор
+        collect_interval=1,         # Собирать каждые 10 TTI
+        history_max_len = 5000,
+        scheduler_level="full",     # Scheduler: только агрегированные метрики
+        amc_level="full",           # AMC: total throughput + avg bits/RB
+        pdcch_level="basic",          # PDCCH: отключен (можно включить "basic")
+        file_prefix="emp_stats"      # Префикс файла: lte_stats.csv
+    )
+
     # Запуск симуляции
     sim.start_simulation()
-    
-    
+
+
 if __name__ == "__main__":
     # debug_simulation()
     # sim_with_ue_collection()
