@@ -1,4 +1,5 @@
 import GLOBALS
+import math
 import matplotlib.pyplot as plt
 import numpy as np
 from BS_MODULE import BaseStation
@@ -239,7 +240,33 @@ def chmdl_test():
     sim.set_scheduler(algorithm="RoundRobin")
 
     # Установка длительности симуляции
-    sim.set_sim_duration(100000)
+    sim.set_sim_duration(5000)
+
+    # Включение verbose логирования. Для вывода всех логов в файл нужно
+    # поставить флаг to_file=True.
+    sim.enable_verbose_log()
+    
+        # Установка менеджера статистики
+    sim.set_stats_manager(
+        enabled=True,                # Включить сбор
+        collect_interval=1,         # Собирать каждые 10 TTI
+        history_max_len = 5000,
+        scheduler_level="full",     # Scheduler: только агрегированные метрики
+        amc_level="full",           # AMC: total throughput + avg bits/RB
+        pdcch_level="basic",          # PDCCH: отключен (можно включить "basic")
+        file_prefix="emp_stats"      # Префикс файла: lte_stats.csv
+    )
+
+    # Установка менеджера статистики
+    sim.set_stats_manager(
+        enabled=True,                # Включить сбор
+        collect_interval=1,         # Собирать каждые 10 TTI
+        history_max_len = 5000,
+        scheduler_level="full",     # Scheduler: только агрегированные метрики
+        amc_level="full",           # AMC: total throughput + avg bits/RB
+        pdcch_level="basic",          # PDCCH: отключен (можно включить "basic")
+        file_prefix="emp_stats"      # Префикс файла: lte_stats.csv
+    )
 
     # Запуск симуляции
     sim.start_simulation()
