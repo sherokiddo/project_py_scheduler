@@ -312,13 +312,13 @@ class StatsManager:
            self.config.levels.amc >= MetricLevel.FULL:
             detailed = self._collect_detailed_metrics(
                 tti=tti,
-                snapshot=snapshot,
+                pdcch_stats=pdcch_stats,
                 sched_stats=sched_stats,
                 amc_stats=amc_stats,
             )
             self.detailed_history.append(detailed)
 
-    def _collect_detailed_metrics(self, tti: int, sched_stats: dict, amc_stats: dict, snapshot: dict) -> dict:
+    def _collect_detailed_metrics(self, tti: int, sched_stats: dict, amc_stats: dict, pdcch_stats: dict) -> dict:
         """
         Собрать детальную per-UE статистику для FULL level.
 
@@ -346,7 +346,7 @@ class StatsManager:
         ue_cqi = amc_stats.get("ue_cqi", {})
         ue_sinr = amc_stats.get("ue_sinr", {})
         ue_rb = amc_stats.get("ue_rb_allocated", {})
-        ue_cce_alloc = snapshot.get("ue_cce_allocations", {})
+        ue_cce_alloc = pdcch_stats.get("pdcch_ue_cce_allocations", {})
 
         # Собрать все unique UE IDs
         all_ue_ids = (
@@ -1128,6 +1128,14 @@ class SimulationManager:
                 # Экспорт в CSV
                 output_filename = f"{self.stats_config.file_prefix}.csv"
                 self.stats_manager.export_csv(output_filename, locale="ru")
+
+                # Отладочный момент для глобального JI (Fairness)
+                ue_avg_throughputs = {}
+                for ue in self.ue_collection.GET_ALL_USERS():
+                    ue_avg_throughputs[ue.UE_ID] = ue.average_throughput
+                longterm_fairness_metrics = self.stats_manager._calculate_fairness(ue_throughputs=ue_avg_throughputs)
+                print(f"[SIMULATION] Jain's Fairness Index: {longterm_fairness_metrics['dl_fairness_jain_index']:.4f}")
+
 
                 # Вывод summary (если verbose включен)
                 if self.stats_config.scheduler_level == "full" or \

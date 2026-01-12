@@ -587,6 +587,11 @@ class UserEquipment:
         # Текущая пропускная способность в бит/с
         self.current_throughput = (bits_transmitted*1000) / time_interval_ms if time_interval_ms > 0 else 0
 
+        # EWMA обновление average_throughput для Proportional Fair
+        alpha = 0.001 #временный хардкод, вывести в управление.
+        average_throughput_past = self.average_throughput
+        self.average_throughput = (1 - alpha) * average_throughput_past + alpha * self.current_dl_throughput
+
         # Текущее переданное количество бит
         self.last_transmitted_bits = bits_transmitted
         
@@ -604,7 +609,12 @@ class UserEquipment:
         """
         # Текущая пропускная способность в бит/с
         self.current_dl_throughput = (bits_dl_transmitted*1000) / time_interval_ms if time_interval_ms > 0 else 0
-        
+
+        # EWMA обновление average_throughput для Proportional Fair
+        alpha = 0.001 #временный хардкод, вывести в управление.
+        average_throughput_past = self.average_throughput
+        self.average_throughput = (1 - alpha) * average_throughput_past + alpha * self.current_dl_throughput
+
         # Текущее переданное количество бит
         self.last_transmitted_bits = bits_dl_transmitted
         
@@ -965,8 +975,8 @@ class UECollection:
 
         """
         for ue in self.users.values():
-            if ue_ids is None or ue.UE_ID in ue_ids:
-                ue.SET_TRAFFIC_MODEL(model)
+            #if ue_ids is None or ue.UE_ID in ue_ids:
+            ue.SET_TRAFFIC_MODEL(model)
 
     def REG_USERS_TO_BS(self, bs):
         """

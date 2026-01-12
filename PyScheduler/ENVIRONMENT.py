@@ -457,7 +457,7 @@ def test_scheduler_grid():
 
     # Настройка моделей
     for ue in [ue1, ue2, ue3, ue4, ue5]:
-        ue.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=1000, y_min=0, y_max=1000))
+        ue.SET_MOBILITY_MODEL(RandomWalkModel(ue=ue, x_min=0, x_max=1000, y_min=0, y_max=1000))
         ue.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=5000))
         bs.REG_UE(ue)
         bs.ue_buffers[ue.UE_ID].ADD_PACKET(

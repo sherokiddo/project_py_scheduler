@@ -187,6 +187,7 @@ class SchedulerInterface:
         self._last_allocation = None
         self._last_users = None
         self._last_priority_list = []
+        self._last_prioritized_users = []
 
         self._last_sch_time_us = 0.0
         self._last_priority_calc_time_us = 0.0
@@ -230,11 +231,16 @@ class SchedulerInterface:
         # ЭТАП 2: Active window update
         self._update_active_window(eligible_ues)
 
+        # ЭТАП 2.5: Window filtering
+        windowed_ues = self.filter_by_window(eligible_ues)
+        if not windowed_ues:
+            return self.empty_result()
+
         # ЭТАП 3: Priority calculation
         t_priority_start = time.perf_counter()
 
-        prioritized_ues = self._calculate_priorities(eligible_ues, tti)
-
+        prioritized_ues = self._calculate_priorities(windowed_ues, tti)
+        self._last_prioritized_users = prioritized_ues
         t_priority_end = time.perf_counter()
         priority_calc_time_us = (t_priority_end - t_priority_start) * 1_000_000
 
@@ -253,7 +259,9 @@ class SchedulerInterface:
             return self._empty_result()
 
         # Этап 4.5: PDSCH estimation
-        priority_list = self._apply_pdsch_estimation(priority_list, tti)
+        priority_list_filtered = self._apply_pdsch_estimation(priority_list, tti)
+        self._last_priority_list = priority_list_filtered
+        self._last_priority_list_full = priority_list
 
         # ЭТАП 5: PDCCH allocation
         ues_with_pdcch = self._allocate_pdcch(priority_list)
@@ -273,7 +281,6 @@ class SchedulerInterface:
         self._update_stats(tti, len(eligible_ues), allocated_rbs, active_ues)
         self._last_allocation = allocation.copy()
         self._last_users = users
-        self._last_priority_list = priority_list
 
         t_sch_end = time.perf_counter()
         sch_time_us = (t_sch_end - t_sch_start) * 1_000_000
@@ -312,8 +319,8 @@ class SchedulerInterface:
 
         total_buffer_bytes = 0
         ue_buffer_sizes = {}
-        if hasattr(self, '_last_users') and self._last_users:
-            for user in self._last_users:
+        if hasattr(self, '_last_prioritized_users') and self._last_prioritized_users:
+            for user in self._last_prioritized_users:
                 ue_id = user.get('UE_ID')
                 # bs_buffer_size добавляется в _filter_eligible_ues()
                 buffer_size = user.get('bs_buffer_size', 0)
@@ -331,7 +338,7 @@ class SchedulerInterface:
             #TODO: временное решение. избавиться как сделаем buffer.get_stats()
             'dl_prb_utilization_pct': round(prb_utilization_pct, 2),
             'sch_total_time_us': round(self._last_sch_time_us, 2),
-            'sch_priority_list': self._last_priority_list,
+            'sch_priority_list': self._last_priority_list_full,
             'sch_priority_calc_time_us': round(self._last_priority_calc_time_us, 2),
             'sch_priority_sort_time_us': round(self._last_priority_sort_time_us, 2),
             'sch_priority_list_size': self._last_priority_list_size,
@@ -402,7 +409,7 @@ class SchedulerInterface:
         Обновление скользящего окна активных UE.
         Окно размером window_size TTI используется для отслеживания активности UE.
         Скользящее окно очень пригодится, когда количество UE в симуляции намного
-        больше, чем десятки. А также для QoS.
+        больше, чем десятки. А также для QoS. Ограничивает использование CPU
         Методов скольящего окна существует множество и это проприетарное решение.
         #TODO: Сейчас реализована FIFO-Queue. Можно (и полезно для оптимизации):
             - циклический метод (token ring/cyclic);
@@ -415,19 +422,61 @@ class SchedulerInterface:
             eligible_ues: Список eligible UE
         """
         if not self.enable_window:
+            self.active_ue_window = eligible_ues
             return
 
         current_ue_ids = {ue['UE_ID'] for ue in eligible_ues}
 
-        self.active_ue_window.append(current_ue_ids)
+        if not hasattr(self, '_ue_queue') or not self._ue_queue:
+            self._ue_queue = list(current_ue_ids)
+            if self.verbose:
+                print(f"SCHEDULER [Window] Initialized queue with {len(self._ue_queue)} UE")
+            return
 
-        if len(self.active_ue_window) > self.window_size:
-            self.active_ue_window.pop(0)
+        existing_ue_set = set(self._ue_queue)
+        new_ues = current_ue_ids - existing_ue_set
+        removed_ues = existing_ue_set - current_ue_ids
+
+        self._ue_queue.extend(new_ues)
+
+        if removed_ues:
+            self._ue_queue = [ue_id for ue_id in self._ue_queue if ue_id not in removed_ues]
 
         # verbose
-        if self.verbose and self.enable_window:
-            unique = len(set.union(*self.active_ue_window)) if self.active_ue_window else 0
-            print(f"[SCHEDULER] Active window: {len(current_ue_ids)} current, {unique} unique in window")
+        if self.verbose and (new_ues or removed_ues):
+            print(f"SCHEDULER [Window] Queue updated: +{len(new_ues)} new, -{len(removed_ues)} removed, "
+                  f"total={len(self._ue_queue)} UE")
+
+    def filter_by_window(self, eligible_ues: List[Dict]) -> List[Dict]:
+        """
+        Фильтрация eligible UE по активному окну.
+        Только UE, которые присутствуют в active_ue_window за последние
+        windowsize TTI, могут быть рассмотрены для планирования.
+
+        Args:
+            eligible_ues: Все eligible UE
+
+        Returns:
+            List[Dict]: UE, которые есть в окне
+        """
+        if not self.enable_window or not hasattr(self, '_ue_queue') or not self._ue_queue:
+            return eligible_ues
+
+        window_ue_ids = self._ue_queue[:self.window_size]
+        current_ue_ids = {ue['UE_ID']: ue for ue in eligible_ues}
+        windowed_ues = []
+        for ue_id in window_ue_ids:
+            if ue_id in current_ue_ids:
+                windowed_ues.append(current_ue_ids[ue_id])
+        processed_count = min(self.window_size, len(self._ue_queue))
+        self._ue_queue = self._ue_queue[processed_count:] + self._ue_queue[:processed_count]
+
+        if self.verbose:
+            print(f"SCHEDULER [Window] TTI window: {len(windowed_ues)}/{len(eligible_ues)} UE selected, "
+                  f"order: {[ue['UE_ID'] for ue in windowed_ues[:3]]}..., "
+                  f"rotated {processed_count} UE to end of queue")
+
+        return windowed_ues
 
     def _form_priority_list(self, prioritized_ues: List[Dict], tti: int) -> List[Dict]:
         """
@@ -587,7 +636,6 @@ class SchedulerInterface:
             if allocated_rbs == 0:
                 ue.UPD_DL_THROUGHPUT_BPS(0, time_interval_ms)
                 self.last_ue_transmitted_bits[ueid] = 0
-                continue  # UE не получил ресурсов - пропускаем
 
             bs_buffer = self.lte_grid.bs.ue_buffers.get(ueid)
             if bs_buffer is None:
@@ -747,13 +795,17 @@ class SchedulerInterface:
                 'current_active_count': 0,
                 'unique_ues_in_window': 0}
 
-        return {
-            'window_enabled': True,
-            'window_size': self.window_size,
-            'current_active_count': len(self.active_ue_window[-1]),
-            'unique_ues_in_window': len(set.union(*self.active_ue_window))}
+        unique_ues = len(set.union(*self.active_ue_window))
 
-    def _save_timing_stats(self, sch_time_us: float, 
+        return {
+            "window_enabled": True,
+            "window_size_tti": self.window_size,
+            "current_depth_tti": len(self.active_ue_window),
+            "unique_ues_in_window": unique_ues,
+            "avg_ues_per_tti": sum(len(s) for s in self.active_ue_window) / len(self.active_ue_window)
+        }
+
+    def _save_timing_stats(self, sch_time_us: float,
                        priority_calc_time_us: float,
                        priority_sort_time_us: float) -> None:
         """
@@ -770,7 +822,7 @@ class SchedulerInterface:
 
 #===============АБСТРАКТНЫЕ МЕТОДЫ ДЛЯ АЛГОРИТМОВ ПЛАНИРОВАНИЯ=================
 
-    def _calculate_priorities(self, eligible_ues: List[Dict], tti: int) -> List[Dict]:
+    def _calculate_priorities(self, windowed_ues: List[Dict], tti: int) -> List[Dict]:
         """
         Расчет приоритетов для UE на основе алгоритма планирования.
         Подклассы ОБЯЗАНЫ реализовать этот метод.
@@ -783,7 +835,7 @@ class SchedulerInterface:
         - RoundRobin: priority = 1.0 (все равны)
 
         Args:
-            eligible_ues: Отфильтрованные UE (прошли eligibility checks)
+            windowed_ues: Отфильтрованные UE (прошли eligibility checks)
             tti: Текущий TTI
 
         Returns:
@@ -869,7 +921,7 @@ class PDCCHManager:
         Args:
             bandwidth: Ширина полосы, влияет на кол-во CCE
             pcfich: Число OFDM символов для PDCCH (1, 2, или 3)
-            max_dl_cce_allowance: Максимум CCE для DL UE-specific (dlNumCceAllowance)
+            max_dl_cce_allowance: Максимум CCE для DL UE-specifiс
                                   None = использовать весь Total_CCE
             verbose: режим детального логирования для дебага
         Raises:
@@ -972,12 +1024,12 @@ class PDCCHManager:
             (1.4, 3): 6,
 
             # 3 MHz (15 RB)
-            (3, 1): 5,
+            (3, 1): 2,
             (3, 2): 7,
             (3, 3): 12,
 
             # 5 MHz (25 RB)
-            (5, 1): 8,
+            (5, 1): 3,
             (5, 2): 12,
             (5, 3): 20,
 
@@ -1293,7 +1345,7 @@ class PDCCHManager:
             #'pdcch_cce_available_count': available_cce,
             'pdcch_cce_utilization_pct': round(cce_utilization*100, 2),
             #'num_scheduled_users': len(self.cce_allocations),
-            'allocations': self.cce_allocations.copy()} #Копия, не оригинал
+            'pdcch_ue_cce_allocations': self.cce_allocations.copy()} #Копия, не оригинал
 
         return stats
 
@@ -1366,16 +1418,16 @@ class AdaptiveModulationAndCoding:
                 "ue_sinr": {},
                 "ue_rb_allocated": {},
             }
-        
+
         users = self.scheduler._last_users
         allocation = self.scheduler._last_allocation
-        
+
         total_throughput_bps = 0.0
-        total_capacity_bits = 0     
+        total_capacity_bits = 0
         total_transmitted_bits = 0
         total_allocated_rbs = 0
 
-        ue_throughputs = {}
+        ue_throughputs = {user.get('UE_ID'): 0 for user in users}
         ue_cqi = {}
         ue_sinr = {}
         ue_rb_allocated = {}
@@ -1385,13 +1437,13 @@ class AdaptiveModulationAndCoding:
         for user in users:
             ue = user.get('ue')
             ue_id = user.get('UE_ID')
-            
+
             if not ue or not ue_id:
                 continue
 
             throughput_bps = ue.current_dl_throughput
             ue_throughputs[ue_id] = throughput_bps
-            total_throughput_bps += throughput_bps 
+            total_throughput_bps += throughput_bps
 
             allocated_rbs = len(allocation.get(ue_id, []))
             ue_rb_allocated[ue_id] = allocated_rbs
@@ -1400,12 +1452,12 @@ class AdaptiveModulationAndCoding:
                 bits_per_rb = self.GET_BITS_PER_RB(cqi)
                 capacity_bits = bits_per_rb * allocated_rbs * 2
                 total_capacity_bits += capacity_bits
-            
+
             transmitted_bits = int(ue.last_transmitted_bits)
             total_transmitted_bits += transmitted_bits
-            
+
             total_allocated_rbs += allocated_rbs
-            
+
             cqi = user.get('cqi')
             if cqi is not None and 1 <= cqi <= 15:
                 cqi_values.append(cqi)
@@ -1414,21 +1466,21 @@ class AdaptiveModulationAndCoding:
             if hasattr(ue, 'SINR'):
                 sinr_values.append(ue.SINR)
                 ue_sinr[ue_id] = ue.SINR
-        
+
         # Avg bits per RB (на основе actual)
         if total_allocated_rbs > 0:
             avg_bits_per_rb = total_transmitted_bits / (total_allocated_rbs * 2)
         else:
             avg_bits_per_rb = 0.0
-            
+
         if cqi_values:
-            cqi_avg = sum(cqi_values) / len(cqi_values) 
+            cqi_avg = sum(cqi_values) / len(cqi_values)
         else: cqi_avg = 0
-            
+
         if sinr_values:
-            sinr_avg = sum(sinr_values) / len(sinr_values) 
+            sinr_avg = sum(sinr_values) / len(sinr_values)
         else: sinr_avg = 0
-        
+
         stats = {
             "dl_capacity_bits_sum_tti": total_capacity_bits,
             "dl_transmitted_bits_sum_tti": total_transmitted_bits,
@@ -1440,25 +1492,25 @@ class AdaptiveModulationAndCoding:
             "ue_cqi": ue_cqi,
             "ue_sinr": ue_sinr,
             "ue_rb_allocated": ue_rb_allocated,}
-        
+
         return stats
 
 #==============================================================================
 #                              ЛОГИКА SCHEDULER_NEW
 #==============================================================================
-   
+
 class BestCQIScheduler(SchedulerInterface):
     """
     Best CQI Scheduler.
     Жадный алгоритм: выбирает UE с лучшим CQI (максимальный мгновенный throughput).
     Фокус на максимизацию системного throughput, но может приводить к голоданию
     для UE с плохими условиями канала.
-    
+
     Алгоритм:
     1. Priority = CQI (чем выше CQI, тем выше приоритет)
     2. Сортировка UE по priority (descending)
     3. Жадное распределение RBG лучшему UE пока есть данные
-    
+
     Args:
         lte_grid: Ресурсная сетка LTE
         bs: Базовая станция
@@ -1470,7 +1522,7 @@ class BestCQIScheduler(SchedulerInterface):
         window_size: Размер окна в TTI (default: 100)
         verbose: Отладочный вывод для планировщика (default: False)
     """
-    
+
     def __init__(self, lte_grid, bs, **kwargs):
         """Инициализация BestCQI scheduler."""
         super().__init__(
@@ -1483,61 +1535,61 @@ class BestCQIScheduler(SchedulerInterface):
         Args:
             eligible_ues: Отфильтрованные UE
             tti: Текущий TTI
-        
+
         Returns:
             List[Dict]: UE с добавленным полем 'priority'
         """
         for user in eligible_ues:
             user['priority'] = user['cqi']  # Priority = CQI
-        
+
         if self.verbose:
             avg_priority = sum(u['priority'] for u in eligible_ues) / len(eligible_ues)
             print(f"[SCHEDULER.BestCQI TTI {tti}] Priority calculation: {len(eligible_ues)} UE, avg priority={avg_priority:.2f}")
-        
+
         return eligible_ues
 
     #TODO: Уважаемые оптимизаторы. Вашему вниманию представляется 100%
     # неоптимизированная логика. Ваша задача изучить, как лучше всего
     # формировать приоритеты для BCQI
 
-    def _allocate_pdsch(self, tti: int, ues_with_pdcch: List[Dict], 
+    def _allocate_pdsch(self, tti: int, ues_with_pdcch: List[Dict],
                        eligible_ues: List[Dict]) -> Dict[int, List[int]]:
         """
         Жадное распределение RBG: отдаем все RBG лучшему UE,
         пока у него есть данные, потом следующему лучшему.
         """
         allocation = {user['UE_ID']: [] for user in eligible_ues}
-        
+
         if not ues_with_pdcch:
             return allocation
-        
+
         remaining_buffer = {
             user['UE_ID']: user['bs_buffer_size'] * 8
             for user in ues_with_pdcch}
-        
+
         rbg_size = self.lte_grid.GET_RBG_SIZE()
         total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size
-        
+
         for rbg_idx in range(total_rbg):
             if all(buf <= 0 for buf in remaining_buffer.values()):
                 break
-            
+
             best_user = None
             for user in ues_with_pdcch:
                 if remaining_buffer[user['UE_ID']] > 0:
                     best_user = user
                     break
-            
+
             if best_user is None:
                 break
-            
+
             ue_id = best_user['UE_ID']
-            
+
             # Выделение RBG
             if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, ue_id):
                 rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
                 allocation[ue_id].extend(rb_indices)
-                
+
                 # Уменьшаем remaining_buffer
                 bits_per_rb = self.amc.GET_BITS_PER_RB(best_user['cqi'])
                 rbg_capacity = len(rb_indices) * bits_per_rb * 2
@@ -1549,7 +1601,7 @@ class BestCQIScheduler(SchedulerInterface):
                 rb_list = allocation[ue_id]
                 print(f"[PDSCH] UE {ue_id}: {len(rb_list)} RB allocated "
                       f"(RB {rb_list[0]}-{rb_list[-1]})")
-        
+
         return allocation
 
 class RoundRobinScheduler(SchedulerInterface):
@@ -1557,7 +1609,7 @@ class RoundRobinScheduler(SchedulerInterface):
     Round Robin Scheduler - циклическое распределение с ротацией.
     Использует счетчик для справедливой ротации UE между TTI.
     """
-    
+
     def __init__(self, lte_grid, bs, **kwargs):
         super().__init__(lte_grid, bs, **kwargs)
         self.rr_rbg_offset = 0 #можно сделать механизм без ротации RBG
@@ -1568,141 +1620,161 @@ class RoundRobinScheduler(SchedulerInterface):
         RR: Не применяем PDSCH estimation. Костыль. Очень костыльный.
         Round Robin распределяет ресурсы поровну (по 1 RBG каждому),
         поэтому estimation (предназначенная для жадных алгоритмов) не подходит.
-        
+
         Args:
             priority_list: UE для планирования
             tti: Текущий TTI
-        
+
         Returns:
             List[Dict]: Тот же priority_list без изменений
         """
         if self.verbose:
             print(f"[SCHEDULER TTI {tti}] PDSCH estimation: SKIPPED (Round Robin distributes evenly)")
             print(f"[SCHEDULER TTI {tti}] After estimation: {len(priority_list)} UE selected, 0 UE excluded")
-        
+
         return priority_list
-    
-    def _calculate_priorities(self, eligible_ues: List[Dict], tti: int) -> List[Dict]:
+
+    def _calculate_priorities(self, windowed_ues: List[Dict], tti: int) -> List[Dict]:
         """
         Round Robin принцип распределения ресурсов
         """
-        num_ues = len(eligible_ues)
-        
+        num_ues = len(windowed_ues)
         if num_ues == 0:
-            return eligible_ues
-        
-        start_idx = self.rr_ue_offset % num_ues
-        rotated_ues = eligible_ues[start_idx:] + eligible_ues[:start_idx]
-        
-        for idx, user in enumerate(rotated_ues):
-            user['priority'] = num_ues - idx
-        
-        if self.max_dl_ue_tti:
-            self.rr_ue_offset += self.max_dl_ue_tti
+            return windowed_ues
+
+        if self.max_dl_ue_tti and self.max_dl_ue_tti < num_ues:
+            ues_to_plan = self.max_dl_ue_tti
         else:
-            self.rr_ue_offset += num_ues
-        
+            ues_to_plan = num_ues
+
+        start_idx = self.rr_ue_offset % num_ues
+        rotated_ues = windowed_ues[start_idx:] + windowed_ues[:start_idx]
+
+        for idx, user in enumerate(rotated_ues):
+            user['priority'] = ues_to_plan - idx
+
         if self.verbose:
             top_ue = rotated_ues[0]['UE_ID']
             print(f"[SCHEDULER.RoundRobin TTI {tti}] Priority: Rotated (start UE {top_ue}, offset={self.rr_ue_offset})")
-        
+
         return rotated_ues
-    
-    def _allocate_pdsch(self, tti: int, ues_with_pdcch: List[Dict], 
+
+    def _allocate_pdsch(self, tti: int, ues_with_pdcch: List[Dict],
                         eligible_ues: List[Dict]) -> Dict[int, List[int]]:
         """
         Round Robin выделение ресурса PDSCH allocation
         Каждому UE выделяется по одному RBG циклически.
-        
+
         Args:
             tti: Текущий TTI
             ues_with_pdcch: UE получившие PDCCH
             eligible_ues: Все eligible UE (не используется в RR)
-        
+
         Returns:
             Dict[int, List[int]]: Allocation map {ue_id: [rb_indices]}
         """
         allocation = {ue['UE_ID']: [] for ue in ues_with_pdcch}
         rbg_size = self.lte_grid.GET_RBG_SIZE()
         total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size
-        
+
         num_ues = len(ues_with_pdcch)
         if num_ues == 0:
             return allocation
-        
+
+        eligible_ids = [ue['UE_ID'] for ue in eligible_ues]
         ue_index = self.rr_rbg_offset
-        
+        last_served_idx = -1
+
         for rbg_idx in range(total_rbg):
             ue = ues_with_pdcch[ue_index % num_ues]
             ue_id = ue['UE_ID']
-            
+
             if ue['bs_buffer_size'] > 0:
                 if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, ue_id):
                     rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
                     allocation[ue_id].extend(rb_indices)
-                    
+
+                    try:
+                        current_idx = eligible_ids.index(ue_id)
+                        if current_idx > last_served_idx:
+                            last_served_idx = current_idx
+                    except ValueError:
+                        pass
+
                     bits_per_rb = self.amc.GET_BITS_PER_RB(ue['cqi'])
                     transmitted_bits = len(rb_indices) * bits_per_rb * 2
                     transmitted_bytes = transmitted_bits // 8
                     ue['bs_buffer_size'] = max(0, ue['bs_buffer_size'] - transmitted_bytes)
-            
+
             ue_index += 1
-        
+
         self.rr_rbg_offset = ue_index % num_ues
-        
+
+        if last_served_idx >= 0 and len(eligible_ues) > 0:
+            self.rr_ue_offset = (last_served_idx + 1) % len(eligible_ues)
+
         if self.verbose:
             allocated_ues = sum(1 for rbs in allocation.values() if len(rbs) > 0)
             total_rb = sum(len(rbs) for rbs in allocation.values())
             print(f"[SCHEDULER.RoundRobin TTI {tti}] PDSCH: {allocated_ues} UE, {total_rb} RB total "
                   f"(next_offset={self.rr_rbg_offset})")
-        
+
         return allocation
 
 class ProportionalFairScheduler(SchedulerInterface):
     """
     Proportional Fair Scheduler - баланс между throughput и fairness.
-    
+
     Priority: instant_rate / avg_throughput
     - instant_rate: Потенциальный throughput в текущем TTI (зависит от CQI)
     - avg_throughput: Средний throughput UE (из history)
-    
+
     UE с низким avg_throughput получают высший приоритет (fairness).
     UE с хорошим CQI тоже получают бонус (efficiency).
     """
-    
+
     def __init__(self, lte_grid, bs, **kwargs):
         super().__init__(lte_grid, bs, **kwargs)
-    
+
     def _calculate_priorities(self, eligible_ues: List[Dict], tti: int) -> List[Dict]:
         """
         Args:
             eligible_ues: UE прошедшие eligibility проверку
             tti: Текущий TTI
-        
+
         Returns:
             List[Dict]: UE с рассчитанными PF-приоритетами
         """
         for user in eligible_ues:
-            bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
+            cqi = user['cqi']
+            bits_per_rb = self.amc.GET_BITS_PER_RB(cqi)
             rb_per_slot = self.lte_grid.rb_per_slot
-            instant_rate = rb_per_slot * bits_per_rb * 2 / 1000
-            
-            avg_throughput = user['ue'].current_dl_throughput
-            
-            if avg_throughput > 0:
-                pf_metric = instant_rate / avg_throughput
+            instant_rate = rb_per_slot * bits_per_rb * 2
+            avg_throughput = user['ue'].average_throughput
+
+            if avg_throughput <= 0:
+                avg_throughput = 1e-6
+                pf_metric = instant_rate / 1.0
             else:
-                pf_metric = instant_rate
-                # оптимизировал этот момент. можно изучить как было.
-            
+                avg_throughput_per_tti = avg_throughput / 1000
+                pf_metric = instant_rate / avg_throughput_per_tti
+
             user['priority'] = pf_metric
             user['instant_rate'] = instant_rate  # Для debug
-        
+
+            # avg_throughput = user['ue'].average_throughput
+            # if avg_throughput <= 0:
+            #     avg_throughput = 1e-6
+
+            # pf_metric = instant_throughput / avg_throughput
+
+            # return pf_metric
+
         if self.verbose:
             avg_priority = sum(u['priority'] for u in eligible_ues) / len(eligible_ues) if eligible_ues else 0
             print(f"[SCHEDULER.ProportionalFair TTI {tti}] Priority calculation: "
                   f"{len(eligible_ues)} UE, avg PF metric={avg_priority:.2f}")
-        
+
         return eligible_ues
     
     def _allocate_pdsch(self, tti: int, ues_with_pdcch: List[Dict], 

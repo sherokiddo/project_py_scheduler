@@ -524,13 +524,13 @@ class BaseStation:
                 print(f"BS: Пакет для UE {target_ue_id} отброшен (буфер полный)")
 
             # Логирование статистики
-            status = buffer.GET_UE_STATUS(current_time)["per_ue"].get(target_ue_id, {})
-            print(f"\nUE {target_ue_id} [DL]:")
-            print(f"Сгенерировано пакетов: {len(packets)}")
-            print(f"TTL пакетов: {ttl_ms} мс")
-            print(f"Скорость: {bitrate / 1e6:.2f} Mbps")
-            print(f"Текущий размер буфера: {status.get('size', 0)} байт")
-            print(f"Отброшено: {status.get('dropped', 0)}")
+            # status = buffer.GET_UE_STATUS(current_time)["per_ue"].get(target_ue_id, {})
+            # print(f"\nUE {target_ue_id} [DL]:")
+            # print(f"Сгенерировано пакетов: {len(packets)}")
+            # print(f"TTL пакетов: {ttl_ms} мс")
+            # print(f"Скорость: {bitrate / 1e6:.2f} Mbps")
+            # print(f"Текущий размер буфера: {status.get('size', 0)} байт")
+            # print(f"Отброшено: {status.get('dropped', 0)}")
 
     def UPD_GLOBAL_BUFFER(self, current_time: int) -> None:
         """
