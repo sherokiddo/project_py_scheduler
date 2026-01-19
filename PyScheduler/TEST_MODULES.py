@@ -139,7 +139,7 @@ def sim_with_manager():
     GLOBALS.SEED = 42
 
     # Генерация заданного числа UE в коллекцию
-    ue_collection.ADD_RANDOM_USERS(num_ue=3)
+    ue_collection.ADD_RANDOM_USERS(num_ue=5)
 
     MapBorders(-1000, 1000, -1000, 1000)
 
@@ -154,6 +154,19 @@ def sim_with_manager():
 
     # Регистрация всех пользователей коллекции в базовой станции
     ue_collection.REG_USERS_TO_BS(bs)
+
+    import math
+
+    from BS_MODULE import Packet
+
+    inf = math.inf
+
+    for ue in ue_collection.GET_ALL_USERS():
+        ue_id = ue.UE_ID
+        bs.ue_buffers[ue_id].ADD_PACKET(
+            Packet(size=inf, ue_id=ue_id, creation_time=0), current_time=0
+        )
+        print(f"[SETUP] Full buffer initialized for UE {ue_id}")
 
     # =============================================================================
     #                        НАСТРОЙКА МЕНЕДЖЕРА СИМУЛЯЦИИ
@@ -171,6 +184,15 @@ def sim_with_manager():
     # Установка планировщика. Можно передвать параметры, которые
     # поддерживает SchedulerInterface.
     sim.set_scheduler(algorithm="RoundRobin")
+
+    # Настраиваем модели для каждого UE
+    for ue in ue_collection.GET_ALL_USERS():
+        print(f"Setup UE: {ue.UE_ID} type={type(ue.UE_ID)}")
+        sim.setup_ue_traffic(
+            ue_id=ue.UE_ID,
+            model_type="Poisson",
+            packet_rate=1000,
+        )
 
     # Установка длительности симуляции
     sim.set_sim_duration(5000)

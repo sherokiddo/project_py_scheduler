@@ -1382,11 +1382,10 @@ class SimulationManager:
     def run_tti(self, current_time: int):
         """
         Выполнение одного TTI (Transmission Time Interval).
-
         Инкапсулирует основную логику обработки одного TTI.
-        """
-        # 1. Обновление состояния UE (мобильность, каналы) - каждый update_interval
 
+        ИСПРАВЛЕНО: Использует SimpleGenerator вместо PacketManager.
+        """
         if current_time % self.sim_config.update_interval == 0:
             if self.sim_config.verbose:
                 print("[SIMULATION] Update UEs states")
@@ -1395,16 +1394,34 @@ class SimulationManager:
                 current_time=current_time,
                 update_interval=self.sim_config.update_interval,
             )
+        all_users = self.ue_collection.GET_ALL_USERS()  # ← ИСПРАВЛЕНО
 
-        # 2. ✅ ГЕНЕРАЦИЯ ТРАФИКА ДЛЯ ВСЕХ UE (НОВЫЙ КОД!)
-        self.base_station.generate_traffic_all_ues(
-            current_time=current_time, update_interval=self.tti_duration
-        )
+        for ue in all_users:
+            ue_id = ue.UE_ID
 
-        # 3. Подготовка данных для планировщика
+            # Проверяем: есть ли модель для этого UE в SimpleGenerator?
+            if ue_id not in self.traffic_gen.models:
+                continue  # Пропускаем UE без модели
+
+            # Генерируем пакеты через SimpleGenerator
+            packets = self.traffic_gen.generate_packets(
+                ue_id=ue_id, current_time=current_time, update_interval=self.tti_duration
+            )
+
+            # Добавляем пакеты в буфер BS
+            if packets:
+                for pkt in packets:
+                    # Проверяем что буфер существует
+                    if ue_id not in self.base_station.ue_buffers:
+                        if self.sim_config.verbose:
+                            print(f"[WARNING] Buffer not created for UE {ue_id}")
+                        continue
+
+                    # Добавляем пакет в буфер
+                    self.base_station.ue_buffers[ue_id].ADD_PACKET(pkt, current_time)
+
         users = self.ue_collection.GET_USERS_FOR_SCHEDULER()
 
-        # 4. Планирование ресурсов
         sched_result = self.scheduler.schedule(current_time, users)
 
         return sched_result
