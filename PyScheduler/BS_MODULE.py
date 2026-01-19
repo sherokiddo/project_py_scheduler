@@ -234,6 +234,8 @@ class Buffer:
                     "avg_delay": 0.0,
                     "dropped": self.dropped.get(ue_id, 0),
                     "expired": self.expired.get(ue_id, 0),
+                    "packets": 0,
+                    "bitrate": 0.0,
                 }
                 continue
 
@@ -247,6 +249,7 @@ class Buffer:
                 "dropped": self.dropped[ue_id],
                 "expired": self.expired[ue_id],
                 "ingress_bytes": self.ingress_stats[ue_id]["total_bytes"],
+                "packets": len(queue),
             }
 
             # Агрегированная статистика
@@ -489,22 +492,27 @@ class BaseStation:
             raw_data = model.generate_traffic(
                 ue_id=target_ue_id, current_time=current_time, update_interval=update_interval
             )
+            packets = []
 
             # Добавление пакетов в буфер
             for packet in raw_data:
                 packet.ttl_ms = ttl_ms
+                packets.append(packet)
                 success = buffer.ADD_PACKET(packet, current_time)
                 if not success:
                     print(f"BS: Пакет для UE {target_ue_id} отброшен (буфер полный)")
 
+            total_bytes = sum(pkt.size for pkt in packets)
+            bitrate = (total_bytes * 8) / (update_interval / 1000) if update_interval > 0 else 0
+
             # Логирование статистики
-            # status = buffer.GET_UE_STATUS(current_time)["per_ue"].get(target_ue_id, {})
-            # print(f"\nUE {target_ue_id} [DL]:")
-            # print(f"Сгенерировано пакетов: {len(packets)}")
-            # print(f"TTL пакетов: {ttl_ms} мс")
-            # print(f"Скорость: {bitrate / 1e6:.2f} Mbps")
-            # print(f"Текущий размер буфера: {status.get('size', 0)} байт")
-            # print(f"Отброшено: {status.get('dropped', 0)}")
+            status = buffer.GET_UE_STATUS(current_time)["per_ue"].get(target_ue_id, {})
+            print(f"\nUE {target_ue_id} [DL]:")
+            print(f"Сгенерировано пакетов: {len(packets)}")
+            print(f"TTL пакетов: {ttl_ms} мс")
+            print(f"Скорость: {bitrate / 1e6:.2f} Mbps")
+            print(f"Текущий размер буфера: {status.get('size', 0)} байт")
+            print(f"Отброшено: {status.get('dropped', 0)}")
 
     def UPD_GLOBAL_BUFFER(self, current_time: int) -> None:
         """

@@ -519,13 +519,6 @@ class UserEquipment:
             self.dist_to_BS_3D,
             self.UE_height,
             self.ue_class,
-            self.UE_ID,
-            displacement,
-            self.dist_to_BS_2D,
-            self.dist_to_BS_2D_in,
-            self.dist_to_BS_3D,
-            self.UE_height,
-            self.ue_class,
         )
 
         # Wideband SINR и CQI

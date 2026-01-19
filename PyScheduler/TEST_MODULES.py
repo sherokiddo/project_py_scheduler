@@ -309,5 +309,5 @@ def chmdl_test():
 if __name__ == "__main__":
     # debug_simulation()
     # sim_with_ue_collection()
-    # sim_with_manager()
-    chmdl_test()
+    sim_with_manager()
+    # chmdl_test()

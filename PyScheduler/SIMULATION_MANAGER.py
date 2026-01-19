@@ -34,7 +34,7 @@ import numpy as np
 from BS_MODULE import BaseStation
 from RES_GRID import RES_GRID_LTE
 from SCHEDULER import SchedulerInterface
-from TRAFFIC_MODEL import TrafficType
+from TRAFFIC_MODEL import SimpleGenerator, TrafficType
 from UE_MODULE import UECollection
 
 # ==============================================================================
@@ -930,6 +930,7 @@ class SimulationManager:
         self._original_stderr = None
         self.scheduler = None
         self.tti_duration = 1
+        self.traffic_gen = SimpleGenerator(default_qci=9)
 
     def set_sim_duration(self, sim_duration: int) -> None:
         """
@@ -1153,7 +1154,7 @@ class SimulationManager:
                     history_max_len=self.stats_config.history_max_len,
                 )
 
-                self.stats_manager = StatsManager(scheduler, stats_config)
+                self.stats_manager = StatsManager(self.scheduler, stats_config)
 
                 if self.sim_config.verbose:
                     print(
@@ -1425,3 +1426,13 @@ class SimulationManager:
         sched_result = self.scheduler.schedule(current_time, users)
 
         return sched_result
+
+    def setup_ue_traffic(self, ue_id, model_type, **params):
+        """Настройка трафика для UE"""
+        self.traffic_gen.set_model(ue_id, model_type, **params)
+
+    def generate_traffic_for_ue(self, ue_id, current_time, interval):
+        """Генерация трафика"""
+        packets = self.traffic_gen.generate_packets(ue_id, current_time, interval)
+        for pkt in packets:
+            self.base_station.ue_buffers[ue_id].ADD_PACKET(pkt, current_time)
