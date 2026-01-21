@@ -453,57 +453,6 @@ class BaseStation:
 
         # @sherokiddo: "Предусмотреть валидацию"
 
-    def GEN_TRFFC(
-        self, current_time: int, update_interval: int, ue_id: int = None, ttl_ms: int = 1000
-    ) -> None:
-        """
-        Генерирует DL-трафик для пользователей по UE_ID
-
-        Args:
-            current_time: Текущее время в мс (используется для TTL)
-            update_interval: Интервал обновления трафика (мс)
-            ue_id: Опциональный ID конкретного пользователя
-            ttl_ms: Время жизни пакетов в миллисекундах (по умолчанию 1000)
-        """
-
-        if not self.ue_traffic_models:
-            raise ValueError("Нет зарегистрированных пользователей!")
-
-        targets = [ue_id] if ue_id else self.ue_traffic_models.keys()
-
-        for target_ue_id in targets:
-            model = self.ue_traffic_models.get(target_ue_id)
-            if not model:
-                continue
-
-            buffer = self.ue_buffers[target_ue_id]
-
-            # Генерация трафика
-            raw_data = model.generate_traffic(
-                ue_id=target_ue_id, current_time=current_time, update_interval=update_interval
-            )
-            packets = []
-
-            # Добавление пакетов в буфер
-            for packet in raw_data:
-                packet.ttl_ms = ttl_ms
-                packets.append(packet)
-                success = buffer.ADD_PACKET(packet, current_time)
-                if not success:
-                    print(f"BS: Пакет для UE {target_ue_id} отброшен (буфер полный)")
-
-            total_bytes = sum(pkt.size for pkt in packets)
-            bitrate = (total_bytes * 8) / (update_interval / 1000) if update_interval > 0 else 0
-
-            # Логирование статистики
-            # status = buffer.GET_UE_STATUS(current_time)["per_ue"].get(target_ue_id, {})
-            # print(f"\nUE {target_ue_id} [DL]:")
-            # print(f"Сгенерировано пакетов: {len(packets)}")
-            # print(f"TTL пакетов: {ttl_ms} мс")
-            # print(f"Скорость: {bitrate / 1e6:.2f} Mbps")
-            # print(f"Текущий размер буфера: {status.get('size', 0)} байт")
-            # print(f"Отброшено: {status.get('dropped', 0)}")
-
     def UPD_GLOBAL_BUFFER(self, current_time: int) -> None:
         """
         Глобальное обновление всех буферов пользователей.
