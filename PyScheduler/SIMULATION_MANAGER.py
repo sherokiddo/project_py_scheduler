@@ -1317,23 +1317,12 @@ class SimulationManager:
         """Настройка трафика для UE"""
         self.traffic_gen.set_model(ue_id, model_type, **params)
 
-    def generate_traffic_for_ue(self, ue_id, current_time, interval):
-        """Генерация трафика"""
-        packets = self.traffic_gen.generate_packets(ue_id, current_time, interval)
-
-        # Добавляем в буфер BS
-        for pkt in packets:
-            self.bs.ue_buffers[ue_id].ADD_PACKET(pkt, current_time)
-
     def setup_simulation_with_qos_traffic(self):
         """
         Настройка QoS multi-bearer трафика перед стартом симуляции.
 
         Инициализирует bearers для каждого UE через PacketManager.
         """
-        print("\n" + "=" * 60)
-        print("[SETUP] setup_simulation_with_qos_traffic НАЧАЛО")
-        print("=" * 60)
         if not self.base_station:
             raise RuntimeError("BaseStation не инициализирована")
 
@@ -1426,10 +1415,6 @@ class SimulationManager:
         sched_result = self.scheduler.schedule(current_time, users)
 
         return sched_result
-
-    def setup_ue_traffic(self, ue_id, model_type, **params):
-        """Настройка трафика для UE"""
-        self.traffic_gen.set_model(ue_id, model_type, **params)
 
     def generate_traffic_for_ue(self, ue_id, current_time, interval):
         """Генерация трафика"""

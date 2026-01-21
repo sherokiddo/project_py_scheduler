@@ -368,9 +368,6 @@ class BaseStation:
         self.frequency_GHz = frequency_GHz  # Частота в ГГц
         self.frequency_Hz = frequency_GHz * 1e9  # Частота в Гц
         self.bandwidth = bandwidth  # Полоса пропускания
-        self.frequency_GHz = frequency_GHz  # Частота в ГГц
-        self.frequency_Hz = frequency_GHz * 1e9  # Частота в Гц
-        self.bandwidth = bandwidth  # Полоса пропускания
         self.rb_per_slot = GLOBALS.BANDWIDTH_TO_RB[bandwidth]
 
         # Характеристики передачи
@@ -442,12 +439,10 @@ class BaseStation:
         Args:
             ue: Объект UserEquipment для регистрации
         """
-        # Существующая логика (без изменений)
-        self.ue_buffers[ue.UE_ID] = Buffer(global_max=self.global_max, per_ue_max=self.per_ue_max)
         self.ue_buffers[ue.UE_ID] = Buffer(global_max=self.global_max, per_ue_max=self.per_ue_max)
         self.ue_traffic_models[ue.UE_ID] = ue.traffic_model
         self.registered_ues[ue.UE_ID] = ue
-        ue.serving_bs = self  # теперь UE знает о своей BS
+        ue.serving_bs = self
 
         # TODO: сделать метод DEREG_UE и сопутствующие изменения
 
@@ -506,13 +501,13 @@ class BaseStation:
             bitrate = (total_bytes * 8) / (update_interval / 1000) if update_interval > 0 else 0
 
             # Логирование статистики
-            status = buffer.GET_UE_STATUS(current_time)["per_ue"].get(target_ue_id, {})
-            print(f"\nUE {target_ue_id} [DL]:")
-            print(f"Сгенерировано пакетов: {len(packets)}")
-            print(f"TTL пакетов: {ttl_ms} мс")
-            print(f"Скорость: {bitrate / 1e6:.2f} Mbps")
-            print(f"Текущий размер буфера: {status.get('size', 0)} байт")
-            print(f"Отброшено: {status.get('dropped', 0)}")
+            # status = buffer.GET_UE_STATUS(current_time)["per_ue"].get(target_ue_id, {})
+            # print(f"\nUE {target_ue_id} [DL]:")
+            # print(f"Сгенерировано пакетов: {len(packets)}")
+            # print(f"TTL пакетов: {ttl_ms} мс")
+            # print(f"Скорость: {bitrate / 1e6:.2f} Mbps")
+            # print(f"Текущий размер буфера: {status.get('size', 0)} байт")
+            # print(f"Отброшено: {status.get('dropped', 0)}")
 
     def UPD_GLOBAL_BUFFER(self, current_time: int) -> None:
         """
@@ -606,7 +601,7 @@ class BaseStation:
             buffer = self.ue_buffers[ue_id]
             buffer.DESTROY_UE_PACKETS(ue_id)  # Очистка буфера конкретного UE
 
-        print("Все буферы базовой станции успешно очищены")
+        # print("Все буферы базовой станции успешно очищены")
 
     def _handle_generated_packets(self, packets: List[Packet]):
         """
@@ -615,7 +610,7 @@ class BaseStation:
         Автоматически вызывается PacketManager при генерации.
         Маршрутизирует пакеты в правильные буферы.
         """
-        print(f"[✓ CALLBACK] _handle_generated_packets вызван! {len(packets)} пакетов")
+        # print(f"[✓ CALLBACK] _handle_generated_packets вызван! {len(packets)} пакетов")
         for pkt in packets:
             # Получаем буфер для UE
             if pkt.ue_id not in self.ue_buffers:
