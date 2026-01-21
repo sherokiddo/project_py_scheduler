@@ -19,7 +19,7 @@ from typing import Dict, List, Tuple
 
 import GLOBALS
 import numpy as np
-from TRAFFIC_MODEL import Packet, PacketManager
+from TRAFFIC_MODEL import Packet
 from UE_MODULE import UserEquipment
 
 
@@ -378,10 +378,6 @@ class BaseStation:
         self.global_max = global_max
         self.per_ue_max = per_ue_max
         self.ue_buffers = defaultdict(Buffer)
-        self.ue_traffic_models = {}  # {ue_id: traffic_model}
-        self.traffic_manager = PacketManager(
-            packet_handler=self._handle_generated_packets, enable_bitrate_control=True
-        )
 
         # Связь с моделью канала
         self.ch_model_type = ch_model_type
@@ -440,7 +436,6 @@ class BaseStation:
             ue: Объект UserEquipment для регистрации
         """
         self.ue_buffers[ue.UE_ID] = Buffer(global_max=self.global_max, per_ue_max=self.per_ue_max)
-        self.ue_traffic_models[ue.UE_ID] = ue.traffic_model
         self.registered_ues[ue.UE_ID] = ue
         ue.serving_bs = self
 

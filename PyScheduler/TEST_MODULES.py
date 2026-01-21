@@ -146,27 +146,10 @@ def sim_with_manager():
     # Установка модели передвижения для всех пользователей коллекции
     ue_collection.SET_MOBILITY_MODEL("RandomWaypoint")
 
-    # Создание модели генерации трафика
-    poisson = PoissonModel(packet_rate=1000)
-
-    # Установка модели генерации трафика для всех пользователей коллекции
-    ue_collection.SET_TRAFFIC_MODEL(poisson)
-
     # Регистрация всех пользователей коллекции в базовой станции
     ue_collection.REG_USERS_TO_BS(bs)
 
-    import math
-
-    from BS_MODULE import Packet
-
-    inf = math.inf
-
-    for ue in ue_collection.GET_ALL_USERS():
-        ue_id = ue.UE_ID
-        bs.ue_buffers[ue_id].ADD_PACKET(
-            Packet(size=inf, ue_id=ue_id, creation_time=0), current_time=0
-        )
-        print(f"[SETUP] Full buffer initialized for UE {ue_id}")
+    sim = SimulationManager()
 
     # =============================================================================
     #                        НАСТРОЙКА МЕНЕДЖЕРА СИМУЛЯЦИИ
@@ -187,7 +170,7 @@ def sim_with_manager():
 
     # Настраиваем модели для каждого UE
     for ue in ue_collection.GET_ALL_USERS():
-        print(f"Setup UE: {ue.UE_ID} type={type(ue.UE_ID)}")
+        print(f"Setup UE: {ue.UE_ID} traffic (SimpleGenerator)")
         sim.setup_ue_traffic(
             ue_id=ue.UE_ID,
             model_type="Poisson",

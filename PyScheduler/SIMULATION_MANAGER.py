@@ -34,7 +34,7 @@ import numpy as np
 from BS_MODULE import BaseStation
 from RES_GRID import RES_GRID_LTE
 from SCHEDULER import SchedulerInterface
-from TRAFFIC_MODEL import SimpleGenerator, TrafficType
+from TRAFFIC_MODEL import PacketManager, SimpleGenerator, TrafficType
 from UE_MODULE import UECollection
 
 # ==============================================================================
@@ -930,7 +930,15 @@ class SimulationManager:
         self._original_stderr = None
         self.scheduler = None
         self.tti_duration = 1
-        self.traffic_gen = SimpleGenerator(default_qci=9)
+        self.use_legacy_traffic = getattr(self.sim_config, "use_legacy_traffic", True)
+
+        # TODO: Comment prints
+        if self.use_legacy_traffic:
+            print("[INFO] Simulation Mode: LEGACY TRAFFIC (SimpleGenerator)")
+            self.traffic_gen = SimpleGenerator(default_qci=9)
+        else:
+            print("[INFO] Simulation Mode: ADVANCED QoS TRAFFIC (PacketManager)")
+            self.traffic_gen = PacketManager()
 
     def set_sim_duration(self, sim_duration: int) -> None:
         """
@@ -1314,8 +1322,22 @@ class SimulationManager:
                 writer.writerow(row)
 
     def setup_ue_traffic(self, ue_id, model_type, **params):
-        """Настройка трафика для UE"""
-        self.traffic_gen.set_model(ue_id, model_type, **params)
+        """
+        Настройка трафика. Работает как для старого SimpleGenerator,
+        так и для нового PacketManager.
+        """
+        if self.use_legacy_traffic:
+            # Старый способ (Phase 1)
+            self.traffic_gen.set_model(ue_id, model_type, **params)
+        else:
+            # Новый способ (Phase 2 - Multi-bearer)
+            # Если передали старые параметры, адаптируем их под QoS
+            qci = params.pop("qci", 9)  # Default Web
+            traffic_type = params.pop("traffic_type", TrafficType.WEB)
+
+            self.traffic_gen.add_bearer(
+                ue_id=ue_id, model_type=model_type, qci=qci, traffic_type=traffic_type, **params
+            )
 
     def setup_simulation_with_qos_traffic(self):
         """
@@ -1371,11 +1393,9 @@ class SimulationManager:
 
     def run_tti(self, current_time: int):
         """
-        Выполнение одного TTI (Transmission Time Interval).
-        Инкапсулирует основную логику обработки одного TTI.
-
-        ИСПРАВЛЕНО: Использует SimpleGenerator вместо PacketManager.
+        Выполнение одного TTI с поддержкой обоих режимов генерации трафика.
         """
+        # Обновление физики и позиций UE
         if current_time % self.sim_config.update_interval == 0:
             if self.sim_config.verbose:
                 print("[SIMULATION] Update UEs states")
@@ -1384,34 +1404,42 @@ class SimulationManager:
                 current_time=current_time,
                 update_interval=self.sim_config.update_interval,
             )
-        all_users = self.ue_collection.GET_ALL_USERS()  # ← ИСПРАВЛЕНО
+        # БЛОК ГЕНЕРАЦИИ ТРАФИКА
 
-        for ue in all_users:
-            ue_id = ue.UE_ID
+        if self.use_legacy_traffic:
+            # LEGACY MODE
+            all_users = self.ue_collection.GET_ALL_USERS()
 
-            # Проверяем: есть ли модель для этого UE в SimpleGenerator?
-            if ue_id not in self.traffic_gen.models:
-                continue  # Пропускаем UE без модели
+            for ue in all_users:
+                ue_id = ue.UE_ID
 
-            # Генерируем пакеты через SimpleGenerator
-            packets = self.traffic_gen.generate_packets(
-                ue_id=ue_id, current_time=current_time, update_interval=self.tti_duration
-            )
+                # Пропускаем UE без модели
+                if ue_id not in self.traffic_gen.models:
+                    continue
 
-            # Добавляем пакеты в буфер BS
-            if packets:
-                for pkt in packets:
-                    # Проверяем что буфер существует
-                    if ue_id not in self.base_station.ue_buffers:
-                        if self.sim_config.verbose:
-                            print(f"[WARNING] Buffer not created for UE {ue_id}")
-                        continue
+                # Генерируем пакеты по одному юзеру
+                packets = self.traffic_gen.generate_packets(
+                    ue_id=ue_id, current_time=current_time, update_interval=self.tti_duration
+                )
 
-                    # Добавляем пакет в буфер
-                    self.base_station.ue_buffers[ue_id].ADD_PACKET(pkt, current_time)
+                # Кладем в буфер вручную
+                if packets and (ue_id in self.base_station.ue_buffers):
+                    for pkt in packets:
+                        self.base_station.ue_buffers[ue_id].ADD_PACKET(pkt, current_time)
 
+        else:
+            # PACKET MANAGER MODE
+            # PacketManager сам обновляет состояния всех беареров всех юзеров
+            # и возвращает общий список новых пакетов
+            new_packets = self.traffic_gen.update_all(current_time, self.tti_duration)
+
+            # Маршрутизатор: раскидываем полученные пакеты по буферам БС
+            for pkt in new_packets:
+                if pkt.ue_id in self.base_station.ue_buffers:
+                    self.base_station.ue_buffers[pkt.ue_id].ADD_PACKET(pkt, current_time)
+
+        # 3. Планировщик
         users = self.ue_collection.GET_USERS_FOR_SCHEDULER()
-
         sched_result = self.scheduler.schedule(current_time, users)
 
         return sched_result
