@@ -490,11 +490,6 @@ class UserEquipment:
         displacement = np.hypot(
             self.position[0] - self.coordinates[-2][0], self.position[1] - self.coordinates[-2][1]
         )
-
-        displacement = np.hypot(
-            self.position[0] - self.coordinates[-2][0], self.position[1] - self.coordinates[-2][1]
-        )
-
         if isinstance(self.serving_bs.channel_model, RMaModel):
             if self.UE_height == 0.0:
                 if self.is_indoor == True:

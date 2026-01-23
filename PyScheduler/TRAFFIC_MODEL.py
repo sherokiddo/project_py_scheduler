@@ -3,18 +3,29 @@
 # Модуль: TRAFFIC_MODEL - Модели генерации сетевого трафика
 #------------------------------------------------------------------------------
 # Описание:
-#   Модуль содержит реализации статистических моделей генерации сетевого трафика:
-#   1. Пуассоновская модель - пакеты генерируются с экспоненциальными интервалами
-#   2. ON/OFF модель - устройства периодически переключаются между активными (ON)
-#      и неактивными (OFF) состояниями, генерируя трафик только в активной фазе
+#   Модуль содержит высокоуровневые инструменты генерации сетевого трафика:
+#   1. SimpleGenerator - легковесный генератор для обратной совместимости.
+#   2. PacketManager - продвинутый менеджер с поддержкой Multi-bearer и QoS (QCI).
+#   3. Набор статистических моделей (Poisson, On/Off, MMPP), реализующих
+#      интерфейс ITrafficModel (паттерн Strategy).
 #
 #   Модели используются для имитации поведения реального сетевого трафика в симуляциях
 #   и тестовых сценариях.
 #
-# Версия: 1.0.0
-# Дата последнего изменения: 2025-04-13
-# Автор: Норицин Иван
+# Версия: 1.1.0
+# Дата последнего изменения: 2026-01-23
+# Автор: Норицин Иван, Дворников Андрей
 # Версия Python Kernel: 3.12.9
+#
+# Изменения v1.1.0:
+# - Глобальный рефакторинг: внедрены паттерны «Фабрика» и «Стратегия».
+# - Реализована гибридная архитектура управления: добавлен SimpleGenerator
+#   (Phase 1) и PacketManager (Phase 2/3) с поддержкой QoS.
+# - Логика генерации и маршрутизации пакетов полностью перенесена из UE и BS
+#   на уровень SimulationManager (принцип централизации управления).
+# - Добавлен метод reset_ue для управления жизненным циклом контекста трафика
+#   (задел под Handover и Detach сценарии).
+#
 #------------------------------------------------------------------------------
 """
 
@@ -35,12 +46,14 @@ class TrafficType(Enum):
     """
 
     VOIP = "voip"  # Голосовые звонки
-    VIDEO_CALL = "video_call"  # Видеозвонки
-    VIDEO_STREAM = "video_stream"  # Потоковое видео
-    WEB = "web"  # Веб-браузинг
-    FILE_TRANSFER = "file_transfer"  # Скачивание файлов
-    GAMING = "gaming"  # Онлайн игры
-    BACKGROUND = "background"  # Фоновый трафик
+    CONV_VIDEO = "conv_video"  # Видеозвонки
+    REAL_TIME_GAMING = "real_time_gaming"  # Онлайн игры
+    NON_CONV_VIDEO = "non_conv_video"  # Потоковое видео
+    IMS = "ims"  # IMS сервисы
+    VIDEO_TCP = "video_tcp"  # Видео через TCP
+    VOICE_VIDEO_GAMING = "voice_video_gaming"  # Голос + видео + игры
+    WEB_SERVICES = "web_services"  # Веб-сервисы
+    DEFAULT = "default"  # Стандартный трафик
 
     def get_qci(self) -> int:
         """
@@ -50,13 +63,15 @@ class TrafficType(Enum):
             int: QCI согласно 3GPP TS 23.203
         """
         qci_mapping = {
-            TrafficType.VOIP: 1,  # GBR, 100ms delay budget
-            TrafficType.VIDEO_CALL: 2,  # GBR, 150ms delay budget
-            TrafficType.VIDEO_STREAM: 7,  # GBR, 100ms delay budget
-            TrafficType.WEB: 9,  # Non-GBR
-            TrafficType.FILE_TRANSFER: 9,  # Non-GBR
-            TrafficType.GAMING: 3,  # GBR, 50ms delay budget
-            TrafficType.BACKGROUND: 9,  # Non-GBR
+            TrafficType.VOIP: 100,
+            TrafficType.CONV_VIDEO: 150,
+            TrafficType.REAL_TIME_GAMING: 50,
+            TrafficType.NON_CONV_VIDEO: 300,
+            TrafficType.IMS: 100,
+            TrafficType.VIDEO_TCP: 300,
+            TrafficType.VOICE_VIDEO_GAMING: 100,
+            TrafficType.WEB_SERVICES: 300,
+            TrafficType.DEFAULT: 300,
         }
         return qci_mapping[self]
 
@@ -568,24 +583,54 @@ class TrafficModelFactory:
     Паттерн: Factory
     """
 
+    # TODO: Добавить валидацию параметров моделей
+
     @staticmethod
     def create_model(model_type: str, **kwargs) -> ITrafficModel:
         """
         Создать модель трафика по типу.
 
         Args:
-            model_type: Тип модели ('Poisson', 'OnOff', 'MMPP')
-            **kwargs: Параметры модели
+            model_type (str): Тип создаваемой модели.
+                - 'Poisson': Пакеты генерируются с постоянной интенсивностью.
+                - 'OnOff': Модель с чередованием фаз активности (ON) и молчания (OFF).
+                - 'MMPP': Марковская модель (2-state Markov Modulated Poisson Process).
+
+            **kwargs: Параметры, специфичные для каждой модели:
+                Для 'Poisson':
+                    - packet_rate (float): Интенсивность трафика (пакетов/сек).
+                    - min_packet_size (int): Минимальный размер пакета (байт).
+                    - max_packet_size (int): Максимальный размер пакета (байт).
+
+                Для 'OnOff':
+                    - packet_rate (float): Интенсивность в активной фазе (пакетов/сек).
+                    - duration_on (float): Средняя длительность фазы ON (мс).
+                    - duration_off (float): Средняя длительность фазы OFF (мс).
+                    - min_packet_size (int): Минимальный размер пакета (байт).
+                    - max_packet_size (int): Максимальный размер пакета (байт).
+
+                Для 'MMPP':
+                    - lambda_1 (float): Интенсивность в состоянии 1 (пакетов/сек).
+                    - lambda_2 (float): Интенсивность в состоянии 2 (пакетов/сек).
+                    - q12 (float): Скорость перехода из состояния 1 в 2.
+                    - q21 (float): Скорость перехода из состояния 2 в 1.
+                    - min_packet_size (int): Минимальный размер пакета (байт).
+                    - max_packet_size (int): Максимальный размер пакета (байт).
 
         Returns:
-            ITrafficModel: Созданная модель
+            ITrafficModel: Экземпляр созданной модели трафика.
 
         Raises:
-            ValueError: Если model_type неизвестен
+            ValueError: Если передан неизвестный тип model_type.
 
         Example:
-            >>> factory = TrafficModelFactory()
-            >>> model = factory.create_model('Poisson', packet_rate=10)
+            >>> # Создание Poisson модели
+            >>> model = TrafficModelFactory.create_model(
+            ...     'Poisson',
+            ...     packet_rate=100,
+            ...     min_packet_size=150,
+            ...     max_packet_size=1500
+            ... )
         """
         if model_type == "Poisson":
             return PoissonModel(**kwargs)

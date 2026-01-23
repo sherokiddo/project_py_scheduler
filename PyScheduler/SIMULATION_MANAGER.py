@@ -932,12 +932,9 @@ class SimulationManager:
         self.tti_duration = 1
         self.use_legacy_traffic = getattr(self.sim_config, "use_legacy_traffic", True)
 
-        # TODO: Comment prints
         if self.use_legacy_traffic:
-            print("[INFO] Simulation Mode: LEGACY TRAFFIC (SimpleGenerator)")
             self.traffic_gen = SimpleGenerator(default_qci=9)
         else:
-            print("[INFO] Simulation Mode: ADVANCED QoS TRAFFIC (PacketManager)")
             self.traffic_gen = PacketManager()
 
     def set_sim_duration(self, sim_duration: int) -> None:
@@ -1257,69 +1254,6 @@ class SimulationManager:
         if errors:
             msg = "Ошибка: не все обязательные параметры симуляции заданы:\n" + "\n".join(errors)
             raise RuntimeError(msg)
-
-    def _stats_logging(self, sched_result: dict) -> None:
-        """
-        Логирование статистики симуляции в CSV-файл (stats.csv).
-
-        Args:
-            sched_result (dict): Результаты работы планировщика.
-
-        """
-        allocation = sched_result["allocation"]
-        pdcch_allocation = sched_result["pdcch_stats"]["allocations"]
-
-        filename = "stats.csv"
-
-        # Названия колонок при первом запуске
-        if not hasattr(self, "_stats_file_initialized"):
-            with open(filename, "w", newline="", encoding="utf-8") as file:
-                writer = csv.writer(file)
-                writer.writerow(
-                    [
-                        "TTI",
-                        "UE_ID",
-                        "Num_RBs",
-                        "RBs",
-                        "Num_CCE",
-                        "Tx_Bits",
-                        "Buffer_Size",
-                        "Wideband CQI",
-                        "Subband CQI",
-                        "SINR",
-                    ]
-                )
-            self._stats_file_initialized = True
-
-        with open(filename, "a", newline="", encoding="utf-8") as file:
-            writer = csv.writer(file)
-
-            # Сбор данных
-            for ue in self.ue_collection.GET_ALL_USERS():
-                ue_id = ue.UE_ID
-                num_rbs = len(allocation.get(ue_id, []))
-                rbs = allocation.get(ue_id, 0)
-                num_cce = pdcch_allocation.get(ue_id, 0)
-                tx_bits = int(ue.current_dl_throughput / 1000)
-                buf_size = self.base_station.ue_buffers[ue_id].sizes[ue_id] * 8
-                cqi = ue.cqi
-                subband_cqi = ue.cqi_subband
-                sinr = round(ue.SINR, 4)
-
-                # Запись в файл
-                row = [
-                    GLOBALS.CURRENT_TIME,
-                    ue_id,
-                    num_rbs,
-                    rbs,
-                    num_cce,
-                    tx_bits,
-                    buf_size,
-                    cqi,
-                    subband_cqi,
-                    sinr,
-                ]
-                writer.writerow(row)
 
     def setup_ue_traffic(self, ue_id, model_type, **params):
         """
