@@ -63,15 +63,15 @@ class TrafficType(Enum):
             int: QCI согласно 3GPP TS 23.203
         """
         qci_mapping = {
-            TrafficType.VOIP: 100,
-            TrafficType.CONV_VIDEO: 150,
-            TrafficType.REAL_TIME_GAMING: 50,
-            TrafficType.NON_CONV_VIDEO: 300,
-            TrafficType.IMS: 100,
-            TrafficType.VIDEO_TCP: 300,
-            TrafficType.VOICE_VIDEO_GAMING: 100,
-            TrafficType.WEB_SERVICES: 300,
-            TrafficType.DEFAULT: 300,
+            TrafficType.VOIP: 1,
+            TrafficType.CONV_VIDEO: 2,
+            TrafficType.REAL_TIME_GAMING: 3,
+            TrafficType.NON_CONV_VIDEO: 4,
+            TrafficType.IMS: 5,
+            TrafficType.VIDEO_TCP: 6,
+            TrafficType.VOICE_VIDEO_GAMING: 7,
+            TrafficType.WEB_SERVICES: 8,
+            TrafficType.DEFAULT: 9,
         }
         return qci_mapping[self]
 

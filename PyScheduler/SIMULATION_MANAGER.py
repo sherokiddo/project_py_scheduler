@@ -27,7 +27,7 @@ import warnings
 from collections import deque
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 import GLOBALS
 import numpy as np
@@ -1273,57 +1273,77 @@ class SimulationManager:
                 ue_id=ue_id, model_type=model_type, qci=qci, traffic_type=traffic_type, **params
             )
 
-    def setup_simulation_with_qos_traffic(self):
+    def setup_traffic_profiles(self, traffic_profiles: List[Dict[str, Any]]):
         """
-        Настройка QoS multi-bearer трафика перед стартом симуляции.
+        Инициализирует и настраивает профили трафика (bearers) для списка пользователей.
 
-        Инициализирует bearers для каждого UE через PacketManager.
+        Принимает конфигурацию, проходит по каждому UE и создает соответствующие
+        генераторы трафика через PacketManager/BaseStation.
+
+        Args:
+            traffic_profiles (List[Dict[str, Any]]): Список конфигураций для пользователей.
+                Каждый элемент списка должен иметь следующую структуру:
+
+                [
+                    {
+                        "ue_id": int,       # ID существующего пользователя
+                        "bearers": [        # Список биреров (потоков) для этого UE
+                            {
+                                # Обязательные параметры:
+                                "traffic_type": TrafficType, # Тип (VOIP, VIDEO_STREAM, BACKGROUND...)
+                                "model_type": str,           # "Poisson", "OnOff", "MMPP"
+                                "qci": int,                  # QCI индекс (например, 1, 5, 9)
+
+                                # Параметры для модели Poisson:
+                                "packet_rate": int,          # Частота пакетов (пак/сек)
+                                "max_bitrate": float,        # (Опционально) Макс. битрейт (Мбит/с)
+
+                                # Дополнительные параметры для модели OnOff:
+                                "duration_on": float,        # (Опционально) Время активности (сек)
+                                "duration_off": float,       # (Опционально) Время простоя (сек)
+                            },
+                            # ... другие биреры
+                        ]
+                    },
+                    # ... другие пользователи
+                ]
+
+        Raises:
+            RuntimeError: Если BaseStation не инициализирована.
+            ValueError: Если передан ue_id, которого нет в коллекции пользователей.
+
+        Example:
+            >>> config = [{
+            ...     "ue_id": 1,
+            ...     "bearers": [{
+            ...         "model_type": "OnOff",
+            ...         "qci": 1,
+            ...         "traffic_type": TrafficType.VOIP,
+            ...         "packet_rate": 50,
+            ...         "duration_on": 2.0,
+            ...         "duration_off": 3.0
+            ...     }]
+            ... }]
+            >>> sim.setup_traffic_profiles(config)
         """
         if not self.base_station:
             raise RuntimeError("BaseStation не инициализирована")
 
-        # UE 1: VOIP + Background
-        self.base_station.setup_ue_traffic_multi_bearer(
-            ue_id=1,
-            bearers=[
-                {
-                    "model_type": "Poisson",
-                    "qci": 1,
-                    "traffic_type": TrafficType.VOIP,
-                    "packet_rate": 50,  # 50 packets/sec
-                    "max_bitrate": 0.064,  # 64 Kbps
-                },
-                {
-                    "model_type": "Poisson",
-                    "qci": 9,
-                    "traffic_type": TrafficType.BACKGROUND,
-                    "packet_rate": 10,
-                },
-            ],
-        )
+        print(f"\n[SIM] Настройка профилей трафика для {len(traffic_profiles)} пользователей...")
 
-        # UE 2: Video streaming
-        self.base_station.setup_ue_traffic_multi_bearer(
-            ue_id=2,
-            bearers=[
-                {
-                    "model_type": "OnOff",
-                    "qci": 7,
-                    "traffic_type": TrafficType.VIDEO_STREAM,
-                    "duration_on": 2,
-                    "duration_off": 3,
-                    "packet_rate": 200,
-                    "max_bitrate": 2.0,  # 2 Mbps
-                }
-            ],
-        )
+        for profile in traffic_profiles:
+            ue_id = profile.get("ue_id")
+            bearers = profile.get("bearers", [])
 
-        # Установка лимитов bitrate для каждого UE
-        self.base_station.traffic_manager.set_bitrate_limit(ue_id=1, max_bitrate_mbps=1.0)
-        self.base_station.traffic_manager.set_bitrate_limit(ue_id=2, max_bitrate_mbps=5.0)
+            if ue_id is None:
+                print("[WARNING] Пропущен профиль без ue_id")
+                continue
 
-        if self.sim_config.verbose:
-            print("[SIMULATION] QoS traffic setup completed")
+            try:
+                self.base_station.setup_ue_traffic_multi_bearer(ue_id=ue_id, bearers=bearers)
+                print(f"  -> UE {ue_id}: настроено {len(bearers)} биреров")
+            except Exception as e:
+                print(f"[ERROR] Ошибка настройки UE {ue_id}: {e}")
 
     def run_tti(self, current_time: int):
         """
