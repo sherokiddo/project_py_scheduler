@@ -490,7 +490,6 @@ class UserEquipment:
         displacement = np.hypot(
             self.position[0] - self.coordinates[-2][0], self.position[1] - self.coordinates[-2][1]
         )
-
         if isinstance(self.serving_bs.channel_model, RMaModel):
             if self.UE_height == 0.0:
                 if self.is_indoor == True:
@@ -574,7 +573,7 @@ class UserEquipment:
         )
         print(f"Скорость поступления: {bitrate:.2f} бит/с")
         print(f"Статус буфера: {status}")
-    
+
     def UPD_THROUGHPUT_BPS(self, bits_transmitted: int, time_interval_ms: int):
         """
         Обновить статистику пропускной способности.
@@ -585,19 +584,23 @@ class UserEquipment:
 
         """
         # Текущая пропускная способность в бит/с
-        self.current_throughput = (bits_transmitted*1000) / time_interval_ms if time_interval_ms > 0 else 0
+        self.current_throughput = (
+            (bits_transmitted * 1000) / time_interval_ms if time_interval_ms > 0 else 0
+        )
 
         # EWMA обновление average_throughput для Proportional Fair
-        alpha = 0.001 #временный хардкод, вывести в управление.
+        alpha = 0.001  # временный хардкод, вывести в управление.
         average_throughput_past = self.average_throughput
-        self.average_throughput = (1 - alpha) * average_throughput_past + alpha * self.current_dl_throughput
+        self.average_throughput = (
+            1 - alpha
+        ) * average_throughput_past + alpha * self.current_dl_throughput
 
         # Текущее переданное количество бит
         self.last_transmitted_bits = bits_transmitted
-        
+
         # Обновление общей статистики
         self.total_transmitted_bits += bits_transmitted
-        
+
     def UPD_DL_THROUGHPUT_BPS(self, bits_dl_transmitted: int, time_interval_ms: int):
         """
         Обновить статистику пропускной способности в DL.
@@ -608,16 +611,20 @@ class UserEquipment:
 
         """
         # Текущая пропускная способность в бит/с
-        self.current_dl_throughput = (bits_dl_transmitted*1000) / time_interval_ms if time_interval_ms > 0 else 0
+        self.current_dl_throughput = (
+            (bits_dl_transmitted * 1000) / time_interval_ms if time_interval_ms > 0 else 0
+        )
 
         # EWMA обновление average_throughput для Proportional Fair
-        alpha = 0.001 #временный хардкод, вывести в управление.
+        alpha = 0.001  # временный хардкод, вывести в управление.
         average_throughput_past = self.average_throughput
-        self.average_throughput = (1 - alpha) * average_throughput_past + alpha * self.current_dl_throughput
+        self.average_throughput = (
+            1 - alpha
+        ) * average_throughput_past + alpha * self.current_dl_throughput
 
         # Текущее переданное количество бит
         self.last_transmitted_bits = bits_dl_transmitted
-        
+
         # Обновление общей статистики
         self.total_dl_transmitted_bits += bits_dl_transmitted
 
@@ -975,7 +982,7 @@ class UECollection:
 
         """
         for ue in self.users.values():
-            #if ue_ids is None or ue.UE_ID in ue_ids:
+            # if ue_ids is None or ue.UE_ID in ue_ids:
             ue.SET_TRAFFIC_MODEL(model)
 
     def REG_USERS_TO_BS(self, bs):

@@ -20,25 +20,27 @@
 # Версия Python Kernel: 3.12.9
 #------------------------------------------------------------------------------
 """
+
 import csv
 import sys
-import numpy as np
 import warnings
+from collections import deque
 from dataclasses import dataclass
-from typing import Optional
+from enum import IntEnum
+from typing import Any, Dict, List, Optional
 
 import GLOBALS
-from UE_MODULE import UECollection
+import numpy as np
 from BS_MODULE import BaseStation
 from RES_GRID import RES_GRID_LTE
 from SCHEDULER import SchedulerInterface
+from TRAFFIC_MODEL import PacketManager, SimpleGenerator, TrafficType
+from UE_MODULE import UECollection
 
-from enum import IntEnum
-from collections import deque
-
-#==============================================================================
+# ==============================================================================
 #                          ОБРАБОТЧИК СТАТИСТИКИ
-#==============================================================================
+# ==============================================================================
+
 
 class MetricLevel(IntEnum):
     """
@@ -48,10 +50,12 @@ class MetricLevel(IntEnum):
     - BASIC: Только собираемые метрики (total, avg)
     - DETAILED: Собираемые метрики и расчетные (per-UE Dict, Jain's e.t.c)
     """
+
     NONE = 0
     BASIC = 1
     ADVANCED = 2
     FULL = 3
+
 
 @dataclass
 class LevelsConfig:
@@ -63,9 +67,11 @@ class LevelsConfig:
         amc (MetricLevel): Уровень для amc.get_stats()
         pdcch (MetricLevel): Уровень для pdcch_manager.get_stats()
     """
+
     scheduler: MetricLevel = MetricLevel.BASIC
     amc: MetricLevel = MetricLevel.BASIC
     pdcch: MetricLevel = MetricLevel.BASIC
+
 
 @dataclass
 class StatisticsConfig:
@@ -79,6 +85,7 @@ class StatisticsConfig:
         history_max_len (int): Максимум snapshots в истории (для ограничения памяти)
         file_prefix (str): Префикс имени файла для экспорта
     """
+
     collect_interval: int = 10
     levels: LevelsConfig = None
     export_format: str = "csv"
@@ -93,6 +100,7 @@ class StatisticsConfig:
 
         if self.export_detailed_format not in ["csv", "json"]:
             raise ValueError(f"Invalid export_detailed_format: {self.export_detailed_format}")
+
 
 class StatsManager:
     """
@@ -119,24 +127,24 @@ class StatsManager:
         import warnings
 
         required_fields = [
-            'tti',
-            'sch_eligible_ue_count',
-            'sch_active_ue_count',
-            'dl_rb_allocated_count'
+            "tti",
+            "sch_eligible_ue_count",
+            "sch_active_ue_count",
+            "dl_rb_allocated_count",
         ]
 
         for field in required_fields:
             if field not in sched_stats:
                 warnings.warn(
                     f"[StatsManager] TTI {tti}: Missing required field '{field}' in sched_stats",
-                    UserWarning
+                    UserWarning,
                 )
                 return False
 
-        if sched_stats['tti'] != tti:
+        if sched_stats["tti"] != tti:
             warnings.warn(
                 f"[StatsManager] TTI mismatch at {tti}: sched_stats has TTI {sched_stats['tti']}",
-                UserWarning
+                UserWarning,
             )
             return False
 
@@ -154,25 +162,32 @@ class StatsManager:
         """
 
         # Получить метрики из источников
-        sched_stats = self.scheduler.get_stats() if self.config.levels.scheduler != MetricLevel.NONE else {}
-        amc_stats = self.scheduler.amc.get_stats() if self.config.levels.amc != MetricLevel.NONE else {}
-        pdcch_stats = self.scheduler.pdcch_manager.get_stats() if self.config.levels.pdcch != MetricLevel.NONE else {}
+        sched_stats = (
+            self.scheduler.get_stats() if self.config.levels.scheduler != MetricLevel.NONE else {}
+        )
+        amc_stats = (
+            self.scheduler.amc.get_stats() if self.config.levels.amc != MetricLevel.NONE else {}
+        )
+        pdcch_stats = (
+            self.scheduler.pdcch_manager.get_stats()
+            if self.config.levels.pdcch != MetricLevel.NONE
+            else {}
+        )
 
         # TTI validation
-        if sched_stats and 'tti' in sched_stats:
-            if sched_stats['tti'] != tti:
+        if sched_stats and "tti" in sched_stats:
+            if sched_stats["tti"] != tti:
                 warnings.warn(
                     f"[StatsManager] TTI mismatch: expected {tti}, "
                     f"got {sched_stats['tti']}. Skipping collection."
                 )
                 return  # Пропустить невалидный snapshot
-        
+
         # Проверка 2: Scheduler stats должны существовать (если level != NONE)
         if self.config.levels.scheduler != MetricLevel.NONE:
-            if not sched_stats or 'dl_rb_allocated_count' not in sched_stats:
+            if not sched_stats or "dl_rb_allocated_count" not in sched_stats:
                 warnings.warn(
-                    f"[StatsManager] Invalid sched_stats at TTI {tti}. "
-                    f"Skipping collection."
+                    f"[StatsManager] Invalid sched_stats at TTI {tti}. Skipping collection."
                 )
                 return
 
@@ -186,11 +201,9 @@ class StatsManager:
             # Временная метка и базовые счетчики
             "sch_eligible_ue_count": sched_stats.get("sch_eligible_ue_count", 0),
             "sch_active_ue_count": sched_stats.get("sch_active_ue_count", 0),
-
             # Scheduler метрики (группа RB)
             "dl_rb_allocated_count": sched_stats.get("dl_rb_allocated_count", 0),
             "dl_rb_per_ue_avg": sched_stats.get("dl_rb_per_ue_avg", 0.0),
-
             # AMC метрики (группа throughput/bits)
             "dl_bits_per_rb_avg": amc_stats.get("dl_bits_per_rb_avg", 0.0),
             "dl_capacity_bits_sum_tti": amc_stats.get("dl_capacity_bits_sum_tti", 0),
@@ -198,107 +211,117 @@ class StatsManager:
             "dl_throughput_sum_kbps": amc_stats.get("dl_throughput_sum_kbps", 0.0),
             "dl_cqi_wb_avg_idx": amc_stats.get("dl_cqi_wb_avg_idx", 0.0),
             "dl_sinr_avg": amc_stats.get("dl_sinr_avg", 0.0),
-
             # Buffer метрики
             "buffer_size_sum_bytes": sched_stats.get("buffer_size_sum_bytes", 0),
-
             # Time метрики
             "sch_total_time_us": sched_stats.get("sch_total_time_us", 0.0),
-            #"sch_priority_calc_time_us": sched_stats.get("sch_priority_calc_time_us", 0.0),
-            #"sch_priority_sort_time_us": sched_stats.get("sch_priority_sort_time_us", 0.0),
-
+            # "sch_priority_calc_time_us": sched_stats.get("sch_priority_calc_time_us", 0.0),
+            # "sch_priority_sort_time_us": sched_stats.get("sch_priority_sort_time_us", 0.0),
             # PDCCH метрики (группа CCE)
             "pdcch_cce_total_count": pdcch_stats.get("pdcch_cce_total_count", 0),
             "pdcch_cce_allocated_count": pdcch_stats.get("pdcch_cce_allocated_count", 0),
         }
 
         if self.config.levels.pdcch >= MetricLevel.ADVANCED:
-            snapshot.update({
-            "pdcch_cce_utilization_pct": pdcch_stats.get("pdcch_cce_utilization_pct", 0.0)})
+            snapshot.update(
+                {"pdcch_cce_utilization_pct": pdcch_stats.get("pdcch_cce_utilization_pct", 0.0)}
+            )
 
         if self.config.levels.scheduler >= MetricLevel.ADVANCED:
-            snapshot.update({
-                # Timing детализация
-                "sch_priority_calc_time_us": sched_stats.get("sch_priority_calc_time_us", 0.0),
-                "sch_priority_sort_time_us": sched_stats.get("sch_priority_sort_time_us", 0.0),
-                "dl_prb_utilization_pct": sched_stats.get("dl_prb_utilization_pct", 0.0),
-                "sch_priority_list_size": sched_stats.get("sch_priority_list_size", 0),
-                "sch_pdcch_blocked_count": sched_stats.get("sch_pdcch_blocked_count", 0),
-                "sch_avg_priority_value": sched_stats.get("sch_avg_priority_value", 0.0),
-                "sch_eligible_to_active_ratio": self._calculate_ratio(
-                    sched_stats.get("sch_active_ue_count", 0),
-                    sched_stats.get("sch_eligible_ue_count", 0)
-                ),
-            })
+            snapshot.update(
+                {
+                    # Timing детализация
+                    "sch_priority_calc_time_us": sched_stats.get("sch_priority_calc_time_us", 0.0),
+                    "sch_priority_sort_time_us": sched_stats.get("sch_priority_sort_time_us", 0.0),
+                    "dl_prb_utilization_pct": sched_stats.get("dl_prb_utilization_pct", 0.0),
+                    "sch_priority_list_size": sched_stats.get("sch_priority_list_size", 0),
+                    "sch_pdcch_blocked_count": sched_stats.get("sch_pdcch_blocked_count", 0),
+                    "sch_avg_priority_value": sched_stats.get("sch_avg_priority_value", 0.0),
+                    "sch_eligible_to_active_ratio": self._calculate_ratio(
+                        sched_stats.get("sch_active_ue_count", 0),
+                        sched_stats.get("sch_eligible_ue_count", 0),
+                    ),
+                }
+            )
 
         priority_list = sched_stats.get("sch_priority_list", [])
         if priority_list:
             priority_values = [u.get("priority", 0) for u in priority_list]
-            snapshot.update({
-                "sch_priority_min": round(min(priority_values), 4),
-                "sch_priority_max": round(max(priority_values), 4),
-                "sch_priority_std": self._calculate_std(priority_values),
-            })
+            snapshot.update(
+                {
+                    "sch_priority_min": round(min(priority_values), 4),
+                    "sch_priority_max": round(max(priority_values), 4),
+                    "sch_priority_std": self._calculate_std(priority_values),
+                }
+            )
         else:
-            snapshot.update({
-                "sch_priority_min": 0.0,
-                "sch_priority_max": 0.0,
-                "sch_priority_std": 0.0,
-            })
+            snapshot.update(
+                {
+                    "sch_priority_min": 0.0,
+                    "sch_priority_max": 0.0,
+                    "sch_priority_std": 0.0,
+                }
+            )
 
         if self.config.levels.amc >= MetricLevel.ADVANCED:
-            snapshot.update({
-                "dl_capacity_bits_sum_tti": amc_stats.get("dl_capacity_bits_sum_tti", 0),})
-            ue_cqi = amc_stats.get('ue_cqi', {})
-            ue_sinr = amc_stats.get('ue_sinr', {})
+            snapshot.update(
+                {
+                    "dl_capacity_bits_sum_tti": amc_stats.get("dl_capacity_bits_sum_tti", 0),
+                }
+            )
+            ue_cqi = amc_stats.get("ue_cqi", {})
+            ue_sinr = amc_stats.get("ue_sinr", {})
             ue_throughputs = amc_stats.get("dl_ue_throughputs", {})
 
             # Throughput min/max/std
-            snapshot.update(self._safe_stats_from_dict(
-                ue_throughputs,
-                "dl_throughput_kbps",
-                scale=1000.0,
-                filter_zeros=True
-            ))
+            snapshot.update(
+                self._safe_stats_from_dict(
+                    ue_throughputs, "dl_throughput_kbps", scale=1000.0, filter_zeros=True
+                )
+            )
 
             # CQI min/max/std
-            snapshot.update(self._safe_stats_from_dict(
-                ue_cqi,
-                "dl_cqi_wb_idx",
-                precision=0,      # CQI - целое число
-                filter_zeros=False # CQI=0 тоже валидное значение
-            ))
+            snapshot.update(
+                self._safe_stats_from_dict(
+                    ue_cqi,
+                    "dl_cqi_wb_idx",
+                    precision=0,  # CQI - целое число
+                    filter_zeros=False,  # CQI=0 тоже валидное значение
+                )
+            )
 
             # SINR min/max/std
-            snapshot.update(self._safe_stats_from_dict(
-                ue_sinr,
-                "dl_sinr",
-                precision=2,
-                filter_zeros=False  # SINR может быть отрицательным
-            ))
+            snapshot.update(
+                self._safe_stats_from_dict(
+                    ue_sinr,
+                    "dl_sinr",
+                    precision=2,
+                    filter_zeros=False,  # SINR может быть отрицательным
+                )
+            )
 
             rb_efficiency = self._calculate_rb_efficiency(
-                capacity_bits=amc_stats.get('dl_capacity_bits_sum_tti', 0),
-                transmitted_bits=amc_stats.get('dl_transmitted_bits_sum_tti', 0),
-                allocated_rbs=sched_stats.get('dl_rb_allocated_count', 0),
-                total_rbs=self.scheduler.lte_grid.rb_per_slot
+                capacity_bits=amc_stats.get("dl_capacity_bits_sum_tti", 0),
+                transmitted_bits=amc_stats.get("dl_transmitted_bits_sum_tti", 0),
+                allocated_rbs=sched_stats.get("dl_rb_allocated_count", 0),
+                total_rbs=self.scheduler.lte_grid.rb_per_slot,
             )
             snapshot.update(rb_efficiency)
 
             # Spectral Efficiency
-            ue_throughputs = amc_stats.get('dl_ue_throughputs', {})
+            ue_throughputs = amc_stats.get("dl_ue_throughputs", {})
             se_metrics = self._calculate_spectral_efficiency(
-                throughput_sum_bps=amc_stats.get('dl_throughput_sum_kbps', 0.0)*1000,
-                ue_throughputs=ue_throughputs
+                throughput_sum_bps=amc_stats.get("dl_throughput_sum_kbps", 0.0) * 1000,
+                ue_throughputs=ue_throughputs,
             )
             snapshot.update(se_metrics)
 
             # Coefficient of Variation
             cv_metrics = self._calculate_cv_metrics(
                 ue_throughputs=ue_throughputs,
-                ue_cqi=amc_stats.get('ue_cqi', {}),
-                ue_sinr=amc_stats.get('ue_sinr', {}),
-                ue_rb_allocated=amc_stats.get('ue_rb_allocated', {})
+                ue_cqi=amc_stats.get("ue_cqi", {}),
+                ue_sinr=amc_stats.get("ue_sinr", {}),
+                ue_rb_allocated=amc_stats.get("ue_rb_allocated", {}),
             )
             snapshot.update(cv_metrics)
 
@@ -308,8 +331,10 @@ class StatsManager:
 
         self.history.append(snapshot)
 
-        if self.config.levels.scheduler >= MetricLevel.FULL or \
-           self.config.levels.amc >= MetricLevel.FULL:
+        if (
+            self.config.levels.scheduler >= MetricLevel.FULL
+            or self.config.levels.amc >= MetricLevel.FULL
+        ):
             detailed = self._collect_detailed_metrics(
                 tti=tti,
                 pdcch_stats=pdcch_stats,
@@ -318,7 +343,9 @@ class StatsManager:
             )
             self.detailed_history.append(detailed)
 
-    def _collect_detailed_metrics(self, tti: int, sched_stats: dict, amc_stats: dict, pdcch_stats: dict) -> dict:
+    def _collect_detailed_metrics(
+        self, tti: int, sched_stats: dict, amc_stats: dict, pdcch_stats: dict
+    ) -> dict:
         """
         Собрать детальную per-UE статистику для FULL level.
 
@@ -374,21 +401,23 @@ class StatsManager:
 
         return detailed
 
-    def _safe_stats_from_dict(self,
-                              values_dict: dict,
-                              prefix: str,
-                              precision: int = 2,
-                              scale: float = 1.0,
-                              filter_zeros: bool = True) -> dict:
+    def _safe_stats_from_dict(
+        self,
+        values_dict: dict,
+        prefix: str,
+        precision: int = 2,
+        scale: float = 1.0,
+        filter_zeros: bool = True,
+    ) -> dict:
         """Универсально считает min/max/avg/std из словаря значений."""
 
         # ЭТАП 1: Проверка пустого входа
         if not values_dict:
             return {
-                f'{prefix}_min': 0.0,
-                f'{prefix}_max': 0.0,
-                f'{prefix}_avg': 0.0,
-                f'{prefix}_std': 0.0
+                f"{prefix}_min": 0.0,
+                f"{prefix}_max": 0.0,
+                f"{prefix}_avg": 0.0,
+                f"{prefix}_std": 0.0,
             }
 
         # ЭТАП 2: Извлечь values из dict и применить фильтр
@@ -400,10 +429,10 @@ class StatsManager:
         # ЭТАП 3: Проверка после фильтрации
         if not values:
             return {
-                f'{prefix}_min': 0.0,
-                f'{prefix}_max': 0.0,
-                f'{prefix}_avg': 0.0,
-                f'{prefix}_std': 0.0
+                f"{prefix}_min": 0.0,
+                f"{prefix}_max": 0.0,
+                f"{prefix}_avg": 0.0,
+                f"{prefix}_std": 0.0,
             }
 
         # ЭТАП 4: Рассчитать min/max/avg
@@ -412,15 +441,15 @@ class StatsManager:
         avg_val = sum(values) / len(values)
 
         # ЭТАП 5: Рассчитать std (standard deviation)
-        variance = sum((x - avg_val)**2 for x in values) / len(values)
-        std_val = variance ** 0.5
+        variance = sum((x - avg_val) ** 2 for x in values) / len(values)
+        std_val = variance**0.5
 
         # ЭТАП 6: Вернуть результат с округлением
         return {
-            f'{prefix}_min': round(min_val, precision),
-            f'{prefix}_max': round(max_val, precision),
-            f'{prefix}_avg': round(avg_val, precision),
-            f'{prefix}_std': round(std_val, precision)
+            f"{prefix}_min": round(min_val, precision),
+            f"{prefix}_max": round(max_val, precision),
+            f"{prefix}_avg": round(avg_val, precision),
+            f"{prefix}_std": round(std_val, precision),
         }
 
     def _calculate_ratio(self, active: int, eligible: int) -> float:
@@ -429,8 +458,9 @@ class StatsManager:
             return round((active / eligible) * 100, 2)
         return 0.0  # Если eligible = 0, ratio = 0%
 
-    def _calculate_rb_efficiency(self, capacity_bits: int, transmitted_bits: int,
-                                 allocated_rbs: int, total_rbs: int) -> dict:
+    def _calculate_rb_efficiency(
+        self, capacity_bits: int, transmitted_bits: int, allocated_rbs: int, total_rbs: int
+    ) -> dict:
         """
         Рассчитать метрики эффективности использования RB.
 
@@ -462,12 +492,14 @@ class StatsManager:
         idle_rbs = total_rbs - allocated_rbs
 
         return {
-            'dl_rb_utilization_pct': round(rb_utilization_pct, 2),
-            'dl_rb_wasted_count': wasted_rbs,
-            'dl_rb_idle_count': idle_rbs}
+            "dl_rb_utilization_pct": round(rb_utilization_pct, 2),
+            "dl_rb_wasted_count": wasted_rbs,
+            "dl_rb_idle_count": idle_rbs,
+        }
 
-    def _calculate_spectral_efficiency(self, throughput_sum_bps: float,
-                                       ue_throughputs: dict) -> dict:
+    def _calculate_spectral_efficiency(
+        self, throughput_sum_bps: float, ue_throughputs: dict
+    ) -> dict:
         """
         Рассчитать спектральную эффективность (SE).
 
@@ -487,9 +519,10 @@ class StatsManager:
 
         if bandwidth_hz == 0:
             return {
-                'dl_spectral_efficiency_bps_hz': 0.0,
-                'dl_spectral_efficiency_avg_ue': 0.0,
-                'dl_spectral_efficiency_peak': 0.0}
+                "dl_spectral_efficiency_bps_hz": 0.0,
+                "dl_spectral_efficiency_avg_ue": 0.0,
+                "dl_spectral_efficiency_peak": 0.0,
+            }
 
         # Общая SE системы
         se_total = throughput_sum_bps / bandwidth_hz
@@ -510,9 +543,10 @@ class StatsManager:
             se_peak = 0.0
 
         return {
-            'dl_spectral_efficiency_bps_hz': round(se_total, 4),
-            'dl_spectral_efficiency_avg_ue': round(se_avg_ue, 4),
-            'dl_spectral_efficiency_peak': round(se_peak, 4)}
+            "dl_spectral_efficiency_bps_hz": round(se_total, 4),
+            "dl_spectral_efficiency_avg_ue": round(se_avg_ue, 4),
+            "dl_spectral_efficiency_peak": round(se_peak, 4),
+        }
 
     def _calculate_cv(self, values: list) -> float:
         """
@@ -530,14 +564,15 @@ class StatsManager:
         if mean == 0:
             return 0.0
 
-        variance = sum((x - mean)**2 for x in values) / len(values)
-        std = variance ** 0.5
+        variance = sum((x - mean) ** 2 for x in values) / len(values)
+        std = variance**0.5
         cv = (std / mean) * 100
 
         return round(cv, 2)
 
-    def _calculate_cv_metrics(self, ue_throughputs: dict, ue_cqi: dict,
-                             ue_sinr: dict, ue_rb_allocated: dict) -> dict:
+    def _calculate_cv_metrics(
+        self, ue_throughputs: dict, ue_cqi: dict, ue_sinr: dict, ue_rb_allocated: dict
+    ) -> dict:
         """
         Рассчитать CV метрики для различных параметров.
 
@@ -549,10 +584,20 @@ class StatsManager:
         Returns:
             Dict с CV метриками (%)
         """
-        cv_throughput = self._calculate_cv([tp for tp in ue_throughputs.values() if tp > 0]) if ue_throughputs else 0.0
+        cv_throughput = (
+            self._calculate_cv([tp for tp in ue_throughputs.values() if tp > 0])
+            if ue_throughputs
+            else 0.0
+        )
         cv_cqi = self._calculate_cv([cqi for cqi in ue_cqi.values() if cqi > 0]) if ue_cqi else 0.0
-        cv_sinr = self._calculate_cv([sinr for sinr in ue_sinr.values() if sinr > 0]) if ue_sinr else 0.0
-        cv_rb = self._calculate_cv([rb for rb in ue_rb_allocated.values() if rb > 0]) if ue_rb_allocated else 0.0
+        cv_sinr = (
+            self._calculate_cv([sinr for sinr in ue_sinr.values() if sinr > 0]) if ue_sinr else 0.0
+        )
+        cv_rb = (
+            self._calculate_cv([rb for rb in ue_rb_allocated.values() if rb > 0])
+            if ue_rb_allocated
+            else 0.0
+        )
         cv_se = 0.0
 
         # CV для SE (рассчитать SE per-UE, затем CV)
@@ -568,11 +613,12 @@ class StatsManager:
                 cv_se = 0.0
 
         return {
-            'dl_throughput_cv_pct': cv_throughput,
-            'dl_cqi_cv_pct': cv_cqi,
-            'dl_sinr_cv_pct': cv_sinr,
-            'dl_rb_allocation_cv_pct': cv_rb,
-            'dl_spectral_efficiency_cv_pct': cv_se}
+            "dl_throughput_cv_pct": cv_throughput,
+            "dl_cqi_cv_pct": cv_cqi,
+            "dl_sinr_cv_pct": cv_sinr,
+            "dl_rb_allocation_cv_pct": cv_rb,
+            "dl_spectral_efficiency_cv_pct": cv_se,
+        }
 
     def _calculate_fairness(self, ue_throughputs: dict) -> dict:
         """
@@ -590,9 +636,10 @@ class StatsManager:
         """
         if not ue_throughputs or len(ue_throughputs) < 2:
             return {
-                'dl_fairness_jain_index': 1.0,
-                'dl_throughput_variance': 0.0,
-                'dl_throughput_std': 0.0}
+                "dl_fairness_jain_index": 1.0,
+                "dl_throughput_variance": 0.0,
+                "dl_throughput_std": 0.0,
+            }
 
         throughputs = list(ue_throughputs.values())
         n = len(throughputs)
@@ -608,13 +655,14 @@ class StatsManager:
 
         # Variance and Std
         mean = sum_throughput / n
-        variance = sum((x - mean)**2 for x in throughputs) / n
-        std = variance ** 0.5
+        variance = sum((x - mean) ** 2 for x in throughputs) / n
+        std = variance**0.5
 
         return {
-            'dl_fairness_jain_index': round(jain_index, 4),
-            'dl_throughput_variance': round(variance, 2),
-            'dl_throughput_std': round(std, 2)}
+            "dl_fairness_jain_index": round(jain_index, 4),
+            "dl_throughput_variance": round(variance, 2),
+            "dl_throughput_std": round(std, 2),
+        }
 
     def _calculate_std(self, values: list) -> float:
         """
@@ -630,7 +678,7 @@ class StatsManager:
 
         mean = sum(values) / len(values)
         variance = sum((x - mean) ** 2 for x in values) / len(values)
-        std = variance ** 0.5
+        std = variance**0.5
 
         return round(std, 2)
 
@@ -655,7 +703,7 @@ class StatsManager:
 
         first_snapshot = self.history[0]
         headers = list(first_snapshot.keys())
-        delimiter = ';' if locale == "ru" else ','
+        delimiter = ";" if locale == "ru" else ","
         rows = []
         for snapshot in self.history:
             row = {}
@@ -663,11 +711,11 @@ class StatsManager:
                 if isinstance(value, dict):
                     json_str = json.dumps(value, ensure_ascii=False)
                     if locale == "ru":
-                        json_str = json_str.replace('.', ',')
+                        json_str = json_str.replace(".", ",")
                     row[key] = json_str
                 elif isinstance(value, float):
                     if locale == "ru":
-                        row[key] = str(value).replace('.', ',')
+                        row[key] = str(value).replace(".", ",")
                     else:
                         row[key] = value
                 else:
@@ -675,12 +723,12 @@ class StatsManager:
             rows.append(row)
 
         if locale == "ru":
-            delimiter = ';'
+            delimiter = ";"
         else:
-            delimiter = ','
+            delimiter = ","
 
         # Запись в CSV
-        with open(filename, 'w', newline='', encoding='utf-8') as f:
+        with open(filename, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=headers, delimiter=delimiter)
             writer.writeheader()
             writer.writerows(rows)
@@ -701,45 +749,57 @@ class StatsManager:
             filename = f"{self.config.file_prefix}_detailed.csv"
 
         if locale == "ru":
-            delimiter = ';'
+            delimiter = ";"
         else:
-            delimiter = ','
+            delimiter = ","
 
-        with open(filename, 'w', newline='', encoding='utf-8') as f:
-            fieldnames = ['tti', 'ue_id', 'priority', 'cqi', 'sinr', 'rb_allocated',  'cce_allocated',
-                          'throughput_bps', 'buffer_size_bytes', 'bits_transmitted']
+        with open(filename, "w", newline="", encoding="utf-8") as f:
+            fieldnames = [
+                "tti",
+                "ue_id",
+                "priority",
+                "cqi",
+                "sinr",
+                "rb_allocated",
+                "cce_allocated",
+                "throughput_bps",
+                "buffer_size_bytes",
+                "bits_transmitted",
+            ]
             writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=delimiter)
             writer.writeheader()
 
             for snapshot in self.detailed_history:
-                tti = snapshot['tti']
-                for ue_id, metrics in snapshot['ue_metrics'].items():
-                    priority = metrics.get('priority', 0.0)
-                    sinr = metrics.get('sinr', 0.0)
+                tti = snapshot["tti"]
+                for ue_id, metrics in snapshot["ue_metrics"].items():
+                    priority = metrics.get("priority", 0.0)
+                    sinr = metrics.get("sinr", 0.0)
 
                     if locale == "ru":
-                        priority_str = str(priority).replace('.', ',')
-                        sinr_str = str(sinr).replace('.', ',')
+                        priority_str = str(priority).replace(".", ",")
+                        sinr_str = str(sinr).replace(".", ",")
                     else:
                         priority_str = priority
                         sinr_str = sinr
 
                     row = {
-                        'tti': tti,
-                        'ue_id': ue_id,
-                        'priority': priority_str,
-                        'cqi': metrics.get('cqi', 0),
-                        'sinr': sinr_str,
-                        'rb_allocated': metrics.get('rb_allocated', 0),
-                        'cce_allocated': metrics.get('cce_allocated', 0),
-                        'throughput_bps': metrics.get('throughput_bps', 0),
-                        'buffer_size_bytes': metrics.get('buffer_size_bytes', 0),
-                        'bits_transmitted': metrics.get('bits_transmitted', 0),
+                        "tti": tti,
+                        "ue_id": ue_id,
+                        "priority": priority_str,
+                        "cqi": metrics.get("cqi", 0),
+                        "sinr": sinr_str,
+                        "rb_allocated": metrics.get("rb_allocated", 0),
+                        "cce_allocated": metrics.get("cce_allocated", 0),
+                        "throughput_bps": metrics.get("throughput_bps", 0),
+                        "buffer_size_bytes": metrics.get("buffer_size_bytes", 0),
+                        "bits_transmitted": metrics.get("bits_transmitted", 0),
                     }
                     writer.writerow(row)
 
-        print(f"[StatsManager] Exported {len(self.detailed_history)} TTI snapshots "
-              f"to {filename} (per-UE format, locale={locale})")
+        print(
+            f"[StatsManager] Exported {len(self.detailed_history)} TTI snapshots "
+            f"to {filename} (per-UE format, locale={locale})"
+        )
 
     def export_detailed_json(self, filename: str = None) -> None:
         """
@@ -757,17 +817,21 @@ class StatsManager:
         import json
 
         # Конвертировать в dict для JSON
-        data = {str(snapshot['tti']): snapshot['ue_metrics'] for snapshot in self.detailed_history}
+        data = {str(snapshot["tti"]): snapshot["ue_metrics"] for snapshot in self.detailed_history}
 
-        with open(filename, 'w', encoding='utf-8') as f:
+        with open(filename, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
-        print(f"[StatsManager] Exported {len(self.detailed_history)} TTI snapshots "
-              f"to {filename} (JSON format)")
+        print(
+            f"[StatsManager] Exported {len(self.detailed_history)} TTI snapshots "
+            f"to {filename} (JSON format)"
+        )
 
-#==============================================================================
+
+# ==============================================================================
 #                          КОНФИГУРАТОР СИМУЛЯЦИИ
-#==============================================================================
+# ==============================================================================
+
 
 @dataclass
 class SimulationConfig:
@@ -781,10 +845,12 @@ class SimulationConfig:
         verbose (bool): Включение подробного verbose логирования.
 
     """
+
     sim_duration: Optional[int] = None
     update_interval: int = 1
     stats_log: bool = False
     verbose: bool = False
+
 
 @dataclass
 class SchedulerConfig:
@@ -799,12 +865,14 @@ class SchedulerConfig:
         enable_window (bool): Включение скользящего окна.
 
     """
+
     algorithm: Optional[str] = None
     max_dl_ue_tti: Optional[int] = None
     pcfich: int = 2
     max_dl_cce_allowance: Optional[int] = None
     window_size: int = 100
     enable_window: bool = True
+
 
 @dataclass
 class StatsManagerConfig:
@@ -820,6 +888,7 @@ class StatsManagerConfig:
         export_format (str): Формат экспорта ('csv' или 'json')
         file_prefix (str): Префикс файла для экспорта
     """
+
     enabled: bool = True
     collect_interval: int = 10
     scheduler_level: str = "basic"
@@ -838,6 +907,7 @@ class SimulationManager:
     Реализует настройку и запуск симуляции.
 
     """
+
     def __init__(self):
         """
         Инициализация менеджера симуляции.
@@ -858,6 +928,14 @@ class SimulationManager:
         self._log_file = None
         self._original_stdout = None
         self._original_stderr = None
+        self.scheduler = None
+        self.tti_duration = 1
+        self.use_legacy_traffic = getattr(self.sim_config, "use_legacy_traffic", True)
+
+        if self.use_legacy_traffic:
+            self.traffic_gen = SimpleGenerator(default_qci=9)
+        else:
+            self.traffic_gen = PacketManager()
 
     def set_sim_duration(self, sim_duration: int) -> None:
         """
@@ -984,12 +1062,10 @@ class SimulationManager:
             if hasattr(self.stats_config, key):
                 setattr(self.stats_config, key, value)
             else:
-                available = ', '.join(self.stats_config.__dataclass_fields__.keys())
+                available = ", ".join(self.stats_config.__dataclass_fields__.keys())
                 raise ValueError(
-                    f"'{key}' не является параметром StatsManagerConfig. "
-                    f"Доступные: {available}"
+                    f"'{key}' не является параметром StatsManagerConfig. Доступные: {available}"
                 )
-
 
     def enable_verbose_log(self, to_file: bool = False):
         """
@@ -1037,20 +1113,18 @@ class SimulationManager:
             # Расчёт числа кадров для ресурсной сетки
             num_frames = int(np.ceil(self.sim_config.sim_duration / 10))
             if self.sim_config.verbose:
-                print(f"[SIMULATION] Calculated number of frames for resource "
-                      f"grid: {num_frames}")
+                print(f"[SIMULATION] Calculated number of frames for resource grid: {num_frames}")
 
             # Создание ресурсной сетки
-            lte_grid = RES_GRID_LTE(
-                bandwidth=self.base_station.bandwidth,
-                num_frames=num_frames
-            )
+            lte_grid = RES_GRID_LTE(bandwidth=self.base_station.bandwidth, num_frames=num_frames)
             if self.sim_config.verbose and lte_grid:
-                print(f"[SIMULATION] The resource grid has been initialized. "
-                      f"Bandwidth={lte_grid.bandwidth} MHz. RBs={lte_grid.rb_per_slot}")
+                print(
+                    f"[SIMULATION] The resource grid has been initialized. "
+                    f"Bandwidth={lte_grid.bandwidth} MHz. RBs={lte_grid.rb_per_slot}"
+                )
 
             # Создание планировщика
-            scheduler = SchedulerInterface.create(
+            self.scheduler = SchedulerInterface.create(
                 algorithm=self.sched_config.algorithm,
                 lte_grid=lte_grid,
                 bs=self.base_station,
@@ -1060,7 +1134,7 @@ class SimulationManager:
                 verbose_pdcch=self.sim_config.verbose,
                 window_size=self.sched_config.window_size,
                 enable_window=self.sched_config.enable_window,
-                verbose=self.sim_config.verbose
+                verbose=self.sim_config.verbose,
             )
 
             # Инициализация менеджера статистики
@@ -1069,7 +1143,7 @@ class SimulationManager:
                     "none": MetricLevel.NONE,
                     "basic": MetricLevel.BASIC,
                     "advanced": MetricLevel.ADVANCED,
-                    "full": MetricLevel.FULL
+                    "full": MetricLevel.FULL,
                 }
 
                 # Создание конфига для StatsManager
@@ -1078,47 +1152,31 @@ class SimulationManager:
                     levels=LevelsConfig(
                         scheduler=level_map[self.stats_config.scheduler_level],
                         amc=level_map[self.stats_config.amc_level],
-                        pdcch=level_map[self.stats_config.pdcch_level]
+                        pdcch=level_map[self.stats_config.pdcch_level],
                     ),
                     export_format=self.stats_config.export_format,
                     file_prefix=self.stats_config.file_prefix,
-                    history_max_len=self.stats_config.history_max_len
+                    history_max_len=self.stats_config.history_max_len,
                 )
 
-                self.stats_manager = StatsManager(scheduler, stats_config)
+                self.stats_manager = StatsManager(self.scheduler, stats_config)
 
                 if self.sim_config.verbose:
-                    print(f"[SIMULATION] StatsManager enabled "
-                          f"(interval={self.stats_config.collect_interval} TTI, "
-                          f"scheduler={self.stats_config.scheduler_level}, "
-                          f"amc={self.stats_config.amc_level})")
+                    print(
+                        f"[SIMULATION] StatsManager enabled "
+                        f"(interval={self.stats_config.collect_interval} TTI, "
+                        f"scheduler={self.stats_config.scheduler_level}, "
+                        f"amc={self.stats_config.amc_level})"
+                    )
 
             # Основной цикл симуляции
             for tti in range(self.sim_config.sim_duration):
-
                 if self.sim_config.verbose:
                     print(f"\n[SIMULATION] Start TTI {tti}...")
 
-                # Обновление глобальной переменной текущего времени
                 GLOBALS.CURRENT_TIME = tti
 
-                # Условие для обновления состояния пользователей
-                if tti % self.sim_config.update_interval == 0:
-
-                    if self.sim_config.verbose:
-                        print("[SIMULATION] Update UEs states")
-
-                    # Обновление состояния пользователей
-                    self.ue_collection.UPDATE_ALL_USERS(
-                        current_time=tti,
-                        update_interval=self.sim_config.update_interval
-                    )
-
-                # Подготовка данных для планировщика
-                users = self.ue_collection.GET_USERS_FOR_SCHEDULER()
-
-                # Планирование ресурсов
-                sched_result = scheduler.schedule(tti, users)
+                sched_result = self.run_tti(current_time=tti)
 
                 # Вывод статистики в CSV файл
                 if self.stats_manager and tti % self.stats_manager.config.collect_interval == 0:
@@ -1133,13 +1191,18 @@ class SimulationManager:
                 ue_avg_throughputs = {}
                 for ue in self.ue_collection.GET_ALL_USERS():
                     ue_avg_throughputs[ue.UE_ID] = ue.average_throughput
-                longterm_fairness_metrics = self.stats_manager._calculate_fairness(ue_throughputs=ue_avg_throughputs)
-                print(f"[SIMULATION] Jain's Fairness Index: {longterm_fairness_metrics['dl_fairness_jain_index']:.4f}")
-
+                longterm_fairness_metrics = self.stats_manager._calculate_fairness(
+                    ue_throughputs=ue_avg_throughputs
+                )
+                print(
+                    f"[SIMULATION] Jain's Fairness Index: {longterm_fairness_metrics['dl_fairness_jain_index']:.4f}"
+                )
 
                 # Вывод summary (если verbose включен)
-                if self.stats_config.scheduler_level == "full" or \
-                   self.stats_config.amc_level == "full":
+                if (
+                    self.stats_config.scheduler_level == "full"
+                    or self.stats_config.amc_level == "full"
+                ):
                     if self.stats_config.export_detailed_format == "csv":
                         detailed_filename = f"{self.stats_config.file_prefix}_detailed.csv"
                         self.stats_manager.export_detailed_csv(detailed_filename, locale="ru")
@@ -1189,8 +1252,154 @@ class SimulationManager:
             )
 
         if errors:
-            msg = (
-                "Ошибка: не все обязательные параметры симуляции заданы:\n"
-                + "\n".join(errors)
-            )
+            msg = "Ошибка: не все обязательные параметры симуляции заданы:\n" + "\n".join(errors)
             raise RuntimeError(msg)
+
+    def setup_ue_traffic(self, ue_id, model_type, **params):
+        """
+        Настройка трафика. Работает как для старого SimpleGenerator,
+        так и для нового PacketManager.
+        """
+        if self.use_legacy_traffic:
+            # Старый способ (Phase 1)
+            self.traffic_gen.set_model(ue_id, model_type, **params)
+        else:
+            # Новый способ (Phase 2 - Multi-bearer)
+            # Если передали старые параметры, адаптируем их под QoS
+            qci = params.pop("qci", 9)  # Default Web
+            traffic_type = params.pop("traffic_type", TrafficType.DEFAULT)
+
+            self.traffic_gen.add_bearer(
+                ue_id=ue_id, model_type=model_type, qci=qci, traffic_type=traffic_type, **params
+            )
+
+    def setup_traffic_profiles(self, traffic_profiles: List[Dict[str, Any]]):
+        """
+        Инициализирует и настраивает профили трафика (bearers) для списка пользователей.
+
+        Принимает конфигурацию, проходит по каждому UE и создает соответствующие
+        генераторы трафика через PacketManager/BaseStation.
+
+        Args:
+            traffic_profiles (List[Dict[str, Any]]): Список конфигураций для пользователей.
+                Каждый элемент списка должен иметь следующую структуру:
+
+                [
+                    {
+                        "ue_id": int,       # ID существующего пользователя
+                        "bearers": [        # Список биреров (потоков) для этого UE
+                            {
+                                # Обязательные параметры:
+                                "traffic_type": TrafficType, # Тип (VOIP, VIDEO_STREAM, BACKGROUND...)
+                                "model_type": str,           # "Poisson", "OnOff", "MMPP"
+                                "qci": int,                  # QCI индекс (например, 1, 5, 9)
+
+                                # Параметры для модели Poisson:
+                                "packet_rate": int,          # Частота пакетов (пак/сек)
+                                "max_bitrate": float,        # (Опционально) Макс. битрейт (Мбит/с)
+
+                                # Дополнительные параметры для модели OnOff:
+                                "duration_on": float,        # (Опционально) Время активности (сек)
+                                "duration_off": float,       # (Опционально) Время простоя (сек)
+                            },
+                            # ... другие биреры
+                        ]
+                    },
+                    # ... другие пользователи
+                ]
+
+        Raises:
+            RuntimeError: Если BaseStation не инициализирована.
+            ValueError: Если передан ue_id, которого нет в коллекции пользователей.
+
+        Example:
+            >>> config = [{
+            ...     "ue_id": 1,
+            ...     "bearers": [{
+            ...         "model_type": "OnOff",
+            ...         "qci": 1,
+            ...         "traffic_type": TrafficType.VOIP,
+            ...         "packet_rate": 50,
+            ...         "duration_on": 2.0,
+            ...         "duration_off": 3.0
+            ...     }]
+            ... }]
+            >>> sim.setup_traffic_profiles(config)
+        """
+        if not self.base_station:
+            raise RuntimeError("BaseStation не инициализирована")
+
+        print(f"\n[SIM] Настройка профилей трафика для {len(traffic_profiles)} пользователей...")
+
+        for profile in traffic_profiles:
+            ue_id = profile.get("ue_id")
+            bearers = profile.get("bearers", [])
+
+            if ue_id is None:
+                print("[WARNING] Пропущен профиль без ue_id")
+                continue
+
+            try:
+                self.base_station.setup_ue_traffic_multi_bearer(ue_id=ue_id, bearers=bearers)
+                print(f"  -> UE {ue_id}: настроено {len(bearers)} биреров")
+            except Exception as e:
+                print(f"[ERROR] Ошибка настройки UE {ue_id}: {e}")
+
+    def run_tti(self, current_time: int):
+        """
+        Выполнение одного TTI с поддержкой обоих режимов генерации трафика.
+        """
+        # Обновление физики и позиций UE
+        if current_time % self.sim_config.update_interval == 0:
+            if self.sim_config.verbose:
+                print("[SIMULATION] Update UEs states")
+
+            self.ue_collection.UPDATE_ALL_USERS(
+                current_time=current_time,
+                update_interval=self.sim_config.update_interval,
+            )
+        # БЛОК ГЕНЕРАЦИИ ТРАФИКА
+
+        if self.use_legacy_traffic:
+            # LEGACY MODE
+            all_users = self.ue_collection.GET_ALL_USERS()
+
+            for ue in all_users:
+                ue_id = ue.UE_ID
+
+                # Пропускаем UE без модели
+                if ue_id not in self.traffic_gen.models:
+                    continue
+
+                # Генерируем пакеты по одному юзеру
+                packets = self.traffic_gen.generate_packets(
+                    ue_id=ue_id, current_time=current_time, update_interval=self.tti_duration
+                )
+
+                # Кладем в буфер вручную
+                if packets and (ue_id in self.base_station.ue_buffers):
+                    for pkt in packets:
+                        self.base_station.ue_buffers[ue_id].ADD_PACKET(pkt, current_time)
+
+        else:
+            # PACKET MANAGER MODE
+            # PacketManager сам обновляет состояния всех беареров всех юзеров
+            # и возвращает общий список новых пакетов
+            new_packets = self.traffic_gen.update_all(current_time, self.tti_duration)
+
+            # Маршрутизатор: раскидываем полученные пакеты по буферам БС
+            for pkt in new_packets:
+                if pkt.ue_id in self.base_station.ue_buffers:
+                    self.base_station.ue_buffers[pkt.ue_id].ADD_PACKET(pkt, current_time)
+
+        # 3. Планировщик
+        users = self.ue_collection.GET_USERS_FOR_SCHEDULER()
+        sched_result = self.scheduler.schedule(current_time, users)
+
+        return sched_result
+
+    def generate_traffic_for_ue(self, ue_id, current_time, interval):
+        """Генерация трафика"""
+        packets = self.traffic_gen.generate_packets(ue_id, current_time, interval)
+        for pkt in packets:
+            self.base_station.ue_buffers[ue_id].ADD_PACKET(pkt, current_time)

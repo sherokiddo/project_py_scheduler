@@ -7,10 +7,12 @@
 #   Предоставляет параметры конфигурации и характеристики базовой станции,
 #   включая мощность передачи, антенные параметры и частотные характеристики.
 #
-# Версия: 1.0.0
-# Дата последнего изменения: 2025-03-29
-# Автор: Норицин Иван
+# Версия: 1.1.0
+# Дата последнего изменения: 2026-01-23
+# Автор: Норицин Иван, Дворников Андрей
 # Версия Python Kernel: 3.12.9
+# v.1.1.0:
+# - Удален Packet, перенесен в TRAFFIC_MODEL.py
 #------------------------------------------------------------------------------
 """
 
@@ -19,32 +21,8 @@ from typing import Dict, List, Tuple
 
 import GLOBALS
 import numpy as np
+from TRAFFIC_MODEL import Packet
 from UE_MODULE import UserEquipment
-
-
-class Packet:
-    """Класс для представления пакета данных в Downlink-буфере"""
-
-    def __init__(
-        self,
-        size: int,
-        ue_id: int,
-        creation_time: int,  # Время в мс
-        priority: int = 0,
-        ttl_ms: int = 1000,
-        is_fragment: bool = False,
-    ):
-        self.size = size
-        self.ue_id = ue_id
-        self.creation_time = creation_time
-        self.priority = priority
-        self.ttl_ms = ttl_ms  # сделай как тебе удобно
-        self.is_fragment = is_fragment
-
-    @property
-    def age(self, current_time: int) -> int:
-        """Возраст пакета в мс относительно текущего времени симуляции"""
-        return current_time - self.creation_time
 
 
 class Buffer:
@@ -258,6 +236,8 @@ class Buffer:
                     "avg_delay": 0.0,
                     "dropped": self.dropped.get(ue_id, 0),
                     "expired": self.expired.get(ue_id, 0),
+                    "packets": 0,
+                    "bitrate": 0.0,
                 }
                 continue
 
@@ -271,6 +251,7 @@ class Buffer:
                 "dropped": self.dropped[ue_id],
                 "expired": self.expired[ue_id],
                 "ingress_bytes": self.ingress_stats[ue_id]["total_bytes"],
+                "packets": len(queue),
             }
 
             # Агрегированная статистика
@@ -374,6 +355,7 @@ class BaseStation:
         Инициализация базовой станции.
         #TODO: Перейти на фабричный паттерн реализации
 
+
         Args:
             x: Координата X расположения станции
             y: Координата Y расположения станции
@@ -398,7 +380,6 @@ class BaseStation:
         self.global_max = global_max
         self.per_ue_max = per_ue_max
         self.ue_buffers = defaultdict(Buffer)
-        self.ue_traffic_models = {}  # {ue_id: traffic_model}
 
         # Связь с моделью канала
         self.ch_model_type = ch_model_type
@@ -416,11 +397,13 @@ class BaseStation:
         Использует ленивый импорт для избежания циклических зависимостей.
         (от ленивого импорта можно избавиться)
 
+
         Args:
             params: Параметры для конкретной модели канала
                 - RMa: W (ширина улицы), h (высота здания), cond_update_period
                 - UMa: cond_update_period, o2i_model
                 - UMi: cond_update_period, o2i_model
+
 
         Raises:
             ValueError: Если указан неизвестный тип модели
@@ -443,20 +426,20 @@ class BaseStation:
         """
         Регистрация пользователя на базовой станции.
 
+
         Выполняет:
         - Создание буфера для DL данных пользователя
         - Привязку модели трафика пользователя
         - Сохранение ссылки на объект UE (для расчета SINR)
         - Установку обратной связи UE -> BS (для доступа к модели канала)
 
+
         Args:
             ue: Объект UserEquipment для регистрации
         """
-        # Существующая логика (без изменений)
         self.ue_buffers[ue.UE_ID] = Buffer(global_max=self.global_max, per_ue_max=self.per_ue_max)
-        self.ue_traffic_models[ue.UE_ID] = ue.traffic_model
         self.registered_ues[ue.UE_ID] = ue
-        ue.serving_bs = self  # теперь UE знает о своей BS
+        ue.serving_bs = self
 
         # TODO: сделать метод DEREG_UE и сопутствующие изменения
 
@@ -471,66 +454,6 @@ class BaseStation:
         ue.SET_TRAFFIC_MODEL(model)
 
         # @sherokiddo: "Предусмотреть валидацию"
-
-    def GEN_TRFFC(
-        self, current_time: int, update_interval: int, ue_id: int = None, ttl_ms: int = 1000
-    ) -> None:
-        """
-        Генерирует DL-трафик для пользователей по UE_ID
-
-        Args:
-            current_time: Текущее время в мс (используется для TTL)
-            update_interval: Интервал обновления трафика (мс)
-            ue_id: Опциональный ID конкретного пользователя
-            ttl_ms: Время жизни пакетов в миллисекундах (по умолчанию 1000)
-        """
-
-        if not self.ue_traffic_models:
-            raise ValueError("Нет зарегистрированных пользователей!")
-
-        targets = [ue_id] if ue_id else self.ue_traffic_models.keys()
-
-        for target_ue_id in targets:
-            model = self.ue_traffic_models.get(target_ue_id)
-            if not model:
-                continue
-
-            buffer = self.ue_buffers[target_ue_id]
-
-            # Генерация сырых данных через модель трафика
-
-            raw_data = model.generate_traffic(
-                current_time=current_time, update_interval=update_interval
-            )
-
-            packets = [
-                Packet(
-                    size=pkt["size"],
-                    ue_id=target_ue_id,
-                    creation_time=pkt.get("creation_time", current_time),
-                    priority=pkt.get("priority", 0),
-                    ttl_ms=ttl_ms,
-                )
-                for pkt in raw_data
-            ]
-
-            total_bytes = sum(pkt.size for pkt in packets)
-            bitrate = (total_bytes * 8) / (update_interval / 1000) if update_interval > 0 else 0
-
-            # Добавление пакетов в буфер BS для конкретного UE
-        for packet in packets:
-            success = buffer.ADD_PACKET(packet, current_time)
-            if not success:
-                print(f"BS: Пакет для UE {target_ue_id} отброшен (буфер полный)")
-
-            # Логирование статистики
-            # status = buffer.GET_UE_STATUS(current_time)["per_ue"].get(target_ue_id, {})
-            # print(f"\nUE {target_ue_id} [DL]:")
-            # print(f"Сгенерировано пакетов: {len(packets)}")
-            # print(f"TTL пакетов: {ttl_ms} мс")
-            # print(f"Скорость: {bitrate / 1e6:.2f} Mbps")
-            # print(f"Текущий размер буфера: {status.get('size', 0)} байт")
-            # print(f"Отброшено: {status.get('dropped', 0)}")
 
     def UPD_GLOBAL_BUFFER(self, current_time: int) -> None:
         """
@@ -624,7 +547,78 @@ class BaseStation:
             buffer = self.ue_buffers[ue_id]
             buffer.DESTROY_UE_PACKETS(ue_id)  # Очистка буфера конкретного UE
 
-        print("Все буферы базовой станции успешно очищены")
+        # print("Все буферы базовой станции успешно очищены")
+
+    def _handle_generated_packets(self, packets: List[Packet]):
+        """
+        Callback для обработки сгенерированных пакетов.
+
+        Автоматически вызывается PacketManager при генерации.
+        Маршрутизирует пакеты в правильные буферы.
+        """
+        # print(f"[✓ CALLBACK] _handle_generated_packets вызван! {len(packets)} пакетов")
+        for pkt in packets:
+            # Получаем буфер для UE
+            if pkt.ue_id not in self.ue_buffers:
+                continue
+
+            buffer = self.ue_buffers[pkt.ue_id]
+
+            # TODO: Если есть LayeredBuffer - маршрутизация по QCI
+            # buffer_layer = buffer.get_buffer_for_qci(pkt.qci)
+            # buffer_layer.ADD_PACKET(pkt, pkt.creation_time)
+
+            # Пока просто добавляем в общий буфер
+            success = buffer.ADD_PACKET(pkt, pkt.creation_time)
+
+            if not success:
+                # Пакет задропан буфером
+                pass
+
+    def setup_ue_traffic_multi_bearer(self, ue_id: int, bearers: List[Dict]):
+        """
+        Настройка multi-bearer трафика для UE.
+
+        Args:
+            ue_id: ID пользователя
+            bearers: Список конфигураций bearers
+
+        Example:
+            bs.setup_ue_traffic_multi_bearer(
+                 ue_id=1,
+                 bearers=[
+                     {
+                         'model_type': 'Poisson',
+                         'qci': 1,
+                         'traffic_type': TrafficType.VOIP,
+                         'packet_rate': 50,
+                         'max_bitrate': 0.064
+                     },
+                     {
+                         'model_type': 'OnOff',
+                         'qci': 7,
+                         'traffic_type': TrafficType.VIDEO_STREAM,
+                         'duration_on': 2,
+                         'duration_off': 3,
+                         'packet_rate': 200,
+                         'max_bitrate': 2.0
+                     }
+                 ]
+             )
+        """
+        for bearer_config in bearers:
+            self.traffic_manager.add_bearer(ue_id=ue_id, **bearer_config)
+
+    def generate_traffic_all_ues(self, current_time: int, update_interval: int):
+        """Генерация трафика для ВСЕХ UE."""
+        for ue_id in self.registered_ues:
+            packets = self.traffic_manager.generate_packets(
+                ue_id=ue_id, current_time=current_time, update_interval=update_interval
+            )
+            # Если callback не вызван (почему-то), добавляем вручную
+            if packets:
+                for pkt in packets:
+                    self.ue_buffers[ue_id].ADD_PACKET(pkt, current_time)
 
 
 def test_bs_buffer_fifo():

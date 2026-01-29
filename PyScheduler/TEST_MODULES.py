@@ -1,5 +1,4 @@
 import GLOBALS
-import math
 import matplotlib.pyplot as plt
 import numpy as np
 from BS_MODULE import BaseStation
@@ -140,21 +139,17 @@ def sim_with_manager():
     GLOBALS.SEED = 42
 
     # Генерация заданного числа UE в коллекцию
-    ue_collection.ADD_RANDOM_USERS(num_ue=3)
+    ue_collection.ADD_RANDOM_USERS(num_ue=5)
 
     MapBorders(-1000, 1000, -1000, 1000)
 
     # Установка модели передвижения для всех пользователей коллекции
     ue_collection.SET_MOBILITY_MODEL("RandomWaypoint")
 
-    # Создание модели генерации трафика
-    poisson = PoissonModel(packet_rate=1000)
-
-    # Установка модели генерации трафика для всех пользователей коллекции
-    ue_collection.SET_TRAFFIC_MODEL(poisson)
-
     # Регистрация всех пользователей коллекции в базовой станции
     ue_collection.REG_USERS_TO_BS(bs)
+
+    sim = SimulationManager()
 
     # =============================================================================
     #                        НАСТРОЙКА МЕНЕДЖЕРА СИМУЛЯЦИИ
@@ -173,6 +168,15 @@ def sim_with_manager():
     # поддерживает SchedulerInterface.
     sim.set_scheduler(algorithm="RoundRobin")
 
+    # Настраиваем модели для каждого UE
+    for ue in ue_collection.GET_ALL_USERS():
+        print(f"Setup UE: {ue.UE_ID} traffic (SimpleGenerator)")
+        sim.setup_ue_traffic(
+            ue_id=ue.UE_ID,
+            model_type="Poisson",
+            packet_rate=1000,
+        )
+
     # Установка длительности симуляции
     sim.set_sim_duration(5000)
 
@@ -182,13 +186,13 @@ def sim_with_manager():
 
     # Установка менеджера статистики
     sim.set_stats_manager(
-        enabled=True,                # Включить сбор
-        collect_interval=1,         # Собирать каждые 10 TTI
-        history_max_len = 5000,
-        scheduler_level="full",     # Scheduler: только агрегированные метрики
-        amc_level="full",           # AMC: total throughput + avg bits/RB
-        pdcch_level="basic",          # PDCCH: отключен (можно включить "basic")
-        file_prefix="emp_stats"      # Префикс файла: lte_stats.csv
+        enabled=True,  # Включить сбор
+        collect_interval=1,  # Собирать каждые 10 TTI
+        history_max_len=5000,
+        scheduler_level="full",  # Scheduler: только агрегированные метрики
+        amc_level="full",  # AMC: total throughput + avg bits/RB
+        pdcch_level="basic",  # PDCCH: отключен (можно включить "basic")
+        file_prefix="emp_stats",  # Префикс файла: lte_stats.csv
     )
 
     # Запуск симуляции
@@ -245,12 +249,14 @@ def chmdl_test():
 
     # Установка планировщика. Можно передвать параметры, которые
     # поддерживает SchedulerInterface.
-    sim.set_scheduler(algorithm="ProportionalFair",
-                      max_dl_ue_tti=None,
-                      pcfich=2,
-                      enable_window = False,
-                      window_size=4,
-                      max_dl_cce_allowance=None)
+    sim.set_scheduler(
+        algorithm="ProportionalFair",
+        max_dl_ue_tti=None,
+        pcfich=2,
+        enable_window=False,
+        window_size=4,
+        max_dl_cce_allowance=None,
+    )
 
     # Установка длительности симуляции
     sim.set_sim_duration(5000)
@@ -259,15 +265,15 @@ def chmdl_test():
     # поставить флаг to_file=True.
     sim.enable_verbose_log(to_file=True)
 
-        # Установка менеджера статистики
+    # Установка менеджера статистики
     sim.set_stats_manager(
-        enabled=True,                # Включить сбор
-        collect_interval=1,         # Собирать каждые n TTI
-        history_max_len = 5000,
-        scheduler_level="advanced",     # Scheduler: только агрегированные метрики
-        amc_level="advanced",           # AMC: total throughput + avg bits/RB
-        pdcch_level="advanced",          # PDCCH: отключен (можно включить "basic")
-        file_prefix="emp_stats"      # Префикс файла: lte_stats.csv
+        enabled=True,  # Включить сбор
+        collect_interval=1,  # Собирать каждые n TTI
+        history_max_len=5000,
+        scheduler_level="advanced",  # Scheduler: только агрегированные метрики
+        amc_level="advanced",  # AMC: total throughput + avg bits/RB
+        pdcch_level="advanced",  # PDCCH: отключен (можно включить "basic")
+        file_prefix="emp_stats",  # Префикс файла: lte_stats.csv
     )
 
     # Запуск симуляции
@@ -286,5 +292,5 @@ def chmdl_test():
 if __name__ == "__main__":
     # debug_simulation()
     # sim_with_ue_collection()
-    # sim_with_manager()
-    chmdl_test()
+    sim_with_manager()
+    # chmdl_test()
