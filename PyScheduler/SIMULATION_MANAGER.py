@@ -1267,7 +1267,7 @@ class SimulationManager:
             # Новый способ (Phase 2 - Multi-bearer)
             # Если передали старые параметры, адаптируем их под QoS
             qci = params.pop("qci", 9)  # Default Web
-            traffic_type = params.pop("traffic_type", TrafficType.WEB)
+            traffic_type = params.pop("traffic_type", TrafficType.DEFAULT)
 
             self.traffic_gen.add_bearer(
                 ue_id=ue_id, model_type=model_type, qci=qci, traffic_type=traffic_type, **params

@@ -84,12 +84,14 @@ class TrafficType(Enum):
         """
         delay_mapping = {
             TrafficType.VOIP: 100,
-            TrafficType.VIDEO_CALL: 150,
-            TrafficType.VIDEO_STREAM: 300,
-            TrafficType.WEB: 300,
-            TrafficType.FILE_TRANSFER: 1000,
-            TrafficType.GAMING: 50,
-            TrafficType.BACKGROUND: 1000,
+            TrafficType.CONV_VIDEO: 150,
+            TrafficType.REAL_TIME_GAMING: 50,
+            TrafficType.NON_CONV_VIDEO: 300,
+            TrafficType.IMS: 100,
+            TrafficType.VIDEO_TCP: 300,
+            TrafficType.VOICE_VIDEO_GAMING: 100,
+            TrafficType.WEB_SERVICES: 300,
+            TrafficType.DEFAULT: 300,
         }
         return delay_mapping[self]
 
@@ -113,7 +115,7 @@ class Packet:
 
     size: int
     ue_id: int
-    creation_time: float
+    creation_time: int
     qci: int = 9
     traffic_type: Optional[TrafficType] = None
     priority: int = 0
