@@ -2,12 +2,13 @@ import math
 
 import matplotlib.pyplot as plt
 import numpy as np
-
+import tracemalloc
+import time
 import GLOBALS
 from BS_MODULE import BaseStation, Packet
 from CHANNEL_MODEL import UMaModel
 from MOBILITY_MODEL import MapBorders
-from RES_GRID import RES_GRID_LTE
+from RES_GRID import RES_GRID_LTE_CACHED
 from SCHEDULER import ProportionalFairScheduler
 from SIMULATION_MANAGER import SimulationManager
 from TRAFFIC_MODEL import PoissonModel
@@ -123,7 +124,7 @@ def sim_with_ue_collection():
     Пример сценария с использованием коллекций UE.
 
     """
-    sim_duration = 3000 # Время симуляции (в мс)
+    sim_duration = 60000 # Время симуляции (в мс)
     update_interval = 1 # Интервал обновления параметров пользователя (в мс)
     num_frames = int(np.ceil(sim_duration / 10)) # Кол-во кадров (для ресурсной сетки)
     bandwidth = 10 # Ширина полосы (в МГц)
@@ -172,7 +173,7 @@ def sim_with_ue_collection():
     bs.ue_buffers[3].ADD_PACKET(Packet(size=inf, ue_id=3, creation_time=0), current_time=0)
 
     # Создание ресурсной сетки
-    lte_grid = RES_GRID_LTE(bandwidth=bandwidth, num_frames=num_frames)
+    lte_grid = RES_GRID_LTE_CACHED(bandwidth=10, window_size=100)
 
     # Создание планировщика
     scheduler = ProportionalFairScheduler(lte_grid, bs)
@@ -270,7 +271,7 @@ def sim_with_manager():
     sim.set_scheduler(algorithm="RoundRobin")
     
     # Установка длительности симуляции
-    sim.set_sim_duration(5000)
+    sim.set_sim_duration(1000)
     
     # Включение verbose логирования. Для вывода всех логов в файл нужно
     # поставить флаг to_file=True.
@@ -286,5 +287,13 @@ def sim_with_manager():
 if __name__ == "__main__":
     # debug_simulation()
     # sim_with_ue_collection()
+    tracemalloc.start()
     sim_with_manager()
+    my_list = [i for i in range(100000)]
+
+current, peak = tracemalloc.get_traced_memory()
+print(f"Текущее использование памяти: {current / 10**6:.2f} MB")
+print(f"Пиковое использование памяти: {peak / 10**6:.2f} MB")
+
+tracemalloc.stop()
     

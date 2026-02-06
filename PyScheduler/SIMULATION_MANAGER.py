@@ -21,7 +21,7 @@ from typing import Optional
 import GLOBALS
 from UE_MODULE import UECollection
 from BS_MODULE import BaseStation
-from RES_GRID import RES_GRID_LTE
+from RES_GRID import RES_GRID_LTE_CACHED
 from SCHEDULER import SchedulerInterface
 
 @dataclass
@@ -246,10 +246,10 @@ class SimulationManager:
                       f"grid: {num_frames}")
                 
             # Создание ресурсной сетки
-            lte_grid = RES_GRID_LTE(
+            lte_grid = RES_GRID_LTE_CACHED(
                 bandwidth=self.base_station.bandwidth,
-                num_frames=num_frames
-            )
+                window_size=100
+            )   
             if self.sim_config.verbose and lte_grid:
                 print(f"[SIMULATION] The resource grid has been initialized. "
                       f"Bandwidth={lte_grid.bandwidth} MHz. RBs={lte_grid.rb_per_slot}")
