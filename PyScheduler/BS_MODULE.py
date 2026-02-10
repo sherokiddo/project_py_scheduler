@@ -16,13 +16,272 @@
 #------------------------------------------------------------------------------
 """
 
+from abc import ABC, abstractmethod
 from collections import defaultdict, deque
-from typing import Dict, List, Tuple
+from dataclasses import dataclass
+from typing import Dict, List, Tuple, Optional
 
 import GLOBALS
 import numpy as np
 from TRAFFIC_MODEL import Packet
 from UE_MODULE import UserEquipment
+
+@dataclass
+class BufferStatus:
+    """
+    """
+    ue_id: int
+    buffer_size: int # Байты
+    timestamp: int
+    lcid: Optional[int] = None
+    qci: Optional[int] = None
+    priority: int = 0
+    hol_delay: Optional[int] = None
+    
+    def __post_init__(self):
+        """
+        """
+            
+        if self.buffer_size < 0:
+            raise ValueError(
+                f"The buffer size cannot be negative. "
+                f"The obtained value: {self.buffer_size}"
+            )
+            
+    def is_empty(self) -> bool:
+        """
+        """
+        return self.buffer_size == 0
+    
+    def to_dict(self) -> Dict:
+        """
+        """
+        return {
+            'ue_id': self.ue_id,
+            'buffer_size': self.buffer_size,
+            'timestamp': self.timestamp,
+            'lcid': self.lcid,
+            'qci': self.qci,
+            'priority': self.priority,
+            'hol_delay': self.hol_delay,
+        }
+
+
+class SimpleBuffer:
+    """
+    """
+    def __init__(self, ue_id: int, max_size: int = 1000000):
+        """
+        """
+        self.ue_id = ue_id
+        self.max_size = max_size # байты
+        self.buffer = deque()
+        self.current_size = 0 # байты
+        
+        self.total_packets_added = 0
+        self.total_packets_dropped = 0
+        self.total_packets_expired = 0
+        
+    def add_packet(self, packet: Packet) -> bool:
+        """
+        """
+        if self.current_size + packet.size > self.max_size:
+            self.total_packets_dropped += 1
+            return False
+        
+        self.buffer.append(packet)
+        self.current_size += packet.size
+        
+        self.total_packets_added += 1
+        
+        return True
+    
+    def get_packets(self, num_bytes: int) -> Tuple[List[Packet], int]:
+        """
+        """
+        extracted_packets = []
+        extracted_bits = 0
+        num_bits_to_extract = GLOBALS.bytes_to_bits(num_bytes)
+        
+        while self.buffer and extracted_bits < num_bits_to_extract:
+            packet = self.buffer[0]
+            packet_size_bits = GLOBALS.bytes_to_bits(packet.size)
+            
+            if (extracted_bits + packet_size_bits) <= num_bits_to_extract:
+                extracted_packet = self.buffer.popleft()
+                extracted_packets.append(extracted_packet)
+                extracted_bits += packet_size_bits
+                
+            else:
+                remaining_bits = num_bits_to_extract - extracted_bits
+                fragment_size = remaining_bits // 8
+                
+                fragment = Packet(
+                    size=fragment_size, 
+                    ue_id=packet.ue_id, 
+                    creation_time=packet.creation_time,
+                    qci=packet.qci,
+                    traffic_type=packet.traffic_type,
+                    priority=packet.priority,
+                    ttl_ms=packet.ttl_ms,
+                    deadline=packet.deadline,
+                    is_fragment=True,
+                    bearer_id=packet.bearer_id,
+                )
+                
+                packet.size -= fragment_size
+                packet.creation_time = GLOBALS.CURRENT_TIME
+                
+                extracted_packets.append(fragment)
+                extracted_bits += GLOBALS.bytes_to_bits(fragment_size)
+                break
+            
+        extracted_bytes = GLOBALS.bits_to_bytes(extracted_bits)
+        self.current_size -= extracted_bytes
+            
+        return extracted_packets, extracted_bytes
+    
+    def upd_buffer(self) -> None:
+        """
+        """
+        valid_packets = []
+        expired_count = 0
+        
+        for packet in self.buffer:
+            if packet.deadline > GLOBALS.CURRENT_TIME:
+                valid_packets.append(packet)
+            else:
+                expired_count += 1
+                
+        self.buffer = deque(valid_packets)
+        self.current_size = max(0, sum(p.size for p in valid_packets))
+        
+        self.total_packets_expired += expired_count
+            
+    
+    def get_buffer_status(self) -> BufferStatus:
+        """
+        """
+        return BufferStatus(
+            ue_id=self.ue_id, 
+            buffer_size=self.current_size, 
+            timestamp=GLOBALS.CURRENT_TIME
+        )
+    
+    def clear_buffer(self) -> None:
+        """
+        """
+        self.buffer.clear()
+        self.current_size = 0
+        
+        self.total_packets_added = 0
+        self.total_packets_dropped = 0
+        self.total_packets_expired = 0
+        
+
+class IBufferManager(ABC):
+    """
+    """
+    @abstractmethod
+    def add_packet(self, ue_id: int, packet: Packet) -> bool:
+        """
+        """
+        pass
+    
+    @abstractmethod
+    def get_buffer_status(self, ue_id: int) -> List[BufferStatus]:
+        """
+        """
+        pass
+    
+    @abstractmethod
+    def get_packets(self, grants: List) -> Tuple[List[Packet], int]:
+        """
+        """
+        pass
+    
+    @abstractmethod
+    def upd_buffers_all(self) -> None:
+        """
+        """
+        pass
+    
+    @abstractmethod
+    def create_ue_buffer(self, ue_id: int, max_size: Optional[int] = None) -> None:
+        """
+        """
+        pass
+    
+    @abstractmethod
+    def remove_ue_buffer(self, ue_id: int) -> None:
+        """
+        """
+        pass
+       
+
+class SimpleBufferManager(IBufferManager):
+    """
+    """
+    def __init__(self, default_max_size: int = 1000000):
+        """
+        """
+        self.buffers: Dict[int, SimpleBuffer] = {}
+        self.default_max_size = default_max_size
+        
+    def add_packet(self, ue_id: int, packet: Packet) -> bool:
+        """
+        """
+        if ue_id not in self.buffers:
+            raise ValueError(
+                f"UE {ue_id} does not have a buffer. The buffer must "
+                f"have been created during UE registration at the BS"
+            )
+            
+        return self.buffers[ue_id].add_packet(packet)
+        
+    def get_buffer_status(self, ue_id: int) -> List[BufferStatus]:
+        """
+        """
+        if ue_id not in self.buffers:
+            return None
+        
+        buffer_status = self.buffers[ue_id].get_buffer_status()
+        return [buffer_status]
+    
+    def get_packets(self, grants: List) -> Tuple[List[Packet], int]:
+        """
+        """
+        if len(grants) != 1:
+            raise ValueError(
+                "error"
+            )
+            
+        grant = grants[0]
+        ue_id = grant.ue_id
+        num_bytes = grant.num_bytes
+        
+        packets, extracted_bytes = self.buffers[ue_id].get_packets(num_bytes)
+        
+        return packets, extracted_bytes
+    
+    def upd_buffers_all(self) -> None:
+        """
+        """
+        for buffer in self.buffers.values():
+            buffer.upd_buffer()
+    
+    def create_ue_buffer(self, ue_id: int, max_size: Optional[int] = None) -> None:
+        """
+        """
+        buffer_size = self.default_max_size if max_size is None else max_size
+        self.buffers[ue_id] = SimpleBuffer(ue_id=ue_id, max_size=buffer_size)
+        
+    def remove_ue_buffer(self, ue_id: int) -> None:
+        """
+        """
+        if ue_id in self.buffers:
+            self.buffers[ue_id].clear_buffer()
+            del self.buffers[ue_id]
 
 
 class Buffer:

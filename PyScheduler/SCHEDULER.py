@@ -87,8 +87,47 @@
 
 import GLOBALS
 import time
+from dataclasses import dataclass
 from BS_MODULE import BaseStation
 from typing import Dict, List, Optional
+
+@dataclass
+class SchedulingGrant:
+    """
+    """
+    ue_id: int
+    num_bytes: int
+    lcid: Optional[int] = None
+    ndi: bool = True
+    harq_process_id: int = 0
+    rv: int = 0
+    
+    def __post_init__(self):
+        """
+        """
+        if self.num_bytes < 0:
+            raise ValueError(
+                f"The num bytes cannot be negative. "
+                f"The obtained value: {self.tb_size}"
+            )
+            
+        if not (0 <= self.rv <= 3):
+            raise ValueError(
+                f"The redundancy version value must be between 0 and 3. "
+                f"The obtained value: {self.rv}"
+            )
+            
+    def to_dict(self) -> Dict:
+        """
+        """
+        return {
+            'ue_id': self.ue_id,
+            'tb_size': self.tb_size,
+            'lcid': self.lcid,
+            'harq_process_id': self.harq_process_id,
+            'ndi': self.ndi,
+            'rv': self.rv
+        }
 
 
 #==============================================================================

@@ -933,7 +933,7 @@ class SimulationManager:
         self.use_legacy_traffic = getattr(self.sim_config, "use_legacy_traffic", True)
 
         if self.use_legacy_traffic:
-            self.traffic_gen = SimpleGenerator(default_qci=9)
+            self.traffic_gen = SimpleGenerator()
         else:
             self.traffic_gen = PacketManager()
 
