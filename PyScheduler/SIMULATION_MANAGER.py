@@ -848,6 +848,7 @@ class SimulationConfig:
 
     sim_duration: Optional[int] = None
     update_interval: int = 1
+    use_legacy_traffic: bool = True
     stats_log: bool = False
     verbose: bool = False
 
@@ -929,13 +930,8 @@ class SimulationManager:
         self._original_stdout = None
         self._original_stderr = None
         self.scheduler = None
-        self.tti_duration = 1
-        self.use_legacy_traffic = getattr(self.sim_config, "use_legacy_traffic", True)
 
-        if self.use_legacy_traffic:
-            self.traffic_gen = SimpleGenerator()
-        else:
-            self.traffic_gen = PacketManager()
+        self.traffic_gen = None
 
     def set_sim_duration(self, sim_duration: int) -> None:
         """
@@ -1014,6 +1010,13 @@ class SimulationManager:
             )
 
         self.base_station = base_station
+
+        if self.base_station.use_simple_buffer:
+            self.sim_config.use_legacy_traffic = True
+            self.traffic_gen = SimpleGenerator()
+        else:
+            self.sim_config.use_legacy_traffic = False
+            self.traffic_gen = PacketManager()
 
     def set_scheduler(self, algorithm: str, **kwargs) -> None:
         """
@@ -1260,7 +1263,7 @@ class SimulationManager:
         Настройка трафика. Работает как для старого SimpleGenerator,
         так и для нового PacketManager.
         """
-        if self.use_legacy_traffic:
+        if self.sim_config.use_legacy_traffic:
             # Старый способ (Phase 1)
             self.traffic_gen.set_model(ue_id, model_type, **params)
         else:
@@ -1358,12 +1361,15 @@ class SimulationManager:
                 current_time=current_time,
                 update_interval=self.sim_config.update_interval,
             )
-        # БЛОК ГЕНЕРАЦИИ ТРАФИКА
 
-        if self.use_legacy_traffic:
-            # LEGACY MODE
+        # Блок обновления буферов и генерации трафика
+        # Legacy mode (Simple Buffer + Simple Generator)
+        if self.sim_config.use_legacy_traffic:
+
+            # Обновляем буферы всех пользователей
+            self.base_station.buffer_manager.upd_buffers_all()
+
             all_users = self.ue_collection.GET_ALL_USERS()
-
             for ue in all_users:
                 ue_id = ue.UE_ID
 
@@ -1373,33 +1379,26 @@ class SimulationManager:
 
                 # Генерируем пакеты по одному юзеру
                 packets = self.traffic_gen.generate_packets(
-                    ue_id=ue_id, current_time=current_time, update_interval=self.tti_duration
+                    ue_id=ue_id, current_time=current_time, update_interval=self.sim_config.update_interval
                 )
 
-                # Кладем в буфер вручную
-                if packets and (ue_id in self.base_station.ue_buffers):
+                # Кладем пакеты в буфер
+                if packets:
                     for pkt in packets:
-                        self.base_station.ue_buffers[ue_id].ADD_PACKET(pkt, current_time)
+                        self.base_station.buffer_manager.add_packet(ue_id, pkt)
 
+        # Bearers mode (Layered Buffer + Packet Manager)
         else:
-            # PACKET MANAGER MODE
-            # PacketManager сам обновляет состояния всех беареров всех юзеров
-            # и возвращает общий список новых пакетов
-            new_packets = self.traffic_gen.update_all(current_time, self.tti_duration)
-
-            # Маршрутизатор: раскидываем полученные пакеты по буферам БС
-            for pkt in new_packets:
-                if pkt.ue_id in self.base_station.ue_buffers:
-                    self.base_station.ue_buffers[pkt.ue_id].ADD_PACKET(pkt, current_time)
+            raise NotImplementedError(
+                "Currently, only Simple Buffer and Simple Generator is supported. To start the "
+                "simulation, set the use_simple_buffer flag to True"
+            )
+        
+            # @IvanNoritsin: Пока что доступен только один режим работы (Simple Buffer + Simple Generator).
+            # Данный блок будет реализован при добавлении новых буферов (Layered Buffer)
 
         # 3. Планировщик
         users = self.ue_collection.GET_USERS_FOR_SCHEDULER()
         sched_result = self.scheduler.schedule(current_time, users)
 
         return sched_result
-
-    def generate_traffic_for_ue(self, ue_id, current_time, interval):
-        """Генерация трафика"""
-        packets = self.traffic_gen.generate_packets(ue_id, current_time, interval)
-        for pkt in packets:
-            self.base_station.ue_buffers[ue_id].ADD_PACKET(pkt, current_time)
