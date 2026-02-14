@@ -94,6 +94,18 @@ from typing import Dict, List, Optional
 @dataclass(slots=True)
 class SchedulingGrant:
     """
+    Структура, описывающая результат планирования извлечения данных из 
+    буферов UE.
+    
+    Attributes:
+        ue_id (int): Уникальный идентификатор UE.
+        num_bytes (int): Размер данных, которые необходимо извечь из буфера (байты).
+        lcid (Optional[int], optional): Идентификатор логического канала.
+        ndi (bool): Флаг New Data Indicator.
+        harq_process_id (int): Идентификатор HARQ-процесса.
+        rv (int): Redundancy Version, определяет версию кодирования при 
+        HARQ-ретрансляции.
+        
     """
     ue_id: int
     num_bytes: int
@@ -104,6 +116,12 @@ class SchedulingGrant:
     
     def __post_init__(self):
         """
+        Валидация после инициализации объекта.
+
+        Raises:
+            ValueError: Если размер извлекаемых данных отрицательный или значение 
+            redundancy version выходит за допустимый диапазон.
+
         """
         if self.num_bytes < 0:
             raise ValueError(
@@ -119,10 +137,15 @@ class SchedulingGrant:
             
     def to_dict(self) -> Dict:
         """
+        Преобразование объекта в словарь.
+
+        Returns:
+            Dict: Словарь с параметрами гранта.
+
         """
         return {
             'ue_id': self.ue_id,
-            'tb_size': self.tb_size,
+            'num_bytes': self.num_bytes,
             'lcid': self.lcid,
             'harq_process_id': self.harq_process_id,
             'ndi': self.ndi,
