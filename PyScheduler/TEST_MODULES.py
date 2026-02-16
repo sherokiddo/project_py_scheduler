@@ -218,7 +218,7 @@ def chmdl_test():
     GLOBALS.SEED = 24
 
     # Генерация заданного числа UE в коллекцию
-    ue_collection.ADD_RANDOM_USERS(num_ue=8)
+    ue_collection.ADD_RANDOM_USERS(num_ue=5)
 
     MapBorders(-1000, 1000, -1000, 1000)
 
@@ -259,7 +259,7 @@ def chmdl_test():
     )
 
     # Установка длительности симуляции
-    sim.set_sim_duration(5000)
+    sim.set_sim_duration(100)
 
     # Включение verbose логирования. Для вывода всех логов в файл нужно
     # поставить флаг to_file=True.

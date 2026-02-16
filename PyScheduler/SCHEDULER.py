@@ -87,9 +87,33 @@
 
 import GLOBALS
 import time
+from dataclasses import dataclass
 from BS_MODULE import BaseStation
 from typing import Dict, List, Optional
 
+#==============================================================================
+#                              РАЗДЕЛ DATACLASS
+#==============================================================================
+
+@dataclass(slots=True)
+class CQIMap:
+    """
+    Датакласс со всей необходимой информацией CQI по каждому UE (ключ).
+    На замену словарям и постоянным вызовам UE_MODULE.py
+    Также добавляет элемент оптимизации по памяти и периодичность обновления.
+
+    Предполагаемый жизненный цикл:
+    - Created: Первый CQI Report - регистрация на BS
+    - Updated: Периодический апдейт (по гибкому таймеру, апериодичный - позже)
+    - Deleted: UE дерегистрация (истечение таймера - позже)
+    """
+    wb_cqi: int              # CQI значения [1-15]
+    last_wb_update: int      # TTI посл. обновления (для счетчика)
+    #wb_timer: int            # TTI таймер обновления
+
+    sb_cqi: List[int]        # Per-RBG CQI [length = num_rbg]
+    last_sb_update: int
+    #sb_timer: int
 
 #==============================================================================
 #                              ИНТЕРФЕЙС МОДУЛЯ
@@ -164,7 +188,7 @@ class SchedulerInterface:
                  max_dl_cce_allowance=None,
                  verbose_pdcch=False,
                  window_size=100,
-                 enable_window = True,
+                 enable_window=True,
                  verbose = False):
 
         self.lte_grid = lte_grid
@@ -198,6 +222,10 @@ class SchedulerInterface:
 
         self.last_ue_transmitted_bits = {}
 
+        self.cqi_map: Dict[int, CQIMap] = {}
+        self.wb_cqi_upd_interval = 1
+        self.sb_cqi_upd_interval = 1
+
         self.verbose = verbose
 
         self.harq_manager = None  # Заготовка для HARQ
@@ -222,6 +250,10 @@ class SchedulerInterface:
         """
         t_sch_start = time.perf_counter()
         self._last_tti = tti
+
+        # ЭТАП 0: Preparation and CQI Map Check
+        if tti % self.wb_cqi_upd_interval == 0:
+            self._refresh_cqi(tti, users)
 
         # ЭТАП 1: Eligibility checks
         eligible_ues = self._filter_eligible_ues(tti, users)
@@ -286,7 +318,8 @@ class SchedulerInterface:
         sch_time_us = (t_sch_end - t_sch_start) * 1_000_000
         self._save_timing_stats(sch_time_us,
                                 priority_calc_time_us,
-                                priority_sort_time_us)
+                                priority_sort_time_us,
+                                )
 
         # ЭТАП 8: Result formation
         return self._build_result(allocation, users, eligible_ues, tti)
@@ -349,13 +382,68 @@ class SchedulerInterface:
 
         if hasattr(self, '_last_priority_list') and self._last_priority_list:
             stats["ue_priorities"] = {
-                u["UE_ID"]: u["priority"] 
+                u["UE_ID"]: u["priority"]
                 for u in self._last_priority_list
             }
         else:
             stats["ue_priorities"] = {}
 
         return stats
+
+    def _refresh_cqi(self, tti: int, users: List[Dict]) -> None:
+        """
+        Обновление CQI map.
+        Обновляет wideband CQI всегда, subband CQI только если enable_fd=True.
+        Для новых UE создаёт CQIMap entry, для существующих - mutation.
+        Вызывается в начале schedule() для синхронизации CQI data.
+
+        Args:
+            users: Список всех UE (не filtered!)
+            tti: Текущий TTI
+
+        Примечание:
+            - WB CQI: берётся из user['cqi'] (индекс 1-15)
+            - SB CQI: берётся из user['ue'].cqi_subband (List[int])
+            - Invalid CQI (вне [1-15]) игнорируются
+        """
+        for user in users:
+            ueid = user.get('UE_ID')
+            if ueid is None:
+                continue
+
+            cqi = user.get('cqi', 0)
+
+            if 1 <= cqi <= 15:
+                if ueid not in self.cqi_map:
+                    self.cqi_map[ueid] = CQIMap(
+                        wb_cqi=cqi,
+                        last_wb_update=tti,
+                        sb_cqi=[],
+                        last_sb_update=0
+                    )
+                    if self.verbose:
+                        print(f"[CQI_MAP TTI {tti}] UE {ueid}: Created entry (WB CQI={cqi})")
+                else:
+                    self.cqi_map[ueid].wb_cqi = cqi
+                    self.cqi_map[ueid].last_wb_update = tti
+                    # if self.verbose:
+                    #     print(f"[CQI_MAP TTI {tti}] UE {ueid}: Updated WB CQI={cqi}")
+
+            # === Subband CQI update (только если FD enabled) ===
+            # TODO: Заменить на реальную проверку FD flag когда будет реализовано
+            # Сейчас проверяем наличие ue.cqi_subband как индикатор FD
+            sb_cqi_list = user.get('sbb_cqi')  # ← Из того же источника!
+
+            if sb_cqi_list and isinstance(sb_cqi_list, list) and len(sb_cqi_list) > 0:
+                if ueid in self.cqi_map:
+                    self.cqi_map[ueid].sb_cqi = sb_cqi_list.copy()
+                    self.cqi_map[ueid].last_sb_update = tti
+                    # if self.verbose:
+                    #     print(f"[CQI_MAP TTI {tti}] UE {ueid}: Updated SB CQI "
+                    #           f"({len(sb_cqi_list)} RBG)")
+
+        if self.verbose and self.cqi_map:
+            print(f"[CQI_MAP TTI {tti}] Active entries: {len(self.cqi_map)} UE")
 
     def _filter_eligible_ues(self, tti: int, users: List[Dict]) -> List[Dict]:
         """
@@ -384,9 +472,10 @@ class SchedulerInterface:
             # CHECK 2: Получение Buffer status (формальный BSR)
             buffer_status = bs_buffer.GET_UE_STATUS(tti)['per_ue'].get(ue_id, {})
             buffer_size = buffer_status.get('size', 0)
+            user_cqi = self._get_wb_cqi(ue_id)
 
             # CHECK 3: Buffer size > 0 и Valid CQI (1-15)
-            if buffer_size > 0 and 1 <= user['cqi'] <= 15:
+            if buffer_size > 0 and 1 <= user_cqi <= 15:
                 user['bs_buffer_size'] = buffer_size
                 eligible.append(user)
 
@@ -530,7 +619,9 @@ class SchedulerInterface:
         pdsch_threshold = total_rb * 0.95
 
         for idx, user in enumerate(priority_list):
-            bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
+            ue_id = user['UE_ID']
+            cqi = self._get_wb_cqi(ue_id)
+            bits_per_rb = self.amc.GET_BITS_PER_RB(cqi)
             buffer_bits = user['bs_buffer_size'] * 8
             rb_needed = min(buffer_bits / (bits_per_rb * 2), total_rb)
 
@@ -582,8 +673,8 @@ class SchedulerInterface:
         ues_with_pdcch = []
 
         for user in priority_list:
-            cqi = user['cqi']
             ue_id = user['UE_ID']
+            cqi = self._get_wb_cqi(ue_id)
 
             required_cce = self.pdcch_manager.get_aggregation_level(cqi)
 
@@ -644,7 +735,7 @@ class SchedulerInterface:
                 ue.UPD_DL_THROUGHPUT_BPS(0, time_interval_ms)
                 continue
 
-            cqi = user.get('cqi', 0)
+            cqi = self._get_wb_cqi(ueid)
             bits_per_rb = self.amc.GET_BITS_PER_RB(cqi)
             max_bits= allocated_rbs * bits_per_rb * 2
             max_bytes = max_bits // GLOBALS.BITS_PER_BYTE
@@ -755,6 +846,46 @@ class SchedulerInterface:
             'bitmap': {},
             'pdcch_stats': self.pdcch_manager.get_stats()}
 
+    def _get_wb_cqi(self, ueid: int) -> int:
+        """
+        Получить wideband CQI из map.
+        Args:
+            ueid: UE ID
+        Returns:
+            int: CQI value [1-15] или 0 если UE не в map
+        Примечание:
+            Возврат 0 означает:
+            - UE ещё не отправил первый CQI report, ИЛИ
+            - UE отключился но ещё в users list
+            Планировщик автоматически отфильтрует UE с CQI=0
+        """
+        if ueid in self.cqi_map:
+            return self.cqi_map[ueid].wb_cqi
+        else:
+            # if self.verbose:
+            #     print(f"[CQI_MAP] WARNING: UE {ueid} not in map, returning CQI=0")
+            return 0
+
+    def _get_sb_cqi(self, ueid: int) -> List[int]:
+        """
+        Получить subband CQI из map.
+        Args:
+            ueid: UE ID
+        Returns:
+            List[int]: Subband CQI per RBG или пустой список если:
+            - UE не в map
+            - UE не использует FD (sb_cqi пустой)
+        Примечание:
+            Пустой список - нормальное состояние для non-FD.
+            Caller должен проверить len() перед использованием.
+        """
+        if ueid in self.cqi_map:
+            return self.cqi_map[ueid].sb_cqi
+        else:
+            if self.verbose:
+                print(f"[CQI_MAP] WARNING: UE {ueid} not in map, returning empty SB CQI")
+            return []
+
     def _update_stats(self, tti: int, eligible_count: int, allocated_rbs: int, active_ues: int) -> None:
         """
         Обновить счетчики статистики.
@@ -807,7 +938,8 @@ class SchedulerInterface:
 
     def _save_timing_stats(self, sch_time_us: float,
                        priority_calc_time_us: float,
-                       priority_sort_time_us: float) -> None:
+                       priority_sort_time_us: float,
+                       ) -> None:
         """
         Сохранить timing статистику для get_stats().
 
@@ -1415,6 +1547,7 @@ class AdaptiveModulationAndCoding:
                 "dl_sinr_avg": 0.0,
                 "dl_ue_throughputs": {},
                 "ue_cqi": {},
+                "ue_cqi_sbb": {},
                 "ue_sinr": {},
                 "ue_rb_allocated": {},
             }
@@ -1429,6 +1562,7 @@ class AdaptiveModulationAndCoding:
 
         ue_throughputs = {user.get('UE_ID'): 0 for user in users}
         ue_cqi = {}
+        ue_cqi_sbb = {}
         ue_sinr = {}
         ue_rb_allocated = {}
         cqi_values = []
@@ -1440,6 +1574,17 @@ class AdaptiveModulationAndCoding:
 
             if not ue or not ue_id:
                 continue
+
+            if ue_id in self.scheduler.cqi_map:
+                cqi_entry = self.scheduler.cqi_map[ue_id]
+                cqi = cqi_entry.wb_cqi
+                ue_cqi[ue_id] = cqi
+
+                if cqi_entry.sb_cqi and len(cqi_entry.sb_cqi) > 0:
+                    ue_cqi_sbb[ue_id] = cqi_entry.sb_cqi.copy()
+            else:
+                # Fallback
+                cqi = 0
 
             throughput_bps = ue.current_dl_throughput
             ue_throughputs[ue_id] = throughput_bps
@@ -1455,13 +1600,10 @@ class AdaptiveModulationAndCoding:
 
             transmitted_bits = int(ue.last_transmitted_bits)
             total_transmitted_bits += transmitted_bits
-
             total_allocated_rbs += allocated_rbs
 
-            cqi = user.get('cqi')
             if cqi is not None and 1 <= cqi <= 15:
                 cqi_values.append(cqi)
-                ue_cqi[ue_id] = cqi
 
             if hasattr(ue, 'SINR'):
                 sinr_values.append(ue.SINR)
@@ -1490,6 +1632,7 @@ class AdaptiveModulationAndCoding:
             "dl_sinr_avg": round(sinr_avg, 2),
             "dl_ue_throughputs": ue_throughputs,
             "ue_cqi": ue_cqi,
+            "ue_cqi_sbb": ue_cqi_sbb,
             "ue_sinr": ue_sinr,
             "ue_rb_allocated": ue_rb_allocated,}
 
@@ -1540,7 +1683,8 @@ class BestCQIScheduler(SchedulerInterface):
             List[Dict]: UE с добавленным полем 'priority'
         """
         for user in eligible_ues:
-            user['priority'] = user['cqi']  # Priority = CQI
+            ue_id = user['UE_ID']
+            user['priority'] = self._get_wb_cqi(ue_id)  # Priority = CQI
 
         if self.verbose:
             avg_priority = sum(u['priority'] for u in eligible_ues) / len(eligible_ues)
@@ -1591,7 +1735,8 @@ class BestCQIScheduler(SchedulerInterface):
                 allocation[ue_id].extend(rb_indices)
 
                 # Уменьшаем remaining_buffer
-                bits_per_rb = self.amc.GET_BITS_PER_RB(best_user['cqi'])
+                cqi = self._get_wb_cqi(ue_id)
+                bits_per_rb = self.amc.GET_BITS_PER_RB(cqi)
                 rbg_capacity = len(rb_indices) * bits_per_rb * 2
                 remaining_buffer[ue_id] -= min(remaining_buffer[ue_id], rbg_capacity)
 
@@ -1701,7 +1846,8 @@ class RoundRobinScheduler(SchedulerInterface):
                     except ValueError:
                         pass
 
-                    bits_per_rb = self.amc.GET_BITS_PER_RB(ue['cqi'])
+                    cqi = self._get_wb_cqi(ue_id)
+                    bits_per_rb = self.amc.GET_BITS_PER_RB(cqi)
                     transmitted_bits = len(rb_indices) * bits_per_rb * 2
                     transmitted_bytes = transmitted_bits // 8
                     ue['bs_buffer_size'] = max(0, ue['bs_buffer_size'] - transmitted_bytes)
@@ -1746,7 +1892,8 @@ class ProportionalFairScheduler(SchedulerInterface):
             List[Dict]: UE с рассчитанными PF-приоритетами
         """
         for user in eligible_ues:
-            cqi = user['cqi']
+            ue_id = user['UE_ID']
+            cqi = self._get_wb_cqi(ue_id)
             bits_per_rb = self.amc.GET_BITS_PER_RB(cqi)
             rb_per_slot = self.lte_grid.rb_per_slot
             instant_rate = rb_per_slot * bits_per_rb * 2
@@ -1776,8 +1923,8 @@ class ProportionalFairScheduler(SchedulerInterface):
                   f"{len(eligible_ues)} UE, avg PF metric={avg_priority:.2f}")
 
         return eligible_ues
-    
-    def _allocate_pdsch(self, tti: int, ues_with_pdcch: List[Dict], 
+
+    def _allocate_pdsch(self, tti: int, ues_with_pdcch: List[Dict],
                         eligible_ues: List[Dict]) -> Dict[int, List[int]]:
         """
         Выделяем RBG по приоритету (highest priority first).
@@ -1819,7 +1966,8 @@ class ProportionalFairScheduler(SchedulerInterface):
                 rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
                 allocation[ue_id].extend(rb_indices)
                 
-                bits_per_rb = self.amc.GET_BITS_PER_RB(best_user['cqi'])
+                cqi = self._get_wb_cqi(ue_id)
+                bits_per_rb = self.amc.GET_BITS_PER_RB(cqi)
                 rbg_capacity = len(rb_indices) * bits_per_rb * 2  # bits
                 remaining_buffer[ue_id] -= min(remaining_buffer[ue_id], rbg_capacity)
         
