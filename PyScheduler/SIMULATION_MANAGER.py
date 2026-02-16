@@ -371,6 +371,7 @@ class StatsManager:
         # Per-UE данные (если AMC == FULL)
         ue_throughputs = amc_stats.get("dl_ue_throughputs", {})
         ue_cqi = amc_stats.get("ue_cqi", {})
+        ue_cqi_sbb = amc_stats.get('ue_cqi_sbb', {})
         ue_sinr = amc_stats.get("ue_sinr", {})
         ue_rb = amc_stats.get("ue_rb_allocated", {})
         ue_cce_alloc = pdcch_stats.get("pdcch_ue_cce_allocations", {})
@@ -380,6 +381,7 @@ class StatsManager:
             set(ue_priorities.keys())
             | set(ue_throughputs.keys())
             | set(ue_cqi.keys())
+            | set(ue_cqi_sbb.keys())
             | set(ue_sinr.keys())
             | set(ue_rb.keys())
             | set(ue_buffer_sizes.keys())
@@ -391,6 +393,7 @@ class StatsManager:
             detailed["ue_metrics"][str(ue_id)] = {
                 "priority": ue_priorities.get(ue_id, 0.0),
                 "cqi": ue_cqi.get(ue_id, 0),
+                "cqi_sbb": ue_cqi_sbb.get(ue_id, 0),
                 "sinr": ue_sinr.get(ue_id, 0.0),
                 "rb_allocated": ue_rb.get(ue_id, 0),
                 "cce_allocated": ue_cce_alloc.get(ue_id, 0),
@@ -759,6 +762,7 @@ class StatsManager:
                 "ue_id",
                 "priority",
                 "cqi",
+                "cqi_sbb",
                 "sinr",
                 "rb_allocated",
                 "cce_allocated",
@@ -787,6 +791,7 @@ class StatsManager:
                         "ue_id": ue_id,
                         "priority": priority_str,
                         "cqi": metrics.get("cqi", 0),
+                        "cqi_sbb": metrics.get('cqi_sbb', 0),
                         "sinr": sinr_str,
                         "rb_allocated": metrics.get("rb_allocated", 0),
                         "cce_allocated": metrics.get("cce_allocated", 0),
@@ -855,7 +860,8 @@ class SimulationConfig:
 
 @dataclass
 class SchedulerConfig:
-    """Конфигурация планировщика.
+    """
+    Конфигурация планировщика.
 
     Attributes:
         algorithm (Optional[str]): Название алгоритма планирования.

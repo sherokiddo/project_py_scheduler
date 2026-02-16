@@ -881,6 +881,7 @@ class UECollection:
                 {
                     "UE_ID": ue.UE_ID,
                     "cqi": ue.cqi,
+                    "sbb_cqi": ue.cqi_subband,
                     "ue": ue,
                 }
             )
