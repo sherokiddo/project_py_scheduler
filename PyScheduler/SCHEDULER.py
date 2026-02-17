@@ -126,7 +126,7 @@ class SchedulingGrant:
         if self.num_bytes < 0:
             raise ValueError(
                 f"The num bytes cannot be negative. "
-                f"The obtained value: {self.tb_size}"
+                f"The obtained value: {self.num_bytes}"
             )
             
         if not (0 <= self.rv <= 3):
