@@ -140,7 +140,14 @@ class SchedulingGrant:
         Преобразование объекта в словарь.
 
         Returns:
-            Dict: Словарь с параметрами гранта.
+            Dict: Словарь с параметрами гранта:
+                ue_id int - Уникальный идентификатор UE.
+                num_bytes: int - Размер данных, которые необходимо извечь из буфера (байты).
+                lcid: Optional[int] - Идентификатор логического канала.
+                ndi: bool - Флаг New Data Indicator.
+                harq_process_id: int - Идентификатор HARQ-процесса.
+                rv: int - Redundancy Version, определяет версию кодирования при 
+                HARQ-ретрансляции.
 
         """
         return {
