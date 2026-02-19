@@ -91,6 +91,74 @@ from dataclasses import dataclass
 from BS_MODULE import BaseStation
 from typing import Dict, List, Optional
 
+@dataclass(slots=True)
+class SchedulingGrant:
+    """
+    Структура, описывающая результат планирования извлечения данных из 
+    буферов UE.
+    
+    Attributes:
+        ue_id (int): Уникальный идентификатор UE.
+        num_bytes (int): Размер данных, которые необходимо извечь из буфера (байты).
+        lcid (Optional[int], optional): Идентификатор логического канала.
+        ndi (bool): Флаг New Data Indicator.
+        harq_process_id (int): Идентификатор HARQ-процесса.
+        rv (int): Redundancy Version, определяет версию кодирования при 
+        HARQ-ретрансляции.
+        
+    """
+    ue_id: int
+    num_bytes: int
+    lcid: Optional[int] = None
+    ndi: bool = True
+    harq_process_id: int = 0
+    rv: int = 0
+    
+    def __post_init__(self):
+        """
+        Валидация после инициализации объекта.
+
+        Raises:
+            ValueError: Если размер извлекаемых данных отрицательный или значение 
+            redundancy version выходит за допустимый диапазон.
+
+        """
+        if self.num_bytes < 0:
+            raise ValueError(
+                f"The num bytes cannot be negative. "
+                f"The obtained value: {self.num_bytes}"
+            )
+            
+        if not (0 <= self.rv <= 3):
+            raise ValueError(
+                f"The redundancy version value must be between 0 and 3. "
+                f"The obtained value: {self.rv}"
+            )
+            
+    def to_dict(self) -> Dict:
+        """
+        Преобразование объекта в словарь.
+
+        Returns:
+            Dict: Словарь с параметрами гранта:
+                ue_id int - Уникальный идентификатор UE.
+                num_bytes: int - Размер данных, которые необходимо извечь из буфера (байты).
+                lcid: Optional[int] - Идентификатор логического канала.
+                ndi: bool - Флаг New Data Indicator.
+                harq_process_id: int - Идентификатор HARQ-процесса.
+                rv: int - Redundancy Version, определяет версию кодирования при 
+                HARQ-ретрансляции.
+
+        """
+        return {
+            'ue_id': self.ue_id,
+            'num_bytes': self.num_bytes,
+            'lcid': self.lcid,
+            'harq_process_id': self.harq_process_id,
+            'ndi': self.ndi,
+            'rv': self.rv
+        }
+
 #==============================================================================
 #                              РАЗДЕЛ DATACLASS
 #==============================================================================
@@ -460,18 +528,21 @@ class SchedulerInterface:
             user['ue'].current_dl_throughput = 0
 
         eligible = []
+        buffer_manager = self.lte_grid.bs.buffer_manager
 
         for user in users:
             ue_id = user['UE_ID']
 
             # CHECK 1: BS buffer существует?
-            bs_buffer = self.lte_grid.bs.ue_buffers.get(ue_id)
-            if not bs_buffer:
-                continue  # Пропускаем UE без буфера
+            if not buffer_manager.ue_has_buffer(ue_id):
+                continue # Пропускаем UE без буфера
 
-            # CHECK 2: Получение Buffer status (формальный BSR)
-            buffer_status = bs_buffer.GET_UE_STATUS(tti)['per_ue'].get(ue_id, {})
-            buffer_size = buffer_status.get('size', 0)
+            # CHECK 2: Получение Buffer status
+            buffer_status_list = buffer_manager.get_buffer_status(ue_id)
+
+            buffer_size = 0
+            for buffer_status in buffer_status_list:
+                buffer_size += buffer_status.buffer_size
             user_cqi = self._get_wb_cqi(ue_id)
 
             # CHECK 3: Buffer size > 0 и Valid CQI (1-15)
@@ -693,6 +764,50 @@ class SchedulerInterface:
                 print(f"[SCHEDULER] PDCCH blocked: {blocked_count} UE (no CCE available) - UE IDs: {blocked_ue_ids}")
 
         return ues_with_pdcch
+    
+    def _logical_channel_multiplexing(self, tb_size: int, buffer_status_list: List) -> List[SchedulingGrant]:
+        """
+        Мультиплексирование логических каналов  в пределах одного транспортного 
+        блока. В режиме Simple Buffer весь размер транспортного блока выделяется 
+        единственному буферу UE. В режиме Layered Buffer предполагается 
+        распределение TB между несколькими логическими каналами (не реализовано).
+        
+        Args:
+            tb_size (int): Размер транспортного блока (байты).
+            buffer_status_list (List): Список состояний буферов UE.
+
+        Raises:
+            ValueError: Если количество полученных BufferStatus'ов в режиме
+                Simple Buffer не равно 1.
+            NotImplementedError: Если активирован режим Layered Buffer,
+                который пока не поддерживается..
+
+        Returns:
+            List[SchedulingGrant]: Список грантов, определяющих количество байт,
+                для каждого логического канала UE.
+
+        """
+        # Simple buffer mode
+        if self.lte_grid.bs.use_simple_buffer:
+            if len(buffer_status_list) != 1:
+                raise ValueError(
+                    "The size of the buffer status list for Simple Buffer "
+                    "must be 1"
+                )
+
+            buffer_status = buffer_status_list[0]
+            grant = SchedulingGrant(
+                ue_id=buffer_status.ue_id,
+                num_bytes=tb_size,
+            )
+
+            return [grant]
+        
+        # Layered buffer mode
+        else:
+            raise NotImplementedError(
+                "Currently, only Simple Buffer is supported."
+            )   
 
     def _process_buffers(self, tti: int, users: List[Dict], allocation: Dict) -> None:
         """
@@ -714,6 +829,7 @@ class SchedulerInterface:
         ues_transmitted = 0
         time_interval_ms = 1
         self.last_ue_transmitted_bits = {}
+        buffer_manager = self.lte_grid.bs.buffer_manager
 
         for user in users:
             ue = user.get('ue')
@@ -728,8 +844,7 @@ class SchedulerInterface:
                 ue.UPD_DL_THROUGHPUT_BPS(0, time_interval_ms)
                 self.last_ue_transmitted_bits[ueid] = 0
 
-            bs_buffer = self.lte_grid.bs.ue_buffers.get(ueid)
-            if bs_buffer is None:
+            if not buffer_manager.ue_has_buffer(ueid):
                 self.last_ue_transmitted_bits[ueid] = 0
             # UE нет в буферах BS — обновить на 0
                 ue.UPD_DL_THROUGHPUT_BPS(0, time_interval_ms)
@@ -737,7 +852,10 @@ class SchedulerInterface:
 
             cqi = self._get_wb_cqi(ueid)
             bits_per_rb = self.amc.GET_BITS_PER_RB(cqi)
-            max_bits= allocated_rbs * bits_per_rb * 2
+            
+            # @IvanNoritsin: Тут по хорошему должен расчитываться размер транспортного
+            # блока (на основе allocated_rbs и MCS), но пока что у нас этого нет
+            max_bits = allocated_rbs * bits_per_rb * 2
             max_bytes = max_bits // GLOBALS.BITS_PER_BYTE
             #ВНИМАНИЕ! Временный костыль.
             remainder_bits = max_bits % GLOBALS.BITS_PER_BYTE
@@ -747,12 +865,16 @@ class SchedulerInterface:
                 self.last_ue_transmitted_bits[ueid] = 0
                 continue
 
+            buffer_status_list = buffer_manager.get_buffer_status(ueid)
+            
+            # @IvanNoritsin: Мультиплексер принимает на вход размер транспорного
+            # блока, но т.к. у нас нет этой системы просто пердаём вместимость
+            # выделенный ресурсных блоков
+            grants = self._logical_channel_multiplexing(max_bytes, buffer_status_list)
+
             try:
-                packets, total_bytes = bs_buffer.GET_PACKETS(
-                    ue_id=ueid,
-                    max_bytes=max_bytes,
-                    bits_per_rb = bits_per_rb,
-                    current_time=tti)
+                packets, total_bytes = buffer_manager.get_packets(grants)
+
             except Exception as e:
                 if self.verbose:
                     print(f"[ERROR] TTI {tti} UE {ueid}: Buffer extraction failed - {e}")

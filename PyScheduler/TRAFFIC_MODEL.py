@@ -116,7 +116,7 @@ class Packet:
     size: int
     ue_id: int
     creation_time: int
-    qci: int = 9
+    qci: Optional[int] = None
     traffic_type: Optional[TrafficType] = None
     priority: int = 0
     ttl_ms: int = 1000
@@ -182,7 +182,7 @@ class Packet:
             ue_id=ue_id,
             creation_time=data["creation_time"],
             priority=data.get("priority", 0),
-            qci=data.get("qci", 9),
+            qci=data.get("qci"),
             ttl_ms=data.get("ttl_ms", 1000),
             is_fragment=data.get("is_fragment", False),
             bearer_id=data.get("bearer_id"),
@@ -293,7 +293,6 @@ class PoissonModel(ITrafficModel):
                 size=packet_size,
                 ue_id=ue_id,
                 creation_time=generate_time,
-                qci=9,  # default для Poisson
                 priority=0,
             )
             packets.append(packet)
@@ -363,7 +362,7 @@ class OnOffModel(ITrafficModel):
 
                     packet_size = np.random.randint(self.min_packet_size, self.max_packet_size)
                     packet = Packet(
-                        size=packet_size, ue_id=ue_id, creation_time=t, qci=9, priority=0
+                        size=packet_size, ue_id=ue_id, creation_time=t, priority=0
                     )
                     packets.append(packet)
 
@@ -535,7 +534,7 @@ class MMPPModel(ITrafficModel):
 
                     packet_size = np.random.randint(self.min_packet_size, self.max_packet_size)
                     packet = Packet(
-                        size=packet_size, ue_id=ue_id, creation_time=t, qci=9, priority=0
+                        size=packet_size, ue_id=ue_id, creation_time=t, priority=0
                     )
                     packets.append(packet)
             else:
@@ -710,20 +709,14 @@ class SimpleGenerator(ITrafficGeneratorInterface):
     Особенности:
     - Один UE = одна модель
     - Прямое возвращение пакетов (без callback)
-    - Поддержка default/random QCI
 
     Паттерн: Facade
     """
 
-    def __init__(self, default_qci: int = 9, assign_random_qci: bool = False):
+    def __init__(self):
         """
-        Args:
-            default_qci: QCI по умолчанию для всех пакетов
-            assign_random_qci: Если True, назначать случайный QCI
         """
         self.models: Dict[int, ITrafficModel] = {}
-        self.default_qci = default_qci
-        self.assign_random_qci = assign_random_qci
 
         # Статистика
         self._total_packets_generated = 0
@@ -736,15 +729,6 @@ class SimpleGenerator(ITrafficGeneratorInterface):
 
         model = self.models[ue_id]
         packets = model.generate_traffic(ue_id, current_time, update_interval)
-
-        # Установка QCI
-        for pkt in packets:
-            if self.assign_random_qci:
-                import random
-
-                pkt.qci = random.choice([1, 2, 3, 5, 7, 9])
-            else:
-                pkt.qci = self.default_qci
 
         # Статистика
         self._total_packets_generated += len(packets)
