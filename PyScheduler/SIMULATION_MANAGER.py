@@ -651,10 +651,10 @@ class StatsManager:
         sum_throughput = sum(throughputs)
         sum_squared = sum(x**2 for x in throughputs)
 
-        if sum_squared > 0:
-            jain_index = (sum_throughput**2) / (n * sum_squared)
+        if sum_throughput == 0 or sum_squared == 0:
+            jain_index = None
         else:
-            jain_index = 1.0
+            jain_index = (sum_throughput ** 2) / (n * sum_squared)
 
         # Variance and Std
         mean = sum_throughput / n
@@ -662,9 +662,9 @@ class StatsManager:
         std = variance**0.5
 
         return {
-            "dl_fairness_jain_index": round(jain_index, 4),
-            "dl_throughput_variance": round(variance, 2),
-            "dl_throughput_std": round(std, 2),
+            'dl_fairness_jain_index':   round(jain_index, 4) if jain_index is not None else None,
+            'dl_throughput_variance':   round(variance, 2),
+            'dl_throughput_std':        round(std, 2)
         }
 
     def _calculate_std(self, values: list) -> float:
@@ -1203,10 +1203,10 @@ class SimulationManager:
                 longterm_fairness_metrics = self.stats_manager._calculate_fairness(
                     ue_throughputs=ue_avg_throughputs
                 )
-                print(
-                    f"[SIMULATION] Jain's Fairness Index: {longterm_fairness_metrics['dl_fairness_jain_index']:.4f}"
-                )
-
+                jfi = longterm_fairness_metrics['dl_fairness_jain_index']
+                jfi_str = f"{jfi:.4f}" if jfi is not None else "N/A (no throughput data)"
+                print(f"[SIMULATION] Jain's Fairness Index: {jfi_str}")
+                
                 # Вывод summary (если verbose включен)
                 if (
                     self.stats_config.scheduler_level == "full"

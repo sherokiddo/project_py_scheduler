@@ -138,6 +138,9 @@ def sim_with_manager():
     # Установка сида
     GLOBALS.SEED = 42
 
+    if GLOBALS.SEED is not None:
+        np.random.seed(GLOBALS.SEED)   # покрывает numpy
+
     # Генерация заданного числа UE в коллекцию
     ue_collection.ADD_RANDOM_USERS(num_ue=5)
 
@@ -215,19 +218,16 @@ def chmdl_test():
     # Установка сида
     GLOBALS.SEED = 24
 
+    if GLOBALS.SEED is not None:
+        np.random.seed(GLOBALS.SEED)   # покрывает numpy
+
     # Генерация заданного числа UE в коллекцию
     ue_collection.ADD_RANDOM_USERS(num_ue=5)
 
     MapBorders(-1000, 1000, -1000, 1000)
 
     # Установка модели передвижения для всех пользователей коллекции
-    ue_collection.SET_MOBILITY_MODEL("DiagonalWalk", bs=bs1, pause_time=0)
-
-    # Создание модели генерации трафика
-    poisson = PoissonModel(packet_rate=5000)
-
-    # Установка модели генерации трафика для всех пользователей коллекции
-    ue_collection.SET_TRAFFIC_MODEL(poisson)
+    ue_collection.SET_MOBILITY_MODEL("RandomWaypoint", bs=bs1, pause_time=0)
 
     # Регистрация всех пользователей коллекции в базовой станции
     ue_collection.REG_USERS_TO_BS(bs1)
@@ -248,7 +248,7 @@ def chmdl_test():
     # Установка планировщика. Можно передвать параметры, которые
     # поддерживает SchedulerInterface.
     sim.set_scheduler(
-        algorithm="ProportionalFair",
+        algorithm="FD_BCQI",
         max_dl_ue_tti=None,
         pcfich=2,
         enable_window=False,
@@ -256,8 +256,17 @@ def chmdl_test():
         max_dl_cce_allowance=None,
     )
 
+    # Настраиваем модели для каждого UE
+    for ue in ue_collection.GET_ALL_USERS():
+        print(f"Setup UE: {ue.UE_ID} traffic (SimpleGenerator)")
+        sim.setup_ue_traffic(
+            ue_id=ue.UE_ID,
+            model_type="Poisson",
+            packet_rate=10000,
+        )
+
     # Установка длительности симуляции
-    sim.set_sim_duration(100)
+    sim.set_sim_duration(5000)
 
     # Включение verbose логирования. Для вывода всех логов в файл нужно
     # поставить флаг to_file=True.
@@ -268,9 +277,9 @@ def chmdl_test():
         enabled=True,  # Включить сбор
         collect_interval=1,  # Собирать каждые n TTI
         history_max_len=5000,
-        scheduler_level="advanced",  # Scheduler: только агрегированные метрики
-        amc_level="advanced",  # AMC: total throughput + avg bits/RB
-        pdcch_level="advanced",  # PDCCH: отключен (можно включить "basic")
+        scheduler_level="full",  # Scheduler: только агрегированные метрики
+        amc_level="full",  # AMC: total throughput + avg bits/RB
+        pdcch_level="full",  # PDCCH: отключен (можно включить "basic")
         file_prefix="emp_stats",  # Префикс файла: lte_stats.csv
     )
 
@@ -290,5 +299,5 @@ def chmdl_test():
 if __name__ == "__main__":
     # debug_simulation()
     # sim_with_ue_collection()
-    sim_with_manager()
-    # chmdl_test()
+    # sim_with_manager()
+    chmdl_test()
