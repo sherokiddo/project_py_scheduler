@@ -230,7 +230,9 @@ class SchedulerInterface:
             'BestCQI': BestCQIScheduler,
             'ProportionalFair': ProportionalFairScheduler,
             'RoundRobin': RoundRobinScheduler,
-            'FD_BCQI': FD_BestCQIScheduler}
+            'FD_BCQI': FDBestCQIScheduler,
+            'FD_RR': FDxRoundRobinScheduler,
+            }
 
         if algorithm not in schedulers:
             valid = ', '.join(schedulers.keys())
@@ -249,7 +251,12 @@ class SchedulerInterface:
         Returns:
             List[str]: Список имен алгоритмов
         """
-        return ['BestCQI', 'ProportionalFair', 'RoundRobin']
+        return ['BestCQI',
+                'ProportionalFair',
+                'RoundRobin',
+                'FD_BestCQI',
+                'FD_RR',
+                ]
 
     def __init__(self, lte_grid, bs,
                  max_dl_ue_tti=None,
@@ -2109,7 +2116,7 @@ class ProportionalFairScheduler(SchedulerInterface):
 
         return allocation
 
-class FD_BestCQIScheduler(SchedulerInterface):
+class FDBestCQIScheduler(SchedulerInterface):
     """
     Frequency Domain BestCQI Scheduler
 
@@ -2214,14 +2221,14 @@ class FD_BestCQIScheduler(SchedulerInterface):
                 continue
 
             ue_id = best_user['UE_ID']
-                
+
             ok = self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, ue_id)
             print(f"[DEBUG ALLOC] tti={tti} rbg={rbg_idx} ue={ue_id} ok={ok} "
                   f"idx={self.lte_grid.GET_RBG_INDICES(rbg_idx)}", flush=True)
-                
+
             if not ok:
                 continue
-                
+
             rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
             allocation[ue_id].extend(rb_indices)
 
@@ -2236,6 +2243,198 @@ class FD_BestCQIScheduler(SchedulerInterface):
             total_rb = sum(len(rbs) for rbs in allocation.values())
             print(f"SCHEDULER.FD_BestCQI [TTI {tti}] PDSCH: "
                   f"{allocated_ues} UE, {total_rb} RB")
+
+        return allocation
+
+class FDxRoundRobinScheduler(SchedulerInterface):
+    """
+    Greedy Sequential Round Robin Scheduler
+    Объединяет долгосрочную справедливость с частотной селективностью
+    Формирует очередь в TD из обслуживаемых UE, затем последовательно
+    выделяет RBG UE с лучшим CQI для текущего RBG, убирая его из очереди
+    и двигаясь дальше по RBG.
+    Очередь сохраняется во времени.
+
+    Алгоритм:
+      TD-фаза (calculate_priorities):
+        Ротация через rr_ue_offset — определяет порядок очереди и tie-break.
+
+      FD-фаза (_allocate_pdsch):
+        Для каждого RBG:
+          1. Из текущего раунда выбираем UE с лучшим SB CQI на этом RBG
+          2. Tie-break: при равном CQI побеждает тот, кто раньше в RR-очереди
+          3. Победитель удаляется из текущего раунда
+          4. Раунд опустел → перезапуск из всех UE с ненулевым буфером
+        После TTI: rr_ue_offset += 1 → в следующем TTI другой UE первый в очереди
+
+    Args:
+        lte_grid: Ресурсная сетка LTE
+        bs: Базовая станция
+        max_dl_ue_tti: Максимум UE за TTI (default: None = без ограничений)
+        pcfich: PCFICH value (default: 2)
+        max_dl_cce_allowance: Лимит CCE (default: None)
+        verbose_pdcch: Отладочный вывод для PDCCH (default: False)
+        enable_window: Включить скользящее окно (default: True)
+        window_size: Размер окна в TTI (default: 100)
+        verbose: Отладочный вывод для планировщика (default: False)
+    """
+
+    def __init__(self, lte_grid, bs, **kwargs):
+        super().__init__(lte_grid, bs, **kwargs)
+        self.rr_rbg_offset = 0 #можно сделать механизм без ротации RBG
+        self.rr_ue_offset = 0
+
+    def _apply_pdsch_estimation(self, priority_list: List[Dict], tti: int) -> List[Dict]:
+        """
+        RR: Не применяем PDSCH estimation. FD-фаза автоматически управляет
+        распределением по RBG без предварительного отсева UE.
+        Args:
+            priority_list: UE для планирования
+            tti: Текущий TTI
+
+        Returns:
+            List[Dict]: Тот же priority_list без изменений
+        """
+        if self.verbose:
+            print(f"[SCHEDULER TTI {tti}] PDSCH estimation: SKIPPED (FD-RR per-RBG selection)")
+            print(f"[SCHEDULER TTI {tti}] After estimation: {len(priority_list)} UE selected, 0 UE excluded")
+
+        return priority_list
+
+    def _calculate_priorities(self, windowed_ues: List[Dict], tti: int) -> List[Dict]:
+        """
+        RR-ротация: назначаем нисходящие приоритеты начиная с rr_ue_offset.
+
+        Приоритет используется в form_priority_list для сортировки, что даёт
+        base_queue в _allocate_pdsch уже в правильном RR-порядке.
+        Tie-break в FD-фазе работает автоматически через этот порядок.
+        """
+        num_ues = len(windowed_ues)
+        if num_ues == 0:
+            return windowed_ues
+
+        if self.max_dl_ue_tti and self.max_dl_ue_tti < num_ues:
+            ues_to_plan = self.max_dl_ue_tti
+        else:
+            ues_to_plan = num_ues
+
+        start_idx = self.rr_ue_offset % num_ues
+        rotated_ues = windowed_ues[start_idx:] + windowed_ues[:start_idx]
+
+        for idx, user in enumerate(rotated_ues):
+            user['priority'] = ues_to_plan - idx
+
+        if self.verbose:
+            top_ue = rotated_ues[0]['UE_ID']
+            print(f"[SCHEDULER.FDxRoundRobin TTI {tti}] Priority: Rotated (start UE {top_ue}, offset={self.rr_ue_offset})")
+
+        return rotated_ues
+
+    def _allocate_pdsch(self, tti: int, ues_with_pdcch: List[Dict],
+                       eligible_ues: List[Dict]) -> Dict[int, List[int]]:
+        """
+        Greedy per-RBG:
+        для каждого RBG выбираем UE с максимальным SB CQI на этом RBG
+        (если SB CQI отсутствует — fallback на WB CQI).
+        Tie-break: оставляем первого в списке (он уже отсортирован по priority)
+        """
+        allocation  = {user['UE_ID']: [] for user in eligible_ues}
+        rbg_size    = self.lte_grid.GET_RBG_SIZE()
+        total_rbg   = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size
+
+        num_ues = len(ues_with_pdcch)
+        if num_ues == 0:
+            return allocation
+
+        eligible_ids    = [ue['UE_ID'] for ue in eligible_ues]
+        ue_index        = self.rr_rbg_offset
+        last_served_idx = -1
+
+        if not ues_with_pdcch:
+            return allocation
+
+        remaining_buffer = {
+            user['UE_ID']: user.get('bs_buffer_size', 0) * 8
+            for user in ues_with_pdcch
+        }
+
+        served_in_round = set()
+
+        for rbg_idx in range(total_rbg):
+
+            if all(buf <= 0 for buf in remaining_buffer.values()):
+                break
+
+            any_candidate = False
+            for ue in ues_with_pdcch:
+                ue_id = ue['UE_ID']
+                if remaining_buffer.get(ue_id, 0) > 0 and ue_id not in served_in_round:
+                    any_candidate = True
+                    break
+            if not any_candidate:
+                served_in_round.clear()
+
+            best_user = None
+            best_cqi = -1
+
+            for k in range(num_ues):
+                ue = ues_with_pdcch[(ue_index + k) % num_ues]
+                ue_id = ue['UE_ID']
+
+                if remaining_buffer.get(ue_id, 0) <= 0:
+                    continue
+                if ue_id in served_in_round:
+                    continue
+
+                sb_cqi_list = self._get_sb_cqi(ue_id)
+                if sb_cqi_list and rbg_idx < len(sb_cqi_list):
+                    cqi = sb_cqi_list[rbg_idx]
+                    if cqi == 0:
+                        cqi = self._get_wb_cqi(ue_id)
+                else:
+                    cqi = self._get_wb_cqi(ue_id)
+
+                if cqi > best_cqi:
+                    best_cqi = cqi
+                    best_user = ue
+
+            if best_user is None:
+                served_in_round.clear()
+                continue
+
+            ue_id = best_user['UE_ID']
+
+            if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, ue_id):
+                rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
+                allocation[ue_id].extend(rb_indices)
+
+                safe_cqi = best_cqi if best_cqi > 0 else 1
+                bits_per_rb = self.amc.GET_BITS_PER_RB(safe_cqi)
+                rbg_capacity = len(rb_indices) * bits_per_rb
+                remaining_buffer[ue_id] = max(0, remaining_buffer[ue_id] - rbg_capacity)
+
+                served_in_round.add(ue_id)
+
+                # RR bookkeeping как в RR: last_served_idx для rr_ue_offset
+                try:
+                    current_idx = eligible_ids.index(ue_id)
+                    if current_idx > last_served_idx:
+                        last_served_idx = current_idx
+                except ValueError:
+                    pass
+
+            # двигаем “фазу” для tie-break / next scan start
+            ue_index += 1
+
+        self.rr_rbg_offset = ue_index % num_ues
+        if last_served_idx >= 0 and len(eligible_ues) > 0:
+            self.rr_ue_offset = (last_served_idx + 1) % len(eligible_ues)
+
+        if self.verbose:
+            allocated_ues = sum(1 for rbs in allocation.values() if len(rbs) > 0)
+            total_rb = sum(len(rbs) for rbs in allocation.values())
+            print(f"[SCHEDULER.FD_RoundRobin TTI {tti}] PDSCH: {allocated_ues} UE, {total_rb} RB total "
+                  f"(next_offset={self.rr_rbg_offset})")
 
         return allocation
 
@@ -2256,541 +2455,3 @@ class FD_BestCQIScheduler(SchedulerInterface):
 #   - нет важных выводов что есть в реальном планировщике.
 #   РЕШЕНИЕ: будет.
 #   4) FD-Scheduling. Страшно. Очень страшно.
-    
-#==============================================================================
-#                          ЛОГИКА SCHEDULER LEGACY
-#==============================================================================
-
-class RoundRobinScheduler_OLD:
-    
-    def __init__(self, lte_grid, bs: BaseStation, 
-                 max_dl_ue_tti: Optional[int] = None,
-                 pcfich: int = 2,
-                 max_dl_cce_allowance: Optional[int] = None,
-                 verbose_pdcch: bool = False):
-
-        self.lte_grid = lte_grid
-        self.lte_grid.SET_BS(bs)
-        self.max_dl_ue_tti = max_dl_ue_tti
-        self.last_served_ue_id = None 
-        #теперь планировщик знает предыдущего обслуженного в tti прользователя
-        #именно через этот метод
-        self.amc = AdaptiveModulationAndCoding()
-        
-        # добавлено. инициализация PDCCH Manager
-        self.pdcch_manager = PDCCHManager(
-            bandwidth = self.lte_grid.bandwidth,
-            pcfich = pcfich,
-            max_dl_cce_allowance = max_dl_cce_allowance,
-            verbose = verbose_pdcch)
-        
-    def schedule(self, tti: int, users: List[Dict]) -> Dict:
-            """
-            Планирование ресурсов с учётом данных в буфере и CQI.
-            
-            Args:
-                tti: Индекс TTI
-                users: Список пользователей с параметрами:
-                    - 'UE_ID': Идентификатор
-                    - 'buffer_size': Размер буфера в байтах
-                    - 'cqi': Индекс качества канала
-                    - 'ue': Объект UserEquipment
-            
-            Returns:
-                Dict: Результаты распределения ресурсов
-            """
-            for user in users:
-                user['ue'].current_dl_throughput = 0
-            
-            # 1. Фильтрация активных пользователей по буферу BS
-            active_users = []
-            for user in users:
-                ue_id = user['UE_ID']
-                bs_buffer = self.lte_grid.bs.ue_buffers.get(ue_id)
-                if not bs_buffer:
-                    continue
-                    
-                buffer_status = bs_buffer.GET_UE_STATUS(tti)['per_ue'].get(ue_id, {})
-                buffer_size = buffer_status.get('size', 0)
-                
-                if buffer_size > 0 and 1 <= user['cqi'] <= 15:
-                    active_users.append(user)
-                    user['bs_buffer_size'] = buffer_size
-            
-            if not active_users:
-                return {'allocation': {}, 
-                        'statistics': {}, 
-                        'bitmap': {}, 
-                        'pdcch_stats': self.pdcch_manager.get_stats()}
-        
-        
-            # 2. Определение стартового индекса планирования
-            if self.last_served_ue_id is None:
-                # Первый запуск, начинаем с 0
-                start_idx = 0
-            else:
-                # Ищем последнего обслуженного пользователя в новом списке активных
-                found_idx = -1
-                for i, user in enumerate(active_users):
-                    if user['UE_ID'] == self.last_served_ue_id:
-                        found_idx = i
-                        break
-                        
-                # Начинаем со следующего пользователя после последнего обслуженного
-                if found_idx == -1:
-                    # Если не нашли пользователя, начинаем с 0
-                    start_idx = 0
-                else:
-                    # Если нашли, берем следующего
-                    start_idx = (found_idx + 1) % len(active_users)
-
-            # 3. Создание списка пользователей для планирования с учетом лимитов
-            if self.max_dl_ue_tti is not None:
-                scheduled_count = min(self.max_dl_ue_tti, len(active_users))
-                scheduled_users = []
-                idx = start_idx
-                for _ in range(scheduled_count):
-                    scheduled_users.append(active_users[idx])
-                    idx = (idx + 1) % len(active_users)
-            else:
-                scheduled_users = active_users
-
-            # 4. Обработка выделения ресурсов PDCCH.
-            #TODO: Вынести логику планирования PDCCH в отедльный метод
-            
-            self.pdcch_manager.reset_tti()
-            scheduled_users_with_pdcch = []
-            
-            for user in scheduled_users:
-                cqi = user['cqi']
-                ue_id = user['UE_ID']
-                
-                required_cce = self.pdcch_manager.get_aggregation_level(cqi)
-                
-                if self.pdcch_manager.allocate_cce(ue_id, required_cce):
-                    scheduled_users_with_pdcch.append(user)
-                    user['allocated_cce'] = required_cce
-                    # успешное выделение
-                else:
-                    continue
-                
-            scheduled_users = scheduled_users_with_pdcch
-            
-            if not scheduled_users:
-                return {'allocation': {}, 
-                        'statistics': {}, 
-                        'bitmap': {}, 
-                        'pdcch_stats': self.pdcch_manager.get_stats()}
-            
-            # 5. Расчет параметров планирования и инициализация структур
-            rbg_size = self.lte_grid.GET_RBG_SIZE()
-            total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size            
-
-            allocation = {user['UE_ID']: [] for user in active_users}
-            remaining_buffer = {user['UE_ID']: user['bs_buffer_size'] * 8 for user in scheduled_users} 
-            last_allocated_ue_id = None
-            current_idx = 0
-
-            # 6. Основной цикл распределения по RBG
-            for rbg_idx in range(total_rbg):
-                if all(v <= 0 for v in remaining_buffer.values()):
-                    break
-        
-                # Поиск следующего пользователя с данными
-                initial_idx = current_idx
-                while remaining_buffer[scheduled_users[current_idx]['UE_ID']] <= 0:
-                    current_idx = (current_idx + 1) % len(scheduled_users)
-                    if current_idx == initial_idx:
-                        break
-                
-                # Получаем текущего пользователя и выделяем RBG
-                user = scheduled_users[current_idx]
-                ue_id = user['UE_ID']
-                
-                # Цикл распределения RBG только если в буфере еще есть данные
-                if remaining_buffer[ue_id] > 0:
-                    if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, ue_id):
-                        # Получаем индексы ресурсных блоков в группе
-                        rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
-                        allocation[ue_id].extend(rb_indices)
-                        last_allocated_ue_id = ue_id
-                    
-                # Уменьшает размер буфера в соотв. с емкостью RBG
-                        bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
-                        rbg_capacity = len(rb_indices) * bits_per_rb * 2
-                        remaining_buffer[ue_id] -= min(remaining_buffer[ue_id], rbg_capacity)
-
-                # 7. Переход к следующему пользователю
-                current_idx = (current_idx + 1) % len(scheduled_users)
-                
-            # 8. Обновление индекса последнего обслуженного UE
-            if last_allocated_ue_id is not None:
-                self.last_served_ue_id = last_allocated_ue_id
-                
-            # 9. Обработка буфера и статистики
-            for user in users:
-                ue = user['ue']
-                ue_id = user['UE_ID'] #да, эта часть кода странная, но только после этого все заработало
-                bs_buffer = self.lte_grid.bs.ue_buffers.get(ue_id)                
-                if not bs_buffer:
-                    continue
-                
-                allocated_rb = len(allocation.get(user['UE_ID'], [])) * 2
-                bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
-                max_bytes = (allocated_rb * bits_per_rb) // 8  #rbg_capacity // 8??
-
-                #Если пользователь неактивен, передаём 0 байт
-                packets, total = bs_buffer.GET_PACKETS(
-                    ue_id=ue_id,
-                    max_bytes=max_bytes,
-                    bits_per_rb=bits_per_rb,
-                    current_time=tti
-                )               
-            # Обновление метрик DL
-                ue.UPD_DL_THROUGHPUT_BPS(total * 8, 1)                
-    
-        # 10. Формирование bitmap
-            bitmap = {user['UE_ID']: self.lte_grid.GENERATE_BITMAP(tti, user['UE_ID']) for user in active_users}
-            pdcch_stats = self.pdcch_manager.get_stats()
-            
-            return {
-                'allocation': allocation,
-                'statistics': self.amc.calculate_throughput(allocation, users, tti, self.lte_grid.bs),
-                'bitmap': bitmap,
-                'pdcch_stats': pdcch_stats #,
-                #'dl_throughput': {user['UE_ID']: user['ue'].current_dl_throughput for user in users}
-            }
-        
-    #@sherokiddo в рамках оптимизации можно разбить весь планировщик на несколько методов
-    #для удобного логирования и подсчета времени. Например - подготовка данных один метод
-    #затем идет непосредственно все планирование, и метод формирования статистики
-
-class BestCQIScheduler_OLD:
-    
-    def __init__(self, lte_grid, bs: BaseStation, 
-                 max_dl_ue_tti: Optional[int] = None,
-                 pcfich: int = 2,
-                 max_dl_cce_allowance: Optional[int] = None,
-                 verbose_pdcch: bool = False):
-
-        self.lte_grid = lte_grid
-        self.lte_grid.SET_BS(bs)
-        self.max_dl_ue_tti = max_dl_ue_tti
-        self.amc = AdaptiveModulationAndCoding() 
-
-        self.pdcch_manager = PDCCHManager(
-            bandwidth=self.lte_grid.bandwidth,
-            pcfich=pcfich,
-            max_dl_cce_allowance=max_dl_cce_allowance,
-            verbose=verbose_pdcch
-        )
-    
-    def schedule(self, tti: int, users: List[Dict]) -> Dict:
-        """
-        Планирование ресурсов с учётом данных в буфере и CQI.
-        
-        Args:
-            tti: Индекс TTI
-            users: Список пользователей с параметрами:
-                - 'UE_ID': Идентификатор
-                - 'buffer_size': Размер буфера в байтах
-                - 'cqi': Индекс качества канала
-                - 'ue': Объект UserEquipment
-        
-        Returns:
-            Dict: Результаты распределения ресурсов
-        """
-        for user in users:
-            user['ue'].current_dl_throughput = 0
-        
-        # 1. Фильтрация активных пользователей
-        active_users = []
-        for user in users:
-            ue_id = user['UE_ID']
-            bs_buffer = self.lte_grid.bs.ue_buffers.get(ue_id)
-            if not bs_buffer:
-                continue
-            
-            buffer_status = bs_buffer.GET_UE_STATUS(tti)['per_ue'].get(ue_id, {})
-            buffer_size = buffer_status.get('size', 0)
-            
-            if buffer_size > 0 and 1 <= user['cqi'] <= 15:
-                active_users.append(user)
-                user['bs_buffer_size'] = buffer_size
-
-        if not active_users:
-            return {'allocation': {},
-                    'statistics': {},
-                    'bitmap': {},
-                    'pdcch_stats': self.pdcch_manager.get_stats()}
-
-        # 2. Сортируем список по CQI
-        active_users.sort(key=lambda u: u['cqi'], reverse=True)
-
-        # 3. Создание списка пользователей для планирования с учетом лимитов
-        if self.max_dl_ue_tti is not None:
-            scheduled_count = min(self.max_dl_ue_tti, len(active_users))
-            scheduled_users = active_users[:scheduled_count]
-        else:
-            scheduled_users = active_users
-
-        # 4. Расчет параметров планирования и инициализация структур
-        self.pdcch_manager.reset_tti()
-        rbg_size = self.lte_grid.GET_RBG_SIZE()
-        total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size
-
-        allocation = {user['UE_ID']: [] for user in active_users}
-        remaining_buffer = {user['UE_ID']: user['bs_buffer_size'] * 8 for user in scheduled_users}
-        
-        pdcch_allocated_ues = set()
-
-        # 5. Основной цикл распределения RBG
-        for rbg_idx in range(total_rbg):
-            if all(v <= 0 for v in remaining_buffer.values()):
-                break
-            
-            # фильтрация пользователей с данными в буфере (удалена лишняя сортировка по CQI)
-            best_user = None
-            for user in scheduled_users:
-                if remaining_buffer[user['UE_ID']] > 0:
-                    best_user = user
-                    break
-            
-            if best_user is None:
-                break
-
-            ue_id = best_user['UE_ID']
-            
-            if ue_id not in pdcch_allocated_ues:
-                required_cce = self.pdcch_manager.get_aggregation_level(best_user['cqi'])
-                
-                # Попытка выделить CCE
-                if not self.pdcch_manager.allocate_cce(ue_id, required_cce):
-                    # PDCCH недоступен → блокируем этого UE
-                    # Обнуляем буфер чтобы не выбирать его снова
-                    remaining_buffer[ue_id] = 0
-                    continue
-                
-                # PDCCH успешно выделен → добавляем в трекинг
-                pdcch_allocated_ues.add(ue_id)
-                best_user['allocated_cce'] = required_cce  # Для статистики            
-            
-            # выделение RBG
-            if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, ue_id):
-                rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
-                allocation[ue_id].extend(rb_indices)
-                
-                # Уменьшаем размер буфера в соотв. с емкостью RBG
-                bits_per_rb = self.amc.GET_BITS_PER_RB(best_user['cqi'])
-                rbg_capacity = len(rb_indices) * bits_per_rb * 2
-                remaining_buffer[ue_id] -= min(remaining_buffer[ue_id], rbg_capacity)
-   
-        # 6. Обработка буфера и статистики
-        for user in users:
-            ue = user['ue']
-            ue_id = user['UE_ID']
-            bs_buffer = self.lte_grid.bs.ue_buffers.get(ue_id)
-            if not bs_buffer:
-                continue
-            
-            allocated_rb = len(allocation.get(user['UE_ID'], [])) * 2
-            bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
-            max_bytes = (allocated_rb * bits_per_rb) // 8
-            
-            packets, total = bs_buffer.GET_PACKETS(
-                ue_id=ue_id,
-                max_bytes=max_bytes,
-                bits_per_rb=bits_per_rb,
-                current_time=tti
-            )
-            
-            # Обновление метрик DL
-            ue.UPD_DL_THROUGHPUT_BPS(total * 8, 1)
-   
-        # 7. Формирование bitmap
-        bitmap = {user['UE_ID']: self.lte_grid.GENERATE_BITMAP(tti, user['UE_ID']) for user in active_users}
-        pdcch_stats = self.pdcch_manager.get_stats()
-        
-        return {
-            'allocation': allocation,
-            'statistics': self.amc.calculate_throughput(allocation, users, tti, self.lte_grid.bs),
-            'bitmap': bitmap,
-            'pdcch_stats': pdcch_stats#,
-            #'dl_throughput': {user['UE_ID']: user['ue'].current_dl_throughput for user in users}
-        }
-    
-    #@sherokiddo в рамках оптимизации можно разбить весь планировщик на несколько методов
-    #для удобного логирования и подсчета времени. Например - подготовка данных один метод
-    #затем идет непосредственно все планирование, и метод формирования статистики
-
-class ProportionalFairScheduler_OLD:
-    
-    def __init__(self, lte_grid, bs: BaseStation, 
-                 max_dl_ue_tti: Optional[int] = None,
-                 pcfich: int = 2,
-                 max_dl_cce_allowance: Optional[int] = None,
-                 verbose_pdcch: bool = False):
-        super().__init__(lte_grid, max_dl_ue_tti)
-        self.lte_grid = lte_grid
-        self.lte_grid.SET_BS(bs)
-        self.max_dl_ue_tti = max_dl_ue_tti
-        self.amc = AdaptiveModulationAndCoding()
-        
-        self.pdcch_manager = PDCCHManager(
-            bandwidth=self.lte_grid.bandwidth,
-            pcfich=pcfich,
-            max_dl_cce_allowance=max_dl_cce_allowance,
-            verbose=verbose_pdcch)
-        
-    def calculate_pf_metric(self, user: List[Dict]):
-        """
-        Расчёт PF-метрики для каждого пользователя.
-        
-        Args:
-            user: словарь с параметрами пользователя
-        Returns:
-            pf_metric: просто значение PF-метрики
-        """
-        bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
-        rb_per_slot = self.lte_grid.rb_per_slot
-        instant_throughput = rb_per_slot * bits_per_rb * 2 * 1000
-
-        avg_throughput = user['ue'].average_throughput
-        if avg_throughput <= 0:
-            avg_throughput = 1e-6
-            
-        pf_metric = instant_throughput / avg_throughput
-
-        return pf_metric
-            
-    def schedule(self, tti: int, users: List[Dict]) -> Dict:
-        """
-        Планирование ресурсов с учётом данных в буфере и CQI.
-        
-        Args:
-            tti: Индекс TTI
-            users: Список пользователей с параметрами:
-                - 'UE_ID': Идентификатор
-                - 'buffer_size': Размер буфера в байтах
-                - 'cqi': Индекс качества канала
-                - 'ue': Объект UserEquipment
-        
-        Returns:
-            Dict: Результаты распределения ресурсов
-        """
-        for user in users:
-            user['ue'].current_dl_throughput = 0
-            
-        # 1. Фильтрация активных пользователей по буферу
-        active_users = []
-        for user in users:
-            ue_id = user['UE_ID']
-            bs_buffer = self.lte_grid.bs.ue_buffers.get(ue_id)
-            if not bs_buffer:
-                continue
-            buffer_status = bs_buffer.GET_UE_STATUS(tti)['per_ue'].get(ue_id, {})
-            buffer_size = buffer_status.get('size', 0)
-            if buffer_size > 0 and 1 <= user['cqi'] <= 15:
-                active_users.append(user)
-                user['bs_buffer_size'] = buffer_size
-
-        if not active_users:
-            return {'allocation': {},
-                    'statistics': {},
-                    'bitmap': {},
-                    'pdcch_stats': self.pdcch_manager.get_stats()}
-        
-        # 2. Расчёт и сортировка UE согласно PF-метрики
-        for user in active_users:
-            user['pf_metric'] = self.calculate_pf_metric(user)
-        active_users.sort(key=lambda u: u['pf_metric'], reverse=True)
-        
-        if self.max_dl_ue_tti is not None:
-            scheduled_users =  active_users[:self.max_dl_ue_tti]
-        else:
-            scheduled_users = active_users
-        
-        # 3. Логика выделения PDCCH
-        # Логика сделана так. PDCCH и PDSCH выделяются как
-        # В продвинутых планировщиках - принцип "concurrently"
-        self.pdcch_manager.reset_tti()
-
-        rbg_size = self.lte_grid.GET_RBG_SIZE()
-        total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size
-        
-        allocation = {user['UE_ID']: [] for user in active_users}
-        remaining_buffer = {user['UE_ID']: user['bs_buffer_size'] * 8 for user in scheduled_users}
-        
-        pdcch_allocated_ues = set()
-        
-        # 4. Основной цикл распределения RBG
-        for rbg_idx in range(total_rbg):
-            if all(v <= 0 for v in remaining_buffer.values()):
-                break
-            
-            # фильтрация пользователей с данными в буфере (по PF-метрике)
-            best_user = None
-            for user in scheduled_users:
-                if remaining_buffer[user['UE_ID']] > 0:
-                    best_user = user
-                    break
-            
-            if best_user is None:
-                break
-
-            ue_id = best_user['UE_ID']
-            
-            if ue_id not in pdcch_allocated_ues:
-                required_cce = self.pdcch_manager.get_aggregation_level(best_user['cqi'])
-                
-                if not self.pdcch_manager.allocate_cce(ue_id, required_cce):
-                    remaining_buffer[ue_id] = 0
-                    continue
-            pdcch_allocated_ues.add(ue_id)
-            best_user['allocated_cce'] = required_cce
-            
-            # 5. Выделение RBG
-            if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, ue_id):
-                rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
-                allocation[ue_id].extend(rb_indices)
-                
-                # 6. Обновление буфера
-                bits_per_rb = self.amc.GET_BITS_PER_RB(best_user['cqi'])
-                rbg_capacity = len(rb_indices) * bits_per_rb * 2
-                remaining_buffer[ue_id] -= min(remaining_buffer[ue_id], rbg_capacity)
-        
-        # 7. Обработка буфера и статистики
-        for user in users:
-            ue = user['ue']
-            ue_id = user['UE_ID']
-            bs_buffer = self.lte_grid.bs.ue_buffers.get(ue_id)
-            if not bs_buffer:
-                continue
-            
-            allocated_rb = len(allocation.get(user['UE_ID'], [])) * 2
-            bits_per_rb = self.amc.GET_BITS_PER_RB(user['cqi'])
-            max_bytes = (allocated_rb * bits_per_rb) // 8
-            packets, total = bs_buffer.GET_PACKETS(
-                ue_id=ue_id,
-                max_bytes=max_bytes,
-                bits_per_rb=bits_per_rb,
-                current_time=tti
-            )
-            
-            # Обновление метрик DL
-            ue.UPD_DL_THROUGHPUT_BPS(total * 8, 1)
-
-            average_throughput_past = ue.average_throughput
-            ue.average_throughput = (1 - 0.2) * average_throughput_past + 0.2 * ue.current_dl_throughput 
-
-        # 11. Формирование bitmap по Resource Allocation 0
-        bitmap = {user['UE_ID']: self.lte_grid.GENERATE_BITMAP(tti, user['UE_ID']) for user in active_users}
-        pdcch_stats = self.pdcch_manager.get_stats()
-        
-        return {
-            'allocation': allocation,
-            'statistics': self.amc.calculate_throughput(allocation, users, tti, self.lte_grid.bs),
-            'bitmap': bitmap,
-            'pdcch_stats': pdcch_stats#,
-            #'dl_throughput': {user['UE_ID']: user['ue'].current_dl_throughput for user in users}
-        }    

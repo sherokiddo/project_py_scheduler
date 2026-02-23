@@ -248,7 +248,7 @@ def chmdl_test():
     # Установка планировщика. Можно передвать параметры, которые
     # поддерживает SchedulerInterface.
     sim.set_scheduler(
-        algorithm="FD_BCQI",
+        algorithm="FD_RR",
         max_dl_ue_tti=None,
         pcfich=2,
         enable_window=False,
