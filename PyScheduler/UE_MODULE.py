@@ -589,7 +589,7 @@ class UserEquipment:
         )
 
         # EWMA обновление average_throughput для Proportional Fair
-        alpha = 0.001  # временный хардкод, вывести в управление.
+        alpha = 0.002  # временный хардкод, вывести в управление.
         average_throughput_past = self.average_throughput
         self.average_throughput = (
             1 - alpha
@@ -616,7 +616,7 @@ class UserEquipment:
         )
 
         # EWMA обновление average_throughput для Proportional Fair
-        alpha = 0.001  # временный хардкод, вывести в управление.
+        alpha = 0.002  # временный хардкод, вывести в управление.
         average_throughput_past = self.average_throughput
         self.average_throughput = (
             1 - alpha
@@ -627,6 +627,8 @@ class UserEquipment:
 
         # Обновление общей статистики
         self.total_dl_transmitted_bits += bits_dl_transmitted
+
+        #TODO: Сделать ручку для регулирования порога EWMA (alpha=) в симуляции
 
     def UPD_BUFFER(self, current_time: int):
         """Обновление задержки пакетов в буфере"""

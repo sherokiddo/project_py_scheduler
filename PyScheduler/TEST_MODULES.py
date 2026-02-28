@@ -119,88 +119,7 @@ def print_users_stats(ue_collection: UECollection, tti: int, bs: BaseStation, sc
         print(f"\tСмещение            : {displacement} m")
         print("-" * 40)
 
-
 def sim_with_manager():
-    """
-    Пример запуска симуляции с использованием менеджера.
-
-    """
-    # =============================================================================
-    #             НАСТРОЙКА БАЗОВОЙ СТАНЦИИ И КОЛЛЕКЦИИ ПОЛЬЗОВАТЕЛЕЙ
-    # =============================================================================
-
-    # Создание и настройка базовой станции
-    bs = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMa")
-
-    # Создание коллекции пользовательских устройств
-    ue_collection = UECollection()
-
-    # Установка сида
-    GLOBALS.SEED = 42
-
-    if GLOBALS.SEED is not None:
-        np.random.seed(GLOBALS.SEED)   # покрывает numpy
-
-    # Генерация заданного числа UE в коллекцию
-    ue_collection.ADD_RANDOM_USERS(num_ue=5)
-
-    MapBorders(-1000, 1000, -1000, 1000)
-
-    # Установка модели передвижения для всех пользователей коллекции
-    ue_collection.SET_MOBILITY_MODEL("RandomWaypoint")
-
-    # Регистрация всех пользователей коллекции в базовой станции
-    ue_collection.REG_USERS_TO_BS(bs)
-
-    # =============================================================================
-    #                        НАСТРОЙКА МЕНЕДЖЕРА СИМУЛЯЦИИ
-    # =============================================================================
-
-    # Создание менеджера симуляции
-    sim = SimulationManager()
-
-    # Установка базовой станции
-    sim.set_base_station(bs)
-
-    # Установка коллекции пользователей
-    sim.set_ue_collection(ue_collection)
-
-    # Установка планировщика. Можно передвать параметры, которые
-    # поддерживает SchedulerInterface.
-    sim.set_scheduler(algorithm="RoundRobin")
-
-    # Настраиваем модели для каждого UE
-    for ue in ue_collection.GET_ALL_USERS():
-        print(f"Setup UE: {ue.UE_ID} traffic (SimpleGenerator)")
-        sim.setup_ue_traffic(
-            ue_id=ue.UE_ID,
-            model_type="Poisson",
-            packet_rate=1000,
-        )
-
-    # Установка длительности симуляции
-    sim.set_sim_duration(5000)
-
-    # Включение verbose логирования. Для вывода всех логов в файл нужно
-    # поставить флаг to_file=True.
-    sim.enable_verbose_log()
-
-    # Установка менеджера статистики
-    sim.set_stats_manager(
-        enabled=True,  # Включить сбор
-        collect_interval=1,  # Собирать каждые 10 TTI
-        history_max_len=5000,
-        scheduler_level="full",  # Scheduler: только агрегированные метрики
-        amc_level="full",  # AMC: total throughput + avg bits/RB
-        pdcch_level="basic",  # PDCCH: отключен (можно включить "basic")
-        file_prefix="emp_stats",  # Префикс файла: lte_stats.csv
-    )
-
-    # Запуск симуляции
-    sim.start_simulation()
-
-
-def chmdl_test():
     """
     Тестовый стенд для проверки работоспособности моделей канала
 
@@ -222,7 +141,7 @@ def chmdl_test():
         np.random.seed(GLOBALS.SEED)   # покрывает numpy
 
     # Генерация заданного числа UE в коллекцию
-    ue_collection.ADD_RANDOM_USERS(num_ue=5)
+    ue_collection.ADD_RANDOM_USERS(num_ue=4)
 
     MapBorders(-1000, 1000, -1000, 1000)
 
@@ -266,7 +185,7 @@ def chmdl_test():
         )
 
     # Установка длительности симуляции
-    sim.set_sim_duration(5000)
+    sim.set_sim_duration(10000)
 
     # Включение verbose логирования. Для вывода всех логов в файл нужно
     # поставить флаг to_file=True.
@@ -276,7 +195,7 @@ def chmdl_test():
     sim.set_stats_manager(
         enabled=True,  # Включить сбор
         collect_interval=1,  # Собирать каждые n TTI
-        history_max_len=5000,
+        history_max_len=10000,
         scheduler_level="full",  # Scheduler: только агрегированные метрики
         amc_level="full",  # AMC: total throughput + avg bits/RB
         pdcch_level="full",  # PDCCH: отключен (можно включить "basic")
@@ -299,5 +218,4 @@ def chmdl_test():
 if __name__ == "__main__":
     # debug_simulation()
     # sim_with_ue_collection()
-    # sim_with_manager()
-    chmdl_test()
+    sim_with_manager()
