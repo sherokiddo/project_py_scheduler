@@ -128,6 +128,11 @@ def sim_with_manager():
     #             НАСТРОЙКА БАЗОВОЙ СТАНЦИИ И КОЛЛЕКЦИИ ПОЛЬЗОВАТЕЛЕЙ
     # =============================================================================
 
+    # Сброс и создание карты
+    MapBorders._instance = None
+    MapBorders(-500, 500, -500, 500)
+    x_min, x_max, y_min, y_max = MapBorders().get_borders()
+
     # Создание и настройка базовой станции
     bs1 = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMa", enable_tdl=True)
 
@@ -135,18 +140,23 @@ def sim_with_manager():
     ue_collection = UECollection()
 
     # Установка сида
-    GLOBALS.SEED = 24
+    GLOBALS.SEED = 42
 
     if GLOBALS.SEED is not None:
         np.random.seed(GLOBALS.SEED)   # покрывает numpy
 
     # Генерация заданного числа UE в коллекцию
-    ue_collection.ADD_RANDOM_USERS(num_ue=4)
+    ue_collection.ADD_RANDOM_USERS(num_ue=5,
+                                   x_min=x_min,
+                                   x_max=x_max,
+                                   y_min=y_min,
+                                   y_max=y_max,
+                                   ue_class="random")
 
-    MapBorders(-1000, 1000, -1000, 1000)
+    #TODO: Объединить MapBorders c рандомизацией UE
 
     # Установка модели передвижения для всех пользователей коллекции
-    ue_collection.SET_MOBILITY_MODEL("RandomWaypoint", bs=bs1, pause_time=0)
+    ue_collection.SET_MOBILITY_MODEL("RandomWaypoint", bs=bs1, pause_time = 0)
 
     # Регистрация всех пользователей коллекции в базовой станции
     ue_collection.REG_USERS_TO_BS(bs1)
@@ -167,7 +177,7 @@ def sim_with_manager():
     # Установка планировщика. Можно передвать параметры, которые
     # поддерживает SchedulerInterface.
     sim.set_scheduler(
-        algorithm="FD_RR",
+        algorithm="RoundRobin",
         max_dl_ue_tti=None,
         pcfich=2,
         enable_window=False,
@@ -177,15 +187,17 @@ def sim_with_manager():
 
     # Настраиваем модели для каждого UE
     for ue in ue_collection.GET_ALL_USERS():
-        print(f"Setup UE: {ue.UE_ID} traffic (SimpleGenerator)")
+        #print(f"Setup UE: {ue.UE_ID} traffic (SimpleGenerator)")
         sim.setup_ue_traffic(
             ue_id=ue.UE_ID,
             model_type="Poisson",
-            packet_rate=10000,
+            packet_rate=5000,
         )
 
     # Установка длительности симуляции
-    sim.set_sim_duration(10000)
+    sim.set_sim_duration(50000)
+    sim.set_mobility_interval(500)
+    sim.set_channel_interval(10)
 
     # Включение verbose логирования. Для вывода всех логов в файл нужно
     # поставить флаг to_file=True.
@@ -195,7 +207,7 @@ def sim_with_manager():
     sim.set_stats_manager(
         enabled=True,  # Включить сбор
         collect_interval=1,  # Собирать каждые n TTI
-        history_max_len=10000,
+        history_max_len=50000,
         scheduler_level="full",  # Scheduler: только агрегированные метрики
         amc_level="full",  # AMC: total throughput + avg bits/RB
         pdcch_level="full",  # PDCCH: отключен (можно включить "basic")
@@ -207,11 +219,15 @@ def sim_with_manager():
 
     # Визуализация передвижения пользователей
     visualize_users_mobility(
-        ue_collection=ue_collection, bs=bs1, x_min=-1000, x_max=1000, y_min=-1000, y_max=1000
-    )
+        ue_collection=ue_collection,
+        bs=bs1,
+        x_min=x_min,
+        x_max=x_max,
+        y_min=x_min,
+        y_max=y_max)
     # Визуализация SINR пользователей во времени
     visualize_users_sinr(
-        ue_collection=ue_collection, sim_duration=sim.sim_config.sim_duration, update_interval=100
+        ue_collection=ue_collection, sim_duration=sim.sim_config.sim_duration, update_interval=10
     )
 
 

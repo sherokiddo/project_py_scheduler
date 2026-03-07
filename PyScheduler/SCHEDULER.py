@@ -255,7 +255,7 @@ class SchedulerInterface:
             'ProportionalFair': ProportionalFairScheduler,
             'RoundRobin':       RoundRobinScheduler,
             'FD_BCQI':          FDxBestCQIScheduler,
-            'FD_RR':            FDxRoundRobinScheduler,
+            'FD_FGS':           FDxFairGreedyScheduler,
             'FD_PF':            FDxProportionalFairScheduler,
             }
 
@@ -281,7 +281,7 @@ class SchedulerInterface:
                 'ProportionalFair',
                 'RoundRobin',
                 'FD_BestCQI',
-                'FD_RR',
+                'FD_FGS',
                 'FD_FF',
                 ]
 
@@ -320,6 +320,7 @@ class SchedulerInterface:
         self._last_priority_calc_time_us = 0.0
         self._last_priority_sort_time_us = 0.0
         self._last_priority_list_size = 0
+        self._last_priority_list_full = []
         self._last_avg_priority_value = 0.0
         self._last_pdcch_blocked_count = 0
 
@@ -369,7 +370,7 @@ class SchedulerInterface:
         # ЭТАП 2.5: Window filtering
         windowed_ues = self.filter_by_window(eligible_ues)
         if not windowed_ues:
-            return self.empty_result()
+            return self._empty_result()
 
         # ЭТАП 3: Priority calculation
         t_priority_start = time.perf_counter()
@@ -596,7 +597,7 @@ class SchedulerInterface:
 
         # verbose
         if self.verbose:
-            print(f"[SCHEDULER TTI {tti}] Eligibility: {len(users)} total → {len(eligible)} eligible")
+            print(f"[SCHEDULER TTI {tti}] Eligibility: {len(users)} total -> {len(eligible)} eligible")
 
         return eligible
 
@@ -792,7 +793,7 @@ class SchedulerInterface:
         # verbose
         if self.verbose:
             blocked_count = len(priority_list) - len(ues_with_pdcch)
-            print(f"[SCHEDULER] PDCCH allocation: {len(priority_list)} requested → {len(ues_with_pdcch)} allocated")
+            print(f"[SCHEDULER] PDCCH allocation: {len(priority_list)} requested -> {len(ues_with_pdcch)} allocated")
 
             if blocked_count > 0:
                 allocated_ids = {u['UE_ID'] for u in ues_with_pdcch}
@@ -994,6 +995,7 @@ class SchedulerInterface:
             print("[SCHEDULER] Empty result: No UE to schedule")
         #TODO: можно добавить *reason чтобы возвращал в консоль причину
 
+        self._last_priority_list_full = []
         self._update_stats(self._last_tti, 0, 0, 0)
         self._last_allocation = {}
         self._last_users = []
@@ -1401,7 +1403,7 @@ class PDCCHManager:
             aggregation_level = 8
 
         if self.verbose:
-            print(f"[PDCCH] CQI={cqi} → Aggregation Level={aggregation_level} CCE")
+            print(f"[PDCCH] CQI={cqi} -> Aggregation Level={aggregation_level} CCE")
 
         return aggregation_level
 
@@ -1429,10 +1431,10 @@ class PDCCHManager:
         if self.verbose:
             if is_available:
                 print(f"[PDCCH] Check: {required_cce} CCE requested, "
-                      f"{available_cce} available → ✅ ALLOCATED")
+                      f"{available_cce} available -> ✅ ALLOCATED")
             else:
                 print(f"[PDCCH] Check: {required_cce} CCE requested, "
-                      f"{available_cce} available → ❌ INSUFFICIENT")
+                      f"{available_cce} available -> ❌ INSUFFICIENT")
 
         return is_available
 
@@ -2279,9 +2281,9 @@ class FDxBestCQIScheduler(SchedulerInterface):
 
         return allocation
 
-class FDxRoundRobinScheduler(SchedulerInterface):
+class FDxFairGreedyScheduler(SchedulerInterface):
     """
-    Greedy Sequential Round Robin Scheduler
+    Channel-Aware Per-round Greedy FD Scheduler
     Объединяет долгосрочную справедливость с частотной селективностью
     Формирует очередь в TD из обслуживаемых UE, затем последовательно
     выделяет RBG UE с лучшим CQI для текущего RBG, убирая его из очереди
@@ -2329,14 +2331,14 @@ class FDxRoundRobinScheduler(SchedulerInterface):
             List[Dict]: Тот же priority_list без изменений
         """
         if self.verbose:
-            print(f"[SCHEDULER TTI {tti}] PDSCH estimation: SKIPPED (FD-RR per-RBG selection)")
+            print(f"[SCHEDULER TTI {tti}] PDSCH estimation: SKIPPED (FD-FGS per-RBG selection)")
             print(f"[SCHEDULER TTI {tti}] After estimation: {len(priority_list)} UE selected, 0 UE excluded")
 
         return priority_list
 
     def _calculate_priorities(self, windowed_ues: List[Dict], tti: int) -> List[Dict]:
         """
-        RR-ротация: назначаем нисходящие приоритеты начиная с rr_ue_offset.
+        Round-ротация: назначаем нисходящие приоритеты начиная с rr_ue_offset.
 
         Приоритет используется в form_priority_list для сортировки, что даёт
         base_queue в _allocate_pdsch уже в правильном RR-порядке.
@@ -2359,7 +2361,7 @@ class FDxRoundRobinScheduler(SchedulerInterface):
 
         if self.verbose:
             top_ue = rotated_ues[0]['UE_ID']
-            print(f"[SCHEDULER.FDxRoundRobin TTI {tti}] Priority: Rotated (start UE {top_ue}, offset={self.rr_ue_offset})")
+            print(f"[SCHEDULER.FDxFGS TTI {tti}] Priority: Rotated (start UE {top_ue}, offset={self.rr_ue_offset})")
 
         return rotated_ues
 
@@ -2459,7 +2461,7 @@ class FDxRoundRobinScheduler(SchedulerInterface):
         if self.verbose:
             allocated_ues = sum(1 for rbs in allocation.values() if len(rbs) > 0)
             total_rb      = sum(len(rbs) for rbs in allocation.values())
-            print(f"[SCHEDULER.FDхRoundRobin TTI {tti}] PDSCH: {allocated_ues} UE, {total_rb} RB total "
+            print(f"[SCHEDULER.FDхFGS TTI {tti}] PDSCH: {allocated_ues} UE, {total_rb} RB total "
                   f"(next_offset={self.rr_rbg_offset})")
 
         return allocation
