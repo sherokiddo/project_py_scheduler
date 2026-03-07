@@ -63,12 +63,22 @@ class MapBorders:
         for val in [x_min, x_max, y_min, y_max]:
             if val is not None and not isinstance(val, (int, float)):
                 raise TypeError("Границы карты должны быть числами")
+        if x_min is not None:
+            if x_max <= x_min:
+                raise ValueError("x_max должен быть больше x_min")
+
         if cls._instance is None:
+            if any(v is None for v in (x_min, x_max, y_min, y_max)):
+                raise RuntimeError(
+                    "MapBorders не инициализированы. "
+                    "Вызовите MapBorders(x_min, x_max, y_min, y_max) перед созданием модели."
+                )
             cls._instance = super().__new__(cls)
             cls._instance.x_min = x_min
             cls._instance.x_max = x_max
             cls._instance.y_min = y_min
             cls._instance.y_max = y_max
+
         return cls._instance
 
     def get_borders(self):
@@ -83,6 +93,10 @@ class MapBorders:
         """
         return (self.x_min, self.x_max, self.y_min, self.y_max)
 
+    @classmethod
+    def reset(cls):
+        """Сброс синглтона (для тестов и повторных запусков)"""
+        cls._instance = None
 
 class MobilityInterface:
     """
@@ -124,6 +138,29 @@ class MobilityInterface:
         """
         raise NotImplementedError("Модель обязательно должна иметь метод update()")
 
+    def _apply_boundary_reflection(
+        self, x: float, y: float
+    ) -> Tuple[float, float]:
+        """
+        Физически корректная рефлексия для произвольного смещения.
+        Работает при любом time_ms — обрабатывает многократное
+        пересечение границ через зигзаг-нормализацию.
+        """
+        w = self.x_max - self.x_min
+        h = self.y_max - self.y_min
+
+        x_fold = (x - self.x_min) % (2 * w)
+        if x_fold > w:
+            x_fold = 2 * w - x_fold
+        x = self.x_min + x_fold
+
+        y_fold = (y - self.y_min) % (2 * h)
+        if y_fold > h:
+            y_fold = 2 * h - y_fold
+        y = self.y_min + y_fold
+
+        return x, y
+
     def get_models():
         """
         Возвращает словарь доступных моделей.
@@ -149,7 +186,8 @@ class MobilityInterface:
         models = MobilityInterface.get_models()
         if model not in models:
             raise ValueError(
-                f"Unknown model '{model}'. Valid: {', '.join(MobilityInterface.models.keys())}"
+                f"Unknown model '{model}'. "
+                f"Valid: {', '.join(MobilityInterface.get_models().keys())}"
             )
 
         model = models[model]
@@ -205,15 +243,16 @@ class RandomWalkModel(MobilityInterface):
         new_y = current_position[1] + delta_y
         new_direction = current_direction
 
-        if new_x < self.x_min or new_x > self.x_max:
+        hit_x = new_x < self.x_min or new_x > self.x_max
+        hit_y = new_y < self.y_min or new_y > self.y_max
+
+        if hit_x:
             new_direction = np.pi - current_direction
-            new_x = current_position[0] + np.cos(new_direction) * current_velocity * time_s
-
-        if new_y < self.y_min or new_y > self.y_max:
-            new_direction = -current_direction
-            new_y = current_position[1] + np.sin(new_direction) * current_velocity * time_s
-
-        if self.x_min <= new_x <= self.x_max and self.y_min <= new_y <= self.y_max:
+        if hit_y:
+            new_direction = -new_direction
+        if hit_x or hit_y:
+            new_x, new_y = self._apply_boundary_reflection(new_x, new_y)
+        else:
             new_direction = np.random.uniform(0, 2 * np.pi)
 
         new_velocity = np.random.uniform(velocity_min, velocity_max)
@@ -240,9 +279,10 @@ class RandomWaypointModel(MobilityInterface):
         self.pause_time = kwargs.get("pause_time", 5.0)
         self.is_paused = False
         self.pause_timer = 0.0
-        self.destination, _, _, _ = self._choose_new_destination(
-            self.ue.position, self.ue.velocity_min, self.ue.velocity_max
-        )
+        self.destination, self.current_velocity, self.current_direction, _ = \
+            self._choose_new_destination(
+                self.ue.position, self.ue.velocity_min, self.ue.velocity_max
+            )
 
     def _choose_new_destination(
         self, current_position: Tuple[float, float], velocity_min: float, velocity_max: float
@@ -452,7 +492,7 @@ class RandomDirectionModel(MobilityInterface):
         if self.is_paused:
             self.pause_timer += time_ms
             if self.pause_timer >= self.pause_time:
-                self.current_direction, _, self.is_first_move = self._choose_new_direction(
+                self.destination, self.current_velocity, self.current_direction, _, self.is_first_move = self._choose_new_direction(
                     current_position, self.ue.velocity_min, self.ue.velocity_max, self.is_first_move
                 )
                 self.is_paused = False
@@ -564,18 +604,15 @@ class GaussMarkovModel(MobilityInterface):
             + (1 - self.alpha) * mean_direction
             + np.sqrt(1 - self.alpha**2) * np.random.normal(0, 1)
         )
-
+        #FIXME: при определенных условиях vel\dir может стать отрицательной
         new_x = x + new_velocity * np.cos(new_direction) * time_s
         new_y = y + new_velocity * np.sin(new_direction) * time_s
 
         # Если всё же пользователь залез за область симуляции - делаем отскок
-        if new_x < self.x_min or new_x > self.x_max:
-            new_direction = np.pi - current_direction
-            new_x = x + np.cos(new_direction) * current_velocity * time_s
-
-        if new_y < self.y_min or new_y > self.y_max:
-            new_direction = -current_direction
-            new_y = y + np.sin(new_direction) * current_velocity * time_s
+        if new_x < self.x_min or new_x > self.x_max or \
+           new_y < self.y_min or new_y > self.y_max:
+            new_x, new_y = self._apply_boundary_reflection(new_x, new_y)
+            new_direction = np.pi - new_direction
 
         new_position = (new_x, new_y)
 

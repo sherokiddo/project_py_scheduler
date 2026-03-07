@@ -371,6 +371,12 @@ class RES_GRID_LTE:
             return False
         
         rb = self.GET_RB(tti, slot_id, freq_idx)
+        if rb is None:
+            print(f"[DEBUG GRID] GET_RB=None tti={tti} slot_id={slot_id} freq={freq_idx}")
+            return False
+        if not rb.CHCK_RB():
+            print(f"[DEBUG GRID] RB busy tti={tti} slot_id={slot_id} freq={freq_idx} ue={rb.UE_ID}")
+            return False
         if rb and rb.CHCK_RB():
             success = rb.ASSIGN_RB(UE_ID)
             if success:
@@ -423,15 +429,13 @@ class RES_GRID_LTE:
 
     def ALLOCATE_RBG(self, tti: int, rbg_idx: int, UE_ID: int) -> bool:
         rb_indices = self.GET_RBG_INDICES(rbg_idx)
-        success = True
         for slot in [0, 1]:
             slot_id = f"sub_{tti%10}_slot_{slot}"
             for freq in rb_indices:
                 if not self.ALLOCATE_RB(tti, slot_id, freq, UE_ID):
-                    success = False
                     self.RELEASE_RBG(tti, rbg_idx)
-                    break
-        return success
+                    return False
+        return True
 
     def RELEASE_RBG(self, tti: int, rbg_idx: int) -> bool:
         subframe = tti % 10

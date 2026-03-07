@@ -24,6 +24,7 @@
 import csv
 import sys
 import warnings
+import time
 from collections import deque
 from dataclasses import dataclass
 from enum import IntEnum
@@ -36,6 +37,8 @@ from RES_GRID import RES_GRID_LTE
 from SCHEDULER import SchedulerInterface
 from TRAFFIC_MODEL import PacketManager, SimpleGenerator, TrafficType
 from UE_MODULE import UECollection
+from MOBILITY_MODEL import MapBorders
+from tqdm import tqdm
 
 # ==============================================================================
 #                          ОБРАБОТЧИК СТАТИСТИКИ
@@ -651,10 +654,10 @@ class StatsManager:
         sum_throughput = sum(throughputs)
         sum_squared = sum(x**2 for x in throughputs)
 
-        if sum_squared > 0:
-            jain_index = (sum_throughput**2) / (n * sum_squared)
+        if sum_throughput == 0 or sum_squared == 0:
+            jain_index = None
         else:
-            jain_index = 1.0
+            jain_index = (sum_throughput ** 2) / (n * sum_squared)
 
         # Variance and Std
         mean = sum_throughput / n
@@ -662,9 +665,9 @@ class StatsManager:
         std = variance**0.5
 
         return {
-            "dl_fairness_jain_index": round(jain_index, 4),
-            "dl_throughput_variance": round(variance, 2),
-            "dl_throughput_std": round(std, 2),
+            'dl_fairness_jain_index':   round(jain_index, 4) if jain_index is not None else None,
+            'dl_throughput_variance':   round(variance, 2),
+            'dl_throughput_std':        round(std, 2)
         }
 
     def _calculate_std(self, values: list) -> float:
@@ -853,7 +856,13 @@ class SimulationConfig:
 
     sim_duration: Optional[int] = None
     update_interval: int = 1
+    mobility_update_interval: int = 500
+    channel_update_interval: int = 1
     use_legacy_traffic: bool = True
+    map_x_min: float = -500
+    map_x_max: float = 500
+    map_y_min: float = -500
+    map_y_max: float = 500
     stats_log: bool = False
     verbose: bool = False
 
@@ -978,6 +987,50 @@ class SimulationManager:
             )
 
         self.sim_config.update_interval = update_interval
+
+    def set_mobility_interval(self, mobility_update_interval: int) -> None:
+        """
+        Установить интервал обновления позиции UE (модели мобильности).
+
+        Args:
+            mobility_update_interval (int): Интервал в мс. Рекомендуется 100–1000 мс.
+        """
+        if not isinstance(mobility_update_interval, int) or mobility_update_interval <= 0:
+            raise ValueError(
+                f"Интервал обновления мобильности должен быть положительным целым числом. "
+                f"Получено: {mobility_update_interval}"
+            )
+        self.sim_config.mobility_update_interval = mobility_update_interval
+
+    def set_channel_interval(self, channel_update_interval: int) -> None:
+        """
+        Установить интервал обновления качества канала (SINR/CQI).
+
+        Args:
+            channel_update_interval (int): Интервал в мс. Рекомендуется 1–100 мс.
+        """
+        if not isinstance(channel_update_interval, int) or channel_update_interval <= 0:
+            raise ValueError(
+                f"Интервал обновления канала должен быть положительным целым числом. "
+                f"Получено: {channel_update_interval}"
+            )
+        self.sim_config.channel_update_interval = channel_update_interval
+
+    #TODO: возможно эти интервальные сеттеры можно объединить в один метод
+
+    def set_map_borders(self, x_min: float, x_max: float,
+                        y_min: float, y_max: float) -> None:
+        """
+        Устанавливает границы карты для моделей мобильности и визуализации.
+        Сбрасывает синглтон MapBorders перед установкой новых значений.
+        """
+        MapBorders._instance = None
+        MapBorders(x_min, x_max, y_min, y_max)
+
+        self.sim_config.map_x_min = x_min
+        self.sim_config.map_x_max = x_max
+        self.sim_config.map_y_min = y_min
+        self.sim_config.map_y_max = y_max
 
     def set_ue_collection(self, ue_collection: UECollection) -> None:
         """
@@ -1106,6 +1159,14 @@ class SimulationManager:
             5. Завершение симуляции.
 
         """
+        JFI_INTERVAL_TTI    = 500
+        STATS_REFRESH_TTI   = 100
+
+        progress_stream = getattr(sys, "__stderr__", sys.stderr)
+
+        pbar        = None
+        jfi_cached  = None
+
         # Перевод консольного вывода в текстовый файл
         if self._to_file:
             self._log_file = open("output.txt", "w", buffering=1, encoding="utf-8")
@@ -1115,7 +1176,6 @@ class SimulationManager:
             sys.stderr = self._log_file
             self._return_stdout = True
 
-        try:
             # Проверка обязательных параметров симуляции
             self._check_required_parameters()
 
@@ -1178,53 +1238,115 @@ class SimulationManager:
                         f"amc={self.stats_config.amc_level})"
                     )
 
-            # Основной цикл симуляции
-            for tti in range(self.sim_config.sim_duration):
-                if self.sim_config.verbose:
-                    print(f"\n[SIMULATION] Start TTI {tti}...")
-
-                GLOBALS.CURRENT_TIME = tti
-
-                sched_result = self.run_tti(current_time=tti)
-
-                # Вывод статистики в CSV файл
-                if self.stats_manager and tti % self.stats_manager.config.collect_interval == 0:
-                    self.stats_manager.collect(tti)
-
-            if self.stats_manager:
-                # Экспорт в CSV
-                output_filename = f"{self.stats_config.file_prefix}.csv"
-                self.stats_manager.export_csv(output_filename, locale="ru")
-
-                # Отладочный момент для глобального JI (Fairness)
-                ue_avg_throughputs = {}
-                for ue in self.ue_collection.GET_ALL_USERS():
-                    ue_avg_throughputs[ue.UE_ID] = ue.average_throughput
-                longterm_fairness_metrics = self.stats_manager._calculate_fairness(
-                    ue_throughputs=ue_avg_throughputs
-                )
-                print(
-                    f"[SIMULATION] Jain's Fairness Index: {longterm_fairness_metrics['dl_fairness_jain_index']:.4f}"
+            try:
+                pbar = tqdm(
+                    total=self.sim_config.sim_duration,
+                    desc="Simulation Progress",
+                    unit="TTI",
+                    dynamic_ncols=True,
+                    colour='cyan',
+                    bar_format=(
+                        "{desc}: {percentage:3.0f}%|{bar}| "
+                        "{n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
+                    ),
+                    file=progress_stream,
+                    position = 0,
+                    leave = True,
                 )
 
-                # Вывод summary (если verbose включен)
-                if (
-                    self.stats_config.scheduler_level == "full"
-                    or self.stats_config.amc_level == "full"
-                ):
-                    if self.stats_config.export_detailed_format == "csv":
-                        detailed_filename = f"{self.stats_config.file_prefix}_detailed.csv"
-                        self.stats_manager.export_detailed_csv(detailed_filename, locale="ru")
-                    elif self.stats_config.export_detailed_format == "json":
-                        detailed_filename = f"{self.stats_config.file_prefix}_detailed.json"
-                        self.stats_manager.export_detailed_json(detailed_filename)
+                sbar = tqdm(
+                    total=0,
+                    desc="Stats",
+                    bar_format="{desc}",
+                    dynamic_ncols=True,
+                    file=progress_stream,
+                    position=1,
+                    leave=True,
+                    )
 
-        finally:
-            # Возвращение консольного вывода
-            if self._to_file:
-                sys.stdout = self._original_stdout
-                sys.stderr = self._original_stderr
-                self._log_file.close()
+                # Основной цикл симуляции
+                for tti in range(self.sim_config.sim_duration):
+                    if self.sim_config.verbose:
+                        print(f"\n[SIMULATION] Start TTI {tti}...")
+
+                    GLOBALS.CURRENT_TIME = tti
+
+                    _ = self.run_tti(current_time=tti)
+
+                    pbar.update(1)
+                    if self.stats_manager and (tti % self.stats_manager.config.collect_interval == 0):
+                        self.stats_manager.collect(tti)
+
+                    if self.stats_manager and (tti % JFI_INTERVAL_TTI == 0):
+                        ue_avg_throughputs = {
+                            ue.UE_ID: ue.average_throughput
+                            for ue in self.ue_collection.GET_ALL_USERS()
+                        }
+                        longterm_fairness_metrics = self.stats_manager._calculate_fairness(
+                            ue_throughputs=ue_avg_throughputs
+                        )
+                        jfi_cached = longterm_fairness_metrics.get("dl_fairness_jain_index", None)
+
+                    if (tti % STATS_REFRESH_TTI == 0) and self.scheduler:
+                        s = self.scheduler.get_stats()
+                        a = self.scheduler.amc.get_stats()
+
+                        tput = a.get('dl_throughput_sum_kbps', 0)
+                        prb = s.get("dl_prb_utilization_pct", 0.0)
+                        ue_cnt = s.get("sch_active_ue_count", 0)
+                        us = s.get("sch_total_time_us", 0.0)
+                        jfi_str = f"{jfi_cached:.4f}" if jfi_cached is not None else "N/A"
+
+                        sbar.set_description_str(
+                            f"TTI={tti} | UE={ue_cnt} | "
+                            f"Tput={tput:.0f} kbps | PRB={prb:.1f}% | "
+                            f"JFI(long)={jfi_str} | sch_total_time_us={us:.1f}"
+                        )
+                        sbar.refresh()
+
+                    # Вывод статистики в CSV файл
+                    if self.stats_manager and tti % self.stats_manager.config.collect_interval == 0:
+                        self.stats_manager.collect(tti)
+
+                if self.stats_manager:
+                    # Экспорт в CSV
+                    output_filename = f"{self.stats_config.file_prefix}.csv"
+                    self.stats_manager.export_csv(output_filename, locale="ru")
+
+                    # Отладочный момент для глобального JI (Fairness)
+                    ue_avg_throughputs = {}
+                    for ue in self.ue_collection.GET_ALL_USERS():
+                        ue_avg_throughputs[ue.UE_ID] = ue.average_throughput
+
+                    longterm_fairness_metrics = self.stats_manager._calculate_fairness(
+                        ue_throughputs=ue_avg_throughputs
+                    )
+                    jfi = longterm_fairness_metrics["dl_fairness_jain_index"]
+                    jfi_str = f"{jfi:.4f}" if jfi is not None else "N/A (no throughput data)"
+                    print(f"[SIMULATION] Jain's Fairness Index: {jfi_str}")
+
+                    # Вывод summary (если verbose включен)
+                    if (
+                        self.stats_config.scheduler_level == "full"
+                        or self.stats_config.amc_level == "full"
+                    ):
+                        if self.stats_config.export_detailed_format == "csv":
+                            detailed_filename = f"{self.stats_config.file_prefix}_detailed.csv"
+                            self.stats_manager.export_detailed_csv(detailed_filename, locale="ru")
+                        elif self.stats_config.export_detailed_format == "json":
+                            detailed_filename = f"{self.stats_config.file_prefix}_detailed.json"
+                            self.stats_manager.export_detailed_json(detailed_filename)
+
+            finally:
+                # Возвращение консольного вывода
+                if pbar is not None:
+                    pbar.close()
+                if sbar is not None:
+                    sbar.close()
+                if self._to_file:
+                    sys.stdout = self._original_stdout
+                    sys.stderr = self._original_stderr
+                    self._log_file.close()
 
     def _check_required_parameters(self) -> None:
         """
@@ -1366,6 +1488,8 @@ class SimulationManager:
             self.ue_collection.UPDATE_ALL_USERS(
                 current_time=current_time,
                 update_interval=self.sim_config.update_interval,
+                mobility_update_interval=self.sim_config.mobility_update_interval,
+                channel_update_interval=self.sim_config.channel_update_interval,
             )
 
         # Блок обновления буферов и генерации трафика
@@ -1399,7 +1523,7 @@ class SimulationManager:
                 "Currently, only Simple Buffer and Simple Generator is supported. To start the "
                 "simulation, set the use_simple_buffer flag to True"
             )
-        
+
             # @IvanNoritsin: Пока что доступен только один режим работы (Simple Buffer + Simple Generator).
             # Данный блок будет реализован при добавлении новых буферов (Layered Buffer)
 
