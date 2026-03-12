@@ -34,7 +34,7 @@ import numpy as np
 from BS_MODULE import BaseStation
 from RES_GRID import RES_GRID_LTE
 from SCHEDULER import SchedulerInterface
-from TRAFFIC_MODEL import PacketManager, SimpleGenerator, TrafficType
+from TRAFFIC_MODEL import PacketManager, SimpleGenerator, QCI
 from UE_MODULE import UECollection
 
 # ==============================================================================
@@ -1146,6 +1146,21 @@ class SimulationManager:
                 verbose=self.sim_config.verbose,
             )
 
+            # Инициализация буферов пользователей
+            for ue in self.ue_collection.GET_ALL_USERS():
+                # Режим Simple Buffer
+                if self.sim_config.use_legacy_traffic:
+                    if not self.base_station.buffer_manager.ue_has_buffer(ue.UE_ID):
+                        self.base_station.buffer_manager.create_ue_buffer(
+                            ue.UE_ID, self.base_station.per_ue_max
+                        )
+                # Режим Layered Buffer
+                else:
+                    bearers_info = self.traffic_gen.get_bearer_info(ue.UE_ID)
+                    self.base_station.buffer_manager.create_ue_buffer(
+                        ue.UE_ID, self.base_station.per_ue_max, bearers_info
+                    )
+
             # Инициализация менеджера статистики
             if self.stats_config.enabled:
                 level_map = {
@@ -1264,30 +1279,29 @@ class SimulationManager:
             msg = "Ошибка: не все обязательные параметры симуляции заданы:\n" + "\n".join(errors)
             raise RuntimeError(msg)
 
-    def setup_ue_traffic(self, ue_id, model_type, **params):
+    def setup_ue_traffic(self, ue_id: int, model_type: str, qci: Optional[QCI | int] = None, **params):
         """
-        Настройка трафика. Работает как для старого SimpleGenerator,
+        Задать модель генерации трафика для пользователя. Работает как для старого SimpleGenerator,
         так и для нового PacketManager.
-        """
-        if self.sim_config.use_legacy_traffic:
-            # Старый способ (Phase 1)
-            self.traffic_gen.set_model(ue_id, model_type, **params)
-        else:
-            # Новый способ (Phase 2 - Multi-bearer)
-            # Если передали старые параметры, адаптируем их под QoS
-            qci = params.pop("qci", 9)  # Default Web
-            traffic_type = params.pop("traffic_type", TrafficType.DEFAULT)
+        1) При SimpleGenerator: задаёт одну модель генерации трафика для пользователя.
+        2) При PacketManager: задаёт модель генерации трафика для выбранного QCI пользователя.
+        Если не указать значение QCI, то модель будет создана для QCI по умолчанию (QCI 9).
 
-            self.traffic_gen.add_bearer(
-                ue_id=ue_id, model_type=model_type, qci=qci, traffic_type=traffic_type, **params
-            )
+        Args:
+            ue_id (int):  Уникальный идентификатор UE.
+            model_type (str): Тип модели ('Poisson', 'OnOff', 'MMPP').
+            qci (Optional[QCI | int], optional): Идентификатор класса QoS. По умолчанию None.
+            **params: Параметры модели генерации трафика.
+
+        """
+        self.traffic_gen.set_model(ue_id=ue_id, model_type=model_type, qci=qci, **params)
 
     def setup_traffic_profiles(self, traffic_profiles: List[Dict[str, Any]]):
         """
         Инициализирует и настраивает профили трафика (bearers) для списка пользователей.
 
         Принимает конфигурацию, проходит по каждому UE и создает соответствующие
-        генераторы трафика через PacketManager/BaseStation.
+        генераторы трафика через PacketManager.
 
         Args:
             traffic_profiles (List[Dict[str, Any]]): Список конфигураций для пользователей.
@@ -1299,13 +1313,11 @@ class SimulationManager:
                         "bearers": [        # Список биреров (потоков) для этого UE
                             {
                                 # Обязательные параметры:
-                                "traffic_type": TrafficType, # Тип (VOIP, VIDEO_STREAM, BACKGROUND...)
                                 "model_type": str,           # "Poisson", "OnOff", "MMPP"
-                                "qci": int,                  # QCI индекс (например, 1, 5, 9)
+                                "qci": QCI | int,            # QCI для данного bearer
 
                                 # Параметры для модели Poisson:
                                 "packet_rate": int,          # Частота пакетов (пак/сек)
-                                "max_bitrate": float,        # (Опционально) Макс. битрейт (Мбит/с)
 
                                 # Дополнительные параметры для модели OnOff:
                                 "duration_on": float,        # (Опционально) Время активности (сек)
@@ -1318,41 +1330,41 @@ class SimulationManager:
                 ]
 
         Raises:
-            RuntimeError: Если BaseStation не инициализирована.
-            ValueError: Если передан ue_id, которого нет в коллекции пользователей.
+            ValueError: Если данная функция вызывается при режиме Simple Buffer, не передано
+            значение ue_id в конфигурации трафика или отсутсвует настройка трафика для bearer'ов
+            в конфигурации.
 
-        Example:
-            >>> config = [{
-            ...     "ue_id": 1,
-            ...     "bearers": [{
-            ...         "model_type": "OnOff",
-            ...         "qci": 1,
-            ...         "traffic_type": TrafficType.VOIP,
-            ...         "packet_rate": 50,
-            ...         "duration_on": 2.0,
-            ...         "duration_off": 3.0
-            ...     }]
-            ... }]
-            >>> sim.setup_traffic_profiles(config)
         """
-        if not self.base_station:
-            raise RuntimeError("BaseStation не инициализирована")
-
-        print(f"\n[SIM] Настройка профилей трафика для {len(traffic_profiles)} пользователей...")
+        if self.sim_config.use_legacy_traffic:
+            raise ValueError(
+                "This function is intended only for configuring traffic in Layered Buffer mode. " 
+                "To configure the traffic for the Simple Buffer mode, use the setup_ue_traffic "
+                "function."
+            )
 
         for profile in traffic_profiles:
             ue_id = profile.get("ue_id")
-            bearers = profile.get("bearers", [])
 
             if ue_id is None:
-                print("[WARNING] Пропущен профиль без ue_id")
-                continue
+                raise ValueError(
+                    "The ue_id value is missing for the traffic profile."
+                )
 
-            try:
-                self.base_station.setup_ue_traffic_multi_bearer(ue_id=ue_id, bearers=bearers)
-                print(f"  -> UE {ue_id}: настроено {len(bearers)} биреров")
-            except Exception as e:
-                print(f"[ERROR] Ошибка настройки UE {ue_id}: {e}")
+            bearers = profile.get("bearers", [])
+
+            if bearers is None:
+                raise ValueError(
+                    f"The bearers list is missing for the UE {ue_id} traffic profile."
+                )
+
+            for bearer in bearers:
+                model_type = bearer.get("model_type")
+                qci = bearer.get("qci")
+
+                model_params = {k: v for k, v in bearer.items() if k not in ("model_type", "qci")}
+
+                self.traffic_gen.set_model(ue_id=ue_id, model_type=model_type, qci=qci, **model_params)
+
 
     def run_tti(self, current_time: int):
         """
@@ -1369,39 +1381,30 @@ class SimulationManager:
             )
 
         # Блок обновления буферов и генерации трафика
-        # Legacy mode (Simple Buffer + Simple Generator)
-        if self.sim_config.use_legacy_traffic:
+        # Обновляем буферы всех пользователей
+        self.base_station.buffer_manager.upd_buffers_all()
 
-            # Обновляем буферы всех пользователей
-            self.base_station.buffer_manager.upd_buffers_all()
+        all_users = self.ue_collection.GET_ALL_USERS()
+        for ue in all_users:
+            ue_id = ue.UE_ID
 
-            all_users = self.ue_collection.GET_ALL_USERS()
-            for ue in all_users:
-                ue_id = ue.UE_ID
-
-                # Пропускаем UE без модели
+            # Пропускаем UE без модели
+            if self.sim_config.use_legacy_traffic:
                 if ue_id not in self.traffic_gen.models:
                     continue
+            else:
+                if ue_id not in self.traffic_gen.ue_profiles:
+                    continue
 
-                # Генерируем пакеты по одному юзеру
-                packets = self.traffic_gen.generate_packets(
-                    ue_id=ue_id, current_time=current_time, update_interval=self.sim_config.update_interval
-                )
-
-                # Кладем пакеты в буфер
-                if packets:
-                    for pkt in packets:
-                        self.base_station.buffer_manager.add_packet(ue_id, pkt)
-
-        # Bearers mode (Layered Buffer + Packet Manager)
-        else:
-            raise NotImplementedError(
-                "Currently, only Simple Buffer and Simple Generator is supported. To start the "
-                "simulation, set the use_simple_buffer flag to True"
+            # Генерируем пакеты по одному юзеру
+            packets = self.traffic_gen.generate_packets(
+                ue_id=ue_id, current_time=current_time, update_interval=self.sim_config.update_interval
             )
-        
-            # @IvanNoritsin: Пока что доступен только один режим работы (Simple Buffer + Simple Generator).
-            # Данный блок будет реализован при добавлении новых буферов (Layered Buffer)
+
+            # Кладем пакеты в буфер
+            if packets:
+                for pkt in packets:
+                    self.base_station.buffer_manager.add_packet(ue_id, pkt)
 
         # 3. Планировщик
         users = self.ue_collection.GET_USERS_FOR_SCHEDULER()

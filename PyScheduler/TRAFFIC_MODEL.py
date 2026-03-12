@@ -32,68 +32,67 @@
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass
-from enum import Enum
-from typing import Callable, Dict, List, Optional
+from enum import IntEnum
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+import GLOBALS
 
-class TrafficType(Enum):
+
+class QCI(IntEnum):
     """
-    Типы трафика согласно 3GPP.
-
-    Каждый тип имеет соответствующий QCI (QoS Class Identifier).
+    Значения QCI (QoS Class Identifier) согласно 3GPP.
     """
-
-    VOIP = "voip"  # Голосовые звонки
-    CONV_VIDEO = "conv_video"  # Видеозвонки
-    REAL_TIME_GAMING = "real_time_gaming"  # Онлайн игры
-    NON_CONV_VIDEO = "non_conv_video"  # Потоковое видео
-    IMS = "ims"  # IMS сервисы
-    VIDEO_TCP = "video_tcp"  # Видео через TCP
-    VOICE_VIDEO_GAMING = "voice_video_gaming"  # Голос + видео + игры
-    WEB_SERVICES = "web_services"  # Веб-сервисы
-    DEFAULT = "default"  # Стандартный трафик
-
-    def get_qci(self) -> int:
-        """
-        Получить QCI для типа трафика.
-
-        Returns:
-            int: QCI согласно 3GPP TS 23.203
-        """
-        qci_mapping = {
-            TrafficType.VOIP: 1,
-            TrafficType.CONV_VIDEO: 2,
-            TrafficType.REAL_TIME_GAMING: 3,
-            TrafficType.NON_CONV_VIDEO: 4,
-            TrafficType.IMS: 5,
-            TrafficType.VIDEO_TCP: 6,
-            TrafficType.VOICE_VIDEO_GAMING: 7,
-            TrafficType.WEB_SERVICES: 8,
-            TrafficType.DEFAULT: 9,
-        }
-        return qci_mapping[self]
+    VOIP = 1  # Голосовые звонки
+    CONV_VIDEO = 2  # Видеозвонки
+    REAL_TIME_GAMING = 3  # Онлайн игры
+    NON_CONV_VIDEO = 4  # Потоковое видео
+    IMS = 5  # IMS сервисы
+    VIDEO_TCP = 6  # Видео через TCP
+    VOICE_VIDEO_GAMING = 7  # Голос + видео + игры
+    WEB_SERVICES = 8  # Веб-сервисы
+    DEFAULT = 9  # Стандартный трафик
 
     def get_delay_budget(self) -> int:
         """
-        Получить delay budget (мс) для типа трафика.
+        Получить Delay Budget (мс) для QCI.
 
         Returns:
-            int: Максимальная задержка (мс)
+            int: Значение Delay Budget (мс).
         """
         delay_mapping = {
-            TrafficType.VOIP: 100,
-            TrafficType.CONV_VIDEO: 150,
-            TrafficType.REAL_TIME_GAMING: 50,
-            TrafficType.NON_CONV_VIDEO: 300,
-            TrafficType.IMS: 100,
-            TrafficType.VIDEO_TCP: 300,
-            TrafficType.VOICE_VIDEO_GAMING: 100,
-            TrafficType.WEB_SERVICES: 300,
-            TrafficType.DEFAULT: 300,
+            QCI.VOIP: 100,
+            QCI.CONV_VIDEO: 150,
+            QCI.REAL_TIME_GAMING: 50,
+            QCI.NON_CONV_VIDEO: 300,
+            QCI.IMS: 100,
+            QCI.VIDEO_TCP: 300,
+            QCI.VOICE_VIDEO_GAMING: 100,
+            QCI.WEB_SERVICES: 300,
+            QCI.DEFAULT: 300,
         }
         return delay_mapping[self]
+    
+    def get_priority(self) -> int:
+        """
+        Получить значение приоритета для QCI.
+
+        Returns:
+            int: Значение приоритета.
+        """
+        priority_mapping = {
+            QCI.VOIP: 2,
+            QCI.CONV_VIDEO: 4,
+            QCI.REAL_TIME_GAMING: 3,
+            QCI.NON_CONV_VIDEO: 5,
+            QCI.IMS: 1,
+            QCI.VIDEO_TCP: 6,
+            QCI.VOICE_VIDEO_GAMING: 7,
+            QCI.WEB_SERVICES: 8,
+            QCI.DEFAULT: 9,
+        }
+        return priority_mapping[self]
 
 
 @dataclass
@@ -106,18 +105,17 @@ class Packet:
         ue_id: ID пользователя
         creation_time: Время создания пакета (мс)
         qci: Quality Class Identifier (1-9)
-        traffic_type: Тип трафика
         priority: Приоритет (0 = highest)
         ttl_ms: Time-to-live (мс)
         deadline: Абсолютный deadline (creation_time + delay_budget)
         is_fragment: Является ли пакет фрагментом
+        bearer_id: Уникальный идентефикатор bearer'a.
     """
 
     size: int
     ue_id: int
     creation_time: int
-    qci: Optional[int] = None
-    traffic_type: Optional[TrafficType] = None
+    qci: Optional[QCI] = None
     priority: int = 0
     ttl_ms: int = 1000
     deadline: Optional[float] = None
@@ -125,14 +123,8 @@ class Packet:
     bearer_id: Optional[int] = None
 
     def __post_init__(self):
-        """Вычисляем deadline если не задан"""
-        if self.deadline is None:
-            if self.traffic_type is not None:
-                delay_budget = self.traffic_type.get_delay_budget()
-                self.deadline = self.creation_time + delay_budget
-            else:
-                # Дефолтный deadline
-                self.deadline = self.creation_time + self.ttl_ms
+        """Установка deadline по умолчанию"""
+        self.deadline = self.creation_time + self.ttl_ms
 
     def age(self, current_time: int) -> int:
         """
@@ -145,6 +137,42 @@ class Packet:
             int: Возраст пакета в миллисекундах
         """
         return current_time - self.creation_time
+    
+    def split_packet(self, fragment_size: int) -> "Packet":
+        """
+        Получение фрагмента пакета заданного размера.
+
+        Args:
+            fragment_size (int): Размер фрагмента.
+
+        Raises:
+            ValueError: Если значение размера фрагмента меньше или равно 0 или 
+            значение размера фрагмента больше размера исходного пакета.
+
+        Returns:
+            Packet: Фрагмент исходного пакета.
+
+        """
+        if fragment_size <= 0:
+            raise ValueError("Fragment size must be positive")
+        
+        if fragment_size > self.size:
+            raise ValueError("Fragment size cannot exceed original packet size")
+        
+        self.size -= fragment_size
+        self.is_fragment = True
+
+        return Packet(
+            size=fragment_size,
+            ue_id=self.ue_id,
+            creation_time=self.creation_time,
+            qci=self.qci,
+            priority=self.priority,
+            ttl_ms=self.ttl_ms,
+            deadline=self.deadline,
+            is_fragment=True,
+            bearer_id=self.bearer_id,
+        )
 
     def to_dict(self) -> Dict:
         """
@@ -462,7 +490,7 @@ class MMPPModel(ITrafficModel):
         self.packet_rates = packet_rates
         self._device_states: Dict[int, Dict] = {}
 
-    def _get_next_state(self, current_state: int) -> (int, float):
+    def _get_next_state(self, current_state: int) -> Tuple[int, float]:
         """
         Определение следующего состояния и времени до перехода.
 
@@ -687,7 +715,7 @@ class ITrafficGeneratorInterface(ABC):
         pass
 
     @abstractmethod
-    def set_model(self, ue_id: int, model_type: str, **params):
+    def set_model(self, ue_id: int, model_type: str, qci: Optional[QCI | int] = None, **params):
         """Установить модель трафика для UE"""
         pass
 
@@ -736,8 +764,13 @@ class SimpleGenerator(ITrafficGeneratorInterface):
 
         return packets
 
-    def set_model(self, ue_id: int, model_type: str, **params):
+    def set_model(self, ue_id: int, model_type: str, qci: Optional[QCI | int] = None, **params):
         """Установить модель через Factory"""
+        if qci is not None:
+            print(
+                "[TRAFFIC] WARNING: Got QCI parameter. SimpleGenerator does not support QoS traffic."
+            )
+
         model = TrafficModelFactory.create_model(model_type, **params)
         self.models[ue_id] = model
 
@@ -801,38 +834,45 @@ class Bearer:
         bearer_id: Уникальный ID bearer внутри UE
         model: Модель генерации трафика
         qci: QoS Class Identifier (1-9)
-        traffic_type: Тип трафика
-        max_bitrate: Максимальный bitrate (Mbps), None = unlimited
-        weight: Вес для приоритизации (0.0-1.0)
+        gbr: Гарантированный bitrate для данного bearer (Для QCI 1-4)
+        mbr: Максимальный bitrate для данного bearer (Для QCI 1-4)
         enabled: Активен ли bearer
     """
-
     bearer_id: int
     model: ITrafficModel
-    qci: int
-    traffic_type: TrafficType
-    max_bitrate: Optional[float] = None
-    weight: float = 1.0
+    qci: QCI
+    gbr: Optional[int] = None
+    mbr: Optional[int] = None
     enabled: bool = True
 
     def __post_init__(self):
         """Валидация"""
-        if not 1 <= self.qci <= 9:
-            raise ValueError(f"QCI must be 1-9, got {self.qci}")
-        if not 0.0 <= self.weight <= 1.0:
-            raise ValueError(f"Weight must be 0.0-1.0, got {self.weight}")
-        if self.max_bitrate is not None and self.max_bitrate <= 0:
-            raise ValueError(f"max_bitrate must be > 0, got {self.max_bitrate}")
+        if isinstance(self.qci, int):
+            if not 1 <= self.qci <= 9:
+                raise ValueError(f"QCI must be 1-9, got {self.qci}")
+            
+            self.qci = QCI(self.qci)
+
+        qci_profile = GLOBALS.QCI_PROFILES.get(self.qci.value)
+        if qci_profile:
+            if self.gbr is None:
+                self.gbr = qci_profile.get("gbr")
+            if self.mbr is None:
+                self.mbr = qci_profile.get("mbr")
+
+        if self.gbr is not None and self.gbr <= 0:
+            raise ValueError(f"GBR value must be > 0, got {self.gbr}")
+        if self.mbr is not None and self.mbr <= 0:
+            raise ValueError(f"MBR value must be > 0, got {self.mbr}")
 
     def get_info(self) -> Dict:
         """Информация о bearer"""
         return {
             "bearer_id": self.bearer_id,
             "model": self.model.get_model_name(),
-            "qci": self.qci,
-            "traffic_type": self.traffic_type.value,
-            "max_bitrate": self.max_bitrate,
-            "weight": self.weight,
+            "qci": self.qci.value,
+            "gbr": self.gbr,
+            "mbr": self.mbr,
             "enabled": self.enabled,
         }
 
@@ -846,7 +886,6 @@ class UeTrafficProfile:
 
     Паттерн: Composite (композиция моделей)
     """
-
     def __init__(self, ue_id: int):
         """
         Args:
@@ -859,10 +898,7 @@ class UeTrafficProfile:
     def add_bearer(
         self,
         model: ITrafficModel,
-        qci: int,
-        traffic_type: TrafficType,
-        max_bitrate: Optional[float] = None,
-        weight: float = 1.0,
+        qci: QCI | int,
         bearer_id: Optional[int] = None,
     ) -> int:
         """
@@ -871,14 +907,18 @@ class UeTrafficProfile:
         Args:
             model: Модель генерации трафика
             qci: QoS Class Identifier
-            traffic_type: Тип трафика
-            max_bitrate: Максимальный bitrate (Mbps)
-            weight: Вес для приоритизации
             bearer_id: ID bearer (если None - auto-increment)
 
         Returns:
             int: ID созданного bearer
         """
+        # UE не может иметь больше 8 DRB
+        if len(self.bearers) == 8:
+            raise ValueError(f"UE {self.ue_id} cannot have more than 8 DRB")
+
+        if any(b.qci == qci for b in self.bearers.values()):
+            raise ValueError(f"UE {self.ue_id} already has a bearer with QCI {qci}")
+
         if bearer_id is None:
             bearer_id = self._next_bearer_id
             self._next_bearer_id += 1
@@ -890,9 +930,6 @@ class UeTrafficProfile:
             bearer_id=bearer_id,
             model=model,
             qci=qci,
-            traffic_type=traffic_type,
-            max_bitrate=max_bitrate,
-            weight=weight,
         )
 
         self.bearers[bearer_id] = bearer
@@ -937,11 +974,11 @@ class UeTrafficProfile:
             for pkt in packets:
                 pkt.bearer_id = bearer_id
                 pkt.qci = bearer.qci
-                pkt.traffic_type = bearer.traffic_type
+                pkt.priority = bearer.qci.get_priority()
 
-                # Обновляем deadline на основе traffic_type
-                if pkt.deadline is None and bearer.traffic_type:
-                    delay_budget = bearer.traffic_type.get_delay_budget()
+                # Обновляем deadline на основе QCI
+                if bearer.qci:
+                    delay_budget = bearer.qci.get_delay_budget()
                     pkt.deadline = pkt.creation_time + delay_budget
 
             all_packets.extend(packets)
@@ -957,32 +994,6 @@ class UeTrafficProfile:
         if bearer_id not in self.bearers:
             raise ValueError(f"Bearer {bearer_id} not found")
         self.bearers[bearer_id].enabled = enabled
-
-    def get_total_bitrate(self, window_ms: int = 1000) -> float:
-        """
-        Расчёт суммарного bitrate всех bearers.
-
-        Примерный расчёт на основе packet_rate моделей.
-        Для точного расчёта нужна статистика.
-
-        Args:
-            window_ms: Окно времени для расчёта (мс)
-
-        Returns:
-            float: Bitrate (bps)
-        """
-        # Упрощённая оценка
-        total_bitrate = 0.0
-
-        for bearer in self.get_active_bearers():
-            model = bearer.model
-            # Если модель имеет packet_rate
-            if hasattr(model, "packet_rate"):
-                avg_packet_size = (model.min_packet_size + model.max_packet_size) / 2
-                bearer_bitrate = model.packet_rate * avg_packet_size * 8  # bps
-                total_bitrate += bearer_bitrate
-
-        return total_bitrate
 
     def get_profile_info(self) -> Dict:
         """Информация о профиле"""
@@ -1206,21 +1217,17 @@ class PacketManager(ITrafficGeneratorInterface):
 
     def __init__(
         self,
-        packet_handler: Optional[Callable[[List[Packet]], None]] = None,
-        enable_bitrate_control: bool = True,
         bitrate_window_ms: int = 1000,
     ):
         """
+        Инициализация advanced генератора трафика.
+
         Args:
-            packet_handler: Callback для обработки пакетов (отправка в буферы)
-            enable_bitrate_control: Включить контроль bitrate
-            bitrate_window_ms: Окно для расчёта bitrate (мс)
+            bitrate_window_ms: Окно для расчёта bitrate (мс).
+
         """
         # UE profiles (multi-bearer support)
         self.ue_profiles: Dict[int, UeTrafficProfile] = {}
-
-        # Callback для пакетов
-        self.packet_handler = packet_handler
 
         # Статистика
         self.statistics = TrafficStatistics(window_ms=bitrate_window_ms)
@@ -1235,7 +1242,7 @@ class PacketManager(ITrafficGeneratorInterface):
             update_interval: Интервал генерации (мс)
 
         Returns:
-            List[Packet]: Сгенерированные пакеты (после throttling)
+            List[Packet]: Сгенерированные пакеты
         """
         if ue_id not in self.ue_profiles:
             return []
@@ -1245,30 +1252,22 @@ class PacketManager(ITrafficGeneratorInterface):
         # Генерация со всех bearers
         packets = profile.generate_all_traffic(current_time, update_interval)
 
-        # Bitrate throttling (если включен)
-        if self.enable_bitrate_control and self.bitrate_controller:
-            packets = self.bitrate_controller.check_and_throttle(ue_id, packets, current_time)
-
         # Статистика
         self.statistics.update(packets)
 
-        # Callback (отправка в буферы)
-        if self.packet_handler and packets:
-            self.packet_handler(packets)
-
         return packets
 
-    def set_model(self, ue_id: int, model_type: str, **params):
+    def set_model(self, ue_id: int, model_type: str, qci: Optional[QCI | int] = None, **params):
         """
-        Установить ОДНУ модель для UE (legacy support).
-
-        Создаёт default bearer с этой моделью.
-        Для multi-bearer используйте add_bearer()!
+        Установить модель генерации трафика для заданного QCI.
+        Если не указать значение QCI, то модель будет создана для QCI по умолчанию (QCI 9).
 
         Args:
-            ue_id: ID пользователя
-            model_type: Тип модели ('Poisson', 'OnOff', 'MMPP')
-            **params: Параметры модели
+            ue_id (int):  Уникальный идентификатор UE.
+            model_type (str): Тип модели ('Poisson', 'OnOff', 'MMPP').
+            qci (Optional[QCI | int], optional): Идентификатор класса QoS. По умолчанию None.
+            **params: Параметры модели генерации трафика.
+
         """
         # Создаём профиль если нет
         if ue_id not in self.ue_profiles:
@@ -1277,71 +1276,16 @@ class PacketManager(ITrafficGeneratorInterface):
         # Создаём модель через Factory
         model = TrafficModelFactory.create_model(model_type, **params)
 
-        # Добавляем default bearer
-        profile = self.ue_profiles[ue_id]
-        profile.add_bearer(
-            model=model,
-            qci=params.get("qci", 9),
-            traffic_type=params.get("traffic_type", TrafficType.BACKGROUND),
-            bearer_id=0,  # Default bearer
-        )
-
-    def add_bearer(
-        self,
-        ue_id: int,
-        model_type: str,
-        qci: int,
-        traffic_type: TrafficType,
-        max_bitrate: Optional[float] = None,
-        weight: float = 1.0,
-        bearer_id: Optional[int] = None,
-        **model_params,
-    ) -> int:
-        """
-        Добавить bearer для UE.
-
-        Args:
-            ue_id: ID пользователя
-            model_type: Тип модели ('Poisson', 'OnOff', 'MMPP')
-            qci: QoS Class Identifier
-            traffic_type: Тип трафика
-            max_bitrate: Максимальный bitrate bearer (Mbps)
-            weight: Вес для приоритизации
-            bearer_id: ID bearer (если None - auto)
-            **model_params: Параметры модели (packet_rate, ...)
-
-        Returns:
-            int: ID созданного bearer
-
-        Example:
-            >>> manager.add_bearer(
-            ...     ue_id=1,
-            ...     model_type='Poisson',
-            ...     qci=1,
-            ...     traffic_type=TrafficType.VOIP,
-            ...     packet_rate=50,
-            ...     max_bitrate=0.064  # 64 Kbps для VOIP
-            ... )
-        """
-        # Создаём профиль если нет
-        if ue_id not in self.ue_profiles:
-            self.ue_profiles[ue_id] = UeTrafficProfile(ue_id)
-
-        # Создаём модель
-        model = TrafficModelFactory.create_model(model_type, **model_params)
+        # Если не задали QCI - создаём default
+        if qci is None:
+            qci = QCI.DEFAULT
 
         # Добавляем bearer
         profile = self.ue_profiles[ue_id]
-        bid = profile.add_bearer(
+        _ = profile.add_bearer(
             model=model,
             qci=qci,
-            traffic_type=traffic_type,
-            max_bitrate=max_bitrate,
-            weight=weight,
-            bearer_id=bearer_id,
         )
-
-        return bid
 
     def remove_bearer(self, ue_id: int, bearer_id: int):
         """Удалить bearer"""
@@ -1349,19 +1293,6 @@ class PacketManager(ITrafficGeneratorInterface):
             raise ValueError(f"UE {ue_id} not found")
 
         self.ue_profiles[ue_id].remove_bearer(bearer_id)
-
-    def set_bitrate_limit(self, ue_id: int, max_bitrate_mbps: float):
-        """
-        Установить лимит bitrate для UE (общий для всех bearers).
-
-        Args:
-            ue_id: ID пользователя
-            max_bitrate_mbps: Максимальный bitrate (Mbps)
-        """
-        if not self.enable_bitrate_control or not self.bitrate_controller:
-            raise RuntimeError("Bitrate control is disabled")
-
-        self.bitrate_controller.set_limit(ue_id, max_bitrate_mbps)
 
     def get_statistics(self, ue_id: Optional[int] = None) -> Dict:
         """
@@ -1421,10 +1352,6 @@ class PacketManager(ITrafficGeneratorInterface):
             profile.clear_all()
             del self.ue_profiles[ue_id]
 
-        # Сброс bitrate controller
-        if self.bitrate_controller:
-            self.bitrate_controller.reset(ue_id)
-
     def get_bearer_info(self, ue_id: int, bearer_id: Optional[int] = None) -> Dict:
         """
         Информация о bearers UE.
@@ -1447,79 +1374,3 @@ class PacketManager(ITrafficGeneratorInterface):
             return profile.bearers[bearer_id].get_info()
         else:
             return profile.get_profile_info()
-
-
-def test_traffic_models():
-    """
-    Тестирование и визуализация работы моделей трафика.
-    """
-    poisson_model = PoissonModel(packet_rate=5)
-    # onoff_model = OnOffModel(duration_on=2, duration_off=3, packet_rate=25)
-    # mmpp_model = MMPPModel(packet_rates=[5, 20, 40])
-
-    simulation_duration = 60000
-    update_interval = 250
-
-    traffic_poisson = []
-    traffic_onoff = []
-    traffic_mmpp = []
-
-    for t in range(1, simulation_duration + 1):
-        if t % update_interval == 0:
-            packets_poisson = poisson_model.generate_traffic(
-                current_time=t, update_interval=update_interval
-            )
-
-            # packets_onoff = onoff_model.generate_traffic(
-            #     UE_ID=1, current_time=t, update_interval=update_interval
-            # )
-
-            # packets_mmpp = mmpp_model.generate_traffic(
-            #     UE_ID=1, current_time=t, update_interval=update_interval
-            # )
-
-            traffic_poisson.extend(packets_poisson)
-            # traffic_onoff.extend(packets_onoff)
-            # traffic_mmpp.extend(packets_mmpp)
-
-    timestamps_poisson = [packet["creation_time"] for packet in traffic_poisson]
-    sizes_poisson = [packet["size"] for packet in traffic_poisson]
-
-    timestamps_onoff = [packet["creation_time"] for packet in traffic_onoff]
-    sizes_onoff = [packet["size"] for packet in traffic_onoff]
-
-    timestamps_mmpp = [packet["creation_time"] for packet in traffic_mmpp]
-    sizes_mmpp = [packet["size"] for packet in traffic_mmpp]
-
-    import matplotlib.pyplot as plt
-
-    plt.figure(figsize=(10, 6))
-    plt.stem(timestamps_poisson, sizes_poisson, label="Пакеты")
-    plt.xlabel("Время (мс)")
-    plt.ylabel("Размер пакета (байты)")
-    plt.title("Пуассоновская модель трафика")
-    plt.legend()
-    plt.grid()
-    plt.show()
-
-    plt.figure(figsize=(10, 6))
-    plt.stem(timestamps_onoff, sizes_onoff, label="Пакеты")
-    plt.xlabel("Время (мс)")
-    plt.ylabel("Размер пакета (байты)")
-    plt.title("ON/OFF модель трафика")
-    plt.legend()
-    plt.grid()
-    plt.show()
-
-    plt.figure(figsize=(10, 6))
-    plt.stem(timestamps_mmpp, sizes_mmpp, label="Пакеты")
-    plt.xlabel("Время (мс)")
-    plt.ylabel("Размер пакета (байты)")
-    plt.title("MMPP модель трафика")
-    plt.legend()
-    plt.grid()
-    plt.show()
-
-
-if __name__ == "__main__":
-    test_traffic_models()

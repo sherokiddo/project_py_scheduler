@@ -23,7 +23,7 @@ from typing import Dict, List, Tuple, Optional
 
 import GLOBALS
 import numpy as np
-from TRAFFIC_MODEL import Packet
+from TRAFFIC_MODEL import Packet, QCI
 from UE_MODULE import UserEquipment
 
 @dataclass(slots=True)
@@ -188,7 +188,6 @@ class SimpleBuffer:
                     ue_id=packet.ue_id, 
                     creation_time=packet.creation_time,
                     qci=packet.qci,
-                    traffic_type=packet.traffic_type,
                     priority=packet.priority,
                     ttl_ms=packet.ttl_ms,
                     deadline=packet.deadline,
@@ -329,13 +328,15 @@ class IBufferManager(ABC):
         pass
     
     @abstractmethod
-    def create_ue_buffer(self, ue_id: int, max_size: Optional[int] = None) -> None:
+    def create_ue_buffer(self, ue_id: int, max_size: Optional[int] = None, bearers_info: Dict = None) -> None:
         """
         Создание буфера для соответствующего UE.
 
         Args:
             ue_id (int): Уникальный идентификатор UE.
             max_size (Optional[int], optional): Максимальный размер буфера (байты). 
+                По умолчанию None.
+            bearers_info (Dict, optional): Информация о сконфигурированных bearer'ах UE. 
                 По умолчанию None.
 
         """
@@ -403,7 +404,7 @@ class SimpleBufferManager(IBufferManager):
         if not self.ue_has_buffer(ue_id):
             raise ValueError(
                 f"UE {ue_id} does not have a buffer. The buffer must "
-                f"have been created during UE registration at the BS"
+                f"have been created during start simulation"
             )
             
         if self.current_total_size + packet.size > self.global_max:
@@ -434,7 +435,7 @@ class SimpleBufferManager(IBufferManager):
         if not self.ue_has_buffer(ue_id):
             raise ValueError(
                 f"UE {ue_id} does not have a buffer. The buffer must "
-                f"have been created during UE registration at the BS"
+                f"have been created during start simulation"
             )
         
         buffer_status = self.buffers[ue_id].get_buffer_status()
@@ -469,7 +470,7 @@ class SimpleBufferManager(IBufferManager):
         if not self.ue_has_buffer(ue_id):
             raise ValueError(
                 f"UE {ue_id} does not have a buffer. The buffer must "
-                f"have been created during UE registration at the BS"
+                f"have been created during start simulation"
             )
         
         packets, extracted_bytes = self.buffers[ue_id].get_packets(num_bytes)
@@ -500,13 +501,15 @@ class SimpleBufferManager(IBufferManager):
         """
         return ue_id in self.buffers
     
-    def create_ue_buffer(self, ue_id: int, max_size: Optional[int] = None) -> None:
+    def create_ue_buffer(self, ue_id: int, max_size: Optional[int] = None, bearers_info: Dict = None) -> None:
         """
         Создание буфера для соответствующего UE.
 
         Args:
             ue_id (int): Уникальный идентификатор UE.
             max_size (Optional[int], optional): Максимальный размер буфера (байты). 
+                По умолчанию None.
+            bearers_info (Dict, optional): Информация о сконфигурированных bearer'ах UE. 
                 По умолчанию None.
 
         """
@@ -589,6 +592,805 @@ class SimpleBufferManager(IBufferManager):
         }
 
         return stats
+    
+
+class RLCEntity(ABC):
+    """
+    Абстрактный класс для RLC Entity.
+    """
+    def __init__(self, ue_id: int, lcid: int, qci: int, max_tx_buffer_size: int):
+        """
+        Инициализация RLC Entity.
+
+        Args:
+            ue_id (int): Уникальный идентификатор UE.
+            lcid (int): Идентификатор логического канала.
+            qci (int): Идентификатор класса QoS.
+            max_tx_buffer_size (int): Максимальный размер буфера передачи (байты).
+
+        """
+        self.ue_id = ue_id
+        self.lcid = lcid
+        self.qci = qci
+        self.max_tx_buffer_size = max_tx_buffer_size
+
+        self.priority = QCI(qci).get_priority()
+        self.pdcp_discard_timer = GLOBALS.PDCP_DISCARD_TIMERS.get(qci)
+
+    @abstractmethod
+    def add_packet(self, packet: Packet) -> bool:
+        """
+        Добавление пакета в буфер передачи.
+
+        Args:
+            packet (Packet): Добавляемый пакет.
+
+        Returns:
+            bool: True, если пакет успешно добавлен, иначе False.
+
+        """
+        pass
+
+    @abstractmethod
+    def get_packets(self, num_bytes_to_extract: int) -> Tuple[List[Packet], int]:
+        """
+        Извлечение пакетов из буфера для передачи.
+
+        Args:
+            num_bytes_to_extract (int): Количество байт, которое нужно извлечь.
+
+        Returns:
+            (Tuple[List[Packet], int]):
+                - список извлечённых (или фрагментированных) пакетов, 
+                - фактически извлечённое количество байт.
+
+        """
+        pass
+
+    @abstractmethod
+    def upd_buffer(self) -> None:
+        """
+        Обновление состояния буфера.
+        
+        """
+        pass
+
+    @abstractmethod
+    def get_buffer_status(self) -> BufferStatus:
+        """
+        Получение текущего состояния буфера.
+
+        Returns:
+            BufferStatus: Объект с информацией о состоянии буфера, содержащий:
+                ue_id: int - Уникальный идентификатор UE.
+                buffer_size: int - Текущий размер буфера (байты).
+                timestamp: int - Временная метка формирования статуса.
+                lcid: int - Идентификатор логического канала.
+                qci: int - Идентификатор класса QoS.
+                priority: int - Приоритет трафика.
+                hol_delay: int = Задержка HOL (мс).
+
+        """
+        pass
+
+    @abstractmethod
+    def clear_buffer(self) -> None:
+        """
+        Очистка буфера передачи.
+
+        """
+        pass
+
+    @abstractmethod
+    def get_stats(self) -> Dict:
+        """
+        Получение статистики работы буфера.
+
+        Returns:
+            Dict: Словарь, хранящий статистику.
+
+        """
+        pass
+
+
+class RLCUM(RLCEntity):
+    """
+    Реализация RLC Entity в режиме Unacknowledged Mode (UM).
+    
+    Буферизация пакетов выполняется в FIFO очереди. Поддерживается
+    сегментация пакетов при извлечении данных и удаление устаревших
+    пакетов согласно PDCP discard timer.
+    """
+    def __init__(self, ue_id: int, lcid: int, qci: int, max_tx_buffer_size: int):
+        """
+        Инициализация RLC Entity в режиме Unacknowledged Mode (UM).
+
+        Args:
+            ue_id (int): Уникальный идентификатор UE.
+            lcid (int): Идентификатор логического канала.
+            qci (int): Идентификатор класса QoS.
+            max_tx_buffer_size (int): Максимальный размер буфера передачи (байты).
+
+        """
+        super().__init__(ue_id, lcid, qci, max_tx_buffer_size)
+
+        self.tx_buffer = deque()
+        self.current_tx_buffer_size = 0
+
+        self.packets_added = 0
+        self.packets_dropped = 0
+        self.packets_expired = 0
+        self.extracted_bytes = 0
+
+    def add_packet(self, packet: Packet) -> bool:
+        """
+        Добавление пакета в буфер передачи.
+        
+        Проверяется доступное место в буфере. При переполнении
+        пакет отбрасывается.
+
+        Args:
+            packet (Packet): Добавляемый пакет.
+
+        Returns:
+            bool: True, если пакет успешно добавлен, иначе False.
+
+        """
+        if self.current_tx_buffer_size + packet.size > self.max_tx_buffer_size:
+            self.packets_dropped += 1
+            return False
+        
+        self.tx_buffer.append(packet)
+        self.current_tx_buffer_size += packet.size
+        
+        self.packets_added += 1
+        
+        return True
+    
+    def get_packets(self, num_bytes_to_extract: int) -> Tuple[List[Packet], int]:
+        """
+        Извлечение пакетов из буфера для передачи.
+        
+        При необходимости выполняется сегментация пакета для
+        соответствия запрошенному количеству байт.
+
+        Args:
+            num_bytes_to_extract (int): Количество байт, которое нужно извлечь.
+
+        Returns:
+            (Tuple[List[Packet], int]):
+                - список извлечённых (или фрагментированных) пакетов, 
+                - фактически извлечённое количество байт.
+
+        """
+        extracted_packets = []
+        extracted_bytes = 0
+        self.extracted_bytes_in_tti = 0
+
+        while self.tx_buffer and extracted_bytes < num_bytes_to_extract:
+            packet = self.tx_buffer[0]
+            packet_size = packet.size
+
+            # Сегментация пакета
+            if (extracted_bytes + packet_size) > num_bytes_to_extract:
+               segment_size = num_bytes_to_extract - extracted_bytes
+               segment = packet.split_packet(segment_size)
+
+               extracted_packets.append(segment)
+               extracted_bytes += segment_size
+               break
+
+            # Полное извлечение пакета
+            else:
+                extracted_packet = self.tx_buffer.popleft()
+                extracted_packets.append(extracted_packet)
+                extracted_bytes += packet_size
+
+        self.current_tx_buffer_size -= extracted_bytes
+        self.extracted_bytes = extracted_bytes
+
+        return extracted_packets, extracted_bytes
+
+    def upd_buffer(self) -> None:
+        """
+        Обновление состояния буфера.
+        
+        Удаляются пакеты, возраст которых превышает значение
+        PDCP discard timer (если пакет не был сегментирован).
+        """
+        new_buffer_size = 0
+
+        for _ in range(len(self.tx_buffer)):
+            packet = self.tx_buffer.popleft()
+            
+            # Отбрасываем пакет, если  его возраст > PDCP discard timer
+            # и этот пакет не сегментировался (см. 3GPP TS 36.322 p. 5.3)
+            if (packet.age(GLOBALS.CURRENT_TIME) > self.pdcp_discard_timer 
+                and not packet.is_fragment):
+                self.packets_expired += 1
+            else:
+                self.tx_buffer.append(packet)
+                new_buffer_size += packet.size
+
+        self.current_tx_buffer_size = new_buffer_size
+
+    def get_buffer_status(self) -> BufferStatus:
+        """
+        Получение текущего состояния буфера.
+
+        Returns:
+            BufferStatus: Объект с информацией о состоянии буфера, содержащий:
+                ue_id: int - Уникальный идентификатор UE.
+                buffer_size: int - Текущий размер буфера (байты).
+                timestamp: int - Временная метка формирования статуса.
+                lcid: int - Идентификатор логического канала.
+                qci: int - Идентификатор класса QoS.
+                priority: int - Приоритет трафика.
+                hol_delay: int = Задержка HOL (мс).
+
+        """
+        hol_delay = self.tx_buffer[0].age(GLOBALS.CURRENT_TIME) if self.tx_buffer else 0
+
+        return BufferStatus(
+            ue_id=self.ue_id, 
+            buffer_size=self.current_tx_buffer_size, 
+            timestamp=GLOBALS.CURRENT_TIME,
+            lcid=self.lcid,
+            qci=self.qci,
+            priority=self.priority,
+            hol_delay=hol_delay
+        )
+    
+    def clear_buffer(self) -> None:
+        """
+        Очистка буфера передачи и сброс статистики.
+
+        """
+        self.tx_buffer.clear()
+        self.current_tx_buffer_size = 0
+
+        self.packets_added = 0
+        self.packets_dropped = 0
+        self.packets_expired = 0
+
+    def get_stats(self) -> Dict:
+        """
+        Получение статистики работы буфера.
+
+        Returns:
+            Dict: Словарь со статистикой, содержащий:
+                qci: int - Идентификатор класса QoS.
+                buffer_size: int - Текущий размер буфера передачи.
+                extracted_bytes: int - Кол-во извлечённых байт.
+                packets_added: int - Кол-во добавленных пакетов.
+                packets_dropped: int - Кол-во отброшенных пакетов.
+                packets_expired: int - Кол-во просроченных пакетов.
+                oldest_delay: int - Максимальная задержка пакетов в буфере.
+                avg_delay: float - Средняя задержка пакетов в буфере.
+
+        """
+        delays = [p.age(GLOBALS.CURRENT_TIME) for p in self.tx_buffer]
+        oldest_delay = max(delays) if delays else 0
+        avg_delay = sum(delays) / len(delays) if delays else 0.0
+
+        stats = {
+            "qci": self.qci,
+            "buffer_size": self.current_tx_buffer_size,
+            "extracted_bytes": self.extracted_bytes,
+            "packets_added": self.packets_added,
+            "packets_dropped": self.packets_dropped,
+            "packets_expired": self.packets_expired,
+            "oldest_delay": oldest_delay,
+            "avg_delay": avg_delay,
+        }
+
+        return stats
+
+
+class UeProtocolStack:
+    """
+    Стек протоколов пользователя.
+    
+    Управляет набором сущностей RLC и PDCP (на данный момент PDCP реализация
+    отсутствует), каждые из которых соответствует отдельному логическому каналу 
+    (LC).
+    """
+    def __init__(self, ue_id: int):
+        """
+        Инициализация стека протоколов пользователя.
+
+        Args:
+            ue_id (int): Уникальный идентификатор UE.
+
+        """
+        self.ue_id = ue_id
+        self.rlc_entities: Dict[int, RLCEntity] = {}
+
+    def create_entities(self, lcid: int, qci: int, buffer_size: int):
+        """
+        Создание сущностей RLC и PDCP (на данный момент PDCP реализация
+        отсутствует) для логического канала.
+
+        Args:
+            lcid (int): Идентификатор логического канала.
+            qci (int): Идентификатор класса QoS.
+            buffer_size (int): Максимальный размер буфера.
+
+        Raises:
+            ValueError: Если сущность с заданным LCID уже существует или у UE
+            отсутствует данный LCID.
+
+        """
+        if lcid in self.rlc_entities:
+            raise ValueError(
+                f"LCID {lcid} already exists for UE {self.ue_id}"
+            )
+        
+        # Пока что создаём RLC UM для всех логических каналов
+        self.rlc_entities[lcid] = RLCUM(
+            ue_id=self.ue_id, lcid=lcid, qci=qci, max_tx_buffer_size=buffer_size
+        )
+
+    def add_packet_to_lc(self, lcid: int, packet: Packet) -> bool:
+        """
+        Добавление пакета в буфер указанного логического канала.
+
+        Args:
+            lcid (int): Идентификатор логического канала.
+            packet (Packet): Добавляемый пакет.
+
+        Raises:
+            ValueError: Если у UE отсутствует данный LCID.
+
+        Returns:
+            bool: True, если пакет успешно добавлен, иначе False.
+
+        """
+        rlc_entity = self.rlc_entities.get(lcid)
+        if rlc_entity is None:
+            raise ValueError(
+                f"LCID {lcid} not configured for UE {self.ue_id}"
+            )
+        
+        return rlc_entity.add_packet(packet)
+    
+    def get_buffer_status(self) -> List[BufferStatus]:
+        """
+        Получение состояния буферов всех логических каналов.
+
+        Returns:
+            List[BufferStatus]: Список статусов буферов.
+
+        """
+        buffer_status_list = []
+        for rlc_entity in self.rlc_entities.values():
+            buffer_status = rlc_entity.get_buffer_status()
+            buffer_status_list.append(buffer_status)
+
+        return buffer_status_list
+    
+    def get_packets_from_lc(self, lcid: int, num_bytes: int) -> Tuple[List[Packet], int]:
+        """
+        Извлечение пакетов из буфера указанного логического канала.
+
+        Args:
+            lcid (int): Идентификатор логического канала.
+            num_bytes (int): Количество байт, которое нужно извлечь.
+
+        Raises:
+            ValueError: Если у UE отсутствует данный LCID.
+
+        Returns:
+            (Tuple[List[Packet], int]):
+                - список извлечённых (или фрагментированных) пакетов, 
+                - фактически извлечённое количество байт.
+
+        """
+        rlc_entity = self.rlc_entities.get(lcid)
+        if rlc_entity is None:
+            raise ValueError(
+                f"LCID {lcid} not configured for UE {self.ue_id}"
+            )
+        
+        return rlc_entity.get_packets(num_bytes)
+    
+    def upd_buffers(self) -> int:
+        """
+        Обновление состояния всех буферов.
+
+        Returns:
+            int: Суммарный размер всех буферов после обновления.
+
+        """
+        new_buffers_size = 0
+        for rlc_entity in self.rlc_entities.values():
+            rlc_entity.upd_buffer()
+            new_buffers_size += rlc_entity.current_tx_buffer_size
+
+        return new_buffers_size
+    
+    def ue_has_buffer(self) -> bool:
+        """
+        Проверка наличия буферов у UE.
+
+        Returns:
+            bool: True при наличии буферов, иначе False.
+
+        """
+        return bool(self.rlc_entities)
+    
+    def clear_buffers(self) -> None:
+        """
+        Очистка всех буферов UE.
+
+        """
+        for rlc_entity in self.rlc_entities.values():
+            rlc_entity.clear_buffer()
+
+        self.rlc_entities.clear()
+
+    def get_stats(self) -> Dict:
+        """
+        Получение статистики работы всех буферов UE.
+
+        Returns:
+            Dict: Словарь со статистикой, содержащий:
+                ue_packets_added: int - Общее кол-во добавленных пакетов для UE.
+                ue_packets_dropped: int - Общее кол-во отброшенных пакетов для UE.
+                ue_packets_expired: int - Общее кол-во просроченных пакетов для UE.
+                buffer_size_per_qci: Dict - Текущий размер буфера для каждого QCI.
+                extracted_bytes_per_qci: Dict - Кол-во извлечённых байт для каждого QCI.
+                packets_added_per_qci: Dict - Кол-во добавленных пакетов для каждого QCI.
+                packets_dropped_per_qci: Dict - Кол-во отброшенных пакетов для каждого QCI.
+                packets_expired_per_qci: Dict - Кол-во просроченных пакетов для каждого QCI.
+                oldest_delay_per_qci: Dict - Максимальная задержка пакетов для каждого QCI.
+                avg_delay_per_qci: Dict - Средняя задержка пакетов для каждого QCI.
+
+        """
+        # Общая статистика со всех буфеов UE
+        ue_packets_added = 0
+        ue_packets_dropped = 0
+        ue_packets_expired = 0
+
+        # Статистика для каждого отдельного QCI
+        buffer_size_per_qci = {}
+        extracted_bytes_per_qci = {}
+        packets_added_per_qci = {}
+        packets_dropped_per_qci = {}
+        packets_expired_per_qci = {}
+
+        # Задержки для каждого отдельного QCI
+        oldest_delay_per_qci = {}
+        avg_delay_per_qci = {}
+
+        for rlc_entity in self.rlc_entities.values():
+            rlc_entity_stats = rlc_entity.get_stats()
+            qci = rlc_entity_stats.get("qci")
+
+            buffer_size_per_qci[qci] = rlc_entity_stats.get("buffer_size")
+            extracted_bytes_per_qci[qci] = rlc_entity_stats.get("extracted_bytes")
+            packets_added_per_qci[qci] = rlc_entity_stats.get("packets_added")
+            packets_dropped_per_qci[qci] = rlc_entity_stats.get("packets_dropped")
+            packets_expired_per_qci[qci] = rlc_entity_stats.get("packets_expired")
+
+            oldest_delay_per_qci[qci] = rlc_entity_stats.get("oldest_delay")
+            avg_delay_per_qci[qci] = rlc_entity_stats.get("avg_delay")
+
+            ue_packets_added += packets_added_per_qci[qci]
+            ue_packets_dropped += packets_dropped_per_qci[qci]
+            ue_packets_expired += packets_expired_per_qci[qci]
+
+        stats = {
+            "ue_packets_added": ue_packets_added,
+            "ue_packets_dropped": ue_packets_dropped,
+            "ue_packets_expired": ue_packets_expired,
+            "buffer_size_per_qci": buffer_size_per_qci,
+            "extracted_bytes_per_qci": extracted_bytes_per_qci,
+            "packets_added_per_qci": packets_added_per_qci,
+            "packets_dropped_per_qci": packets_dropped_per_qci,
+            "packets_expired_per_qci": packets_expired_per_qci,
+            "oldest_delay_per_qci": oldest_delay_per_qci,
+            "avg_delay_per_qci": avg_delay_per_qci,
+        }
+
+        return stats
+
+
+class LayeredBufferManager(IBufferManager):
+    """
+    Класс многоуровневого менеджера буферов, работающего с RLC и PDCP сущностями 
+    (на данный момент реализация PDCP Entity отсутствует) и их буферами.
+    """
+    def __init__(self, global_max: int = 1048576, per_ue_max: int = 262144):
+        """
+        Инициализация менеджера буферов.
+
+        Args:
+            global_max (int, optional): Максимальный размер буфера базовой станции. 
+                По умолчанию 1048576.
+            per_ue_max (int, optional): Максимальный размер буфера одного UE. 
+                По умолчанию to 262144.
+
+        """
+        self.ue_stacks: Dict[int, UeProtocolStack] = {}
+        self.global_max = global_max
+        self.per_ue_max = per_ue_max
+        self.current_total_size = 0
+
+    def add_packet(self, ue_id: int, packet: Packet) -> bool:
+        """
+        Добавление пакета в буфер соответствующего UE.
+
+        Args:
+            ue_id (int): Уникальный идентификатор UE.
+            packet (Packet): Добавляемый пакет.
+
+        Returns:
+            bool: True, если пакет успешно добавлен, иначе False.
+            
+        Raises:
+            ValueError: Если буфер UE не существует.
+
+        """
+        if not self.ue_has_buffer(ue_id):
+            raise ValueError(
+                f"UE {ue_id} does not have a buffer. The buffer must "
+                f"have been created during start simulation"
+            )
+        
+        if self.current_total_size + packet.size > self.global_max:
+            return False
+        
+        ue_stack = self.ue_stacks.get(ue_id)
+        lcid = self._get_lcid_from_bearer_id(packet.bearer_id)
+
+        if ue_stack.add_packet_to_lc(lcid, packet):
+            self.current_total_size += packet.size
+            return True
+        
+        else:
+            return False
+
+    def get_buffer_status(self, ue_id: int) -> List[BufferStatus]:
+        """
+        Формирование статусов всех буферов соответствующего UE на текущий
+        момент.
+
+        Args:
+            ue_id (int): Уникальный идентификатор UE.
+
+        Returns:
+            List[BufferStatus]: Список объектов о состоянии буферов.
+            
+        Raises:
+            ValueError: Если буфер UE не существует.
+
+        """
+        if not self.ue_has_buffer(ue_id):
+            raise ValueError(
+                f"UE {ue_id} does not have a buffer. The buffer must "
+                f"have been created during start simulation"
+            )
+        
+        ue_stack = self.ue_stacks.get(ue_id)
+        
+        return ue_stack.get_buffer_status()
+
+    def get_packets(self, grants: List) -> Tuple[List[Packet], int]:
+        """
+        Извлечение пакетов из буферов соответствующего UE на основании грантов.
+
+        Args:
+            grants (List): Список грантов.
+
+        Returns:
+            (Tuple[List[Packet], int]): 
+                - список извлечённых (или фрагментированных) пакетов, 
+                - фактически извлечённое количество байт.
+                
+        Raises:
+            ValueError: Если списое полученных грантов пуст, у полученных грантов
+            значения UE ID отличаются или буфер UE не существует.
+
+        """
+        if not grants or not all(grant.ue_id == grants[0].ue_id for grant in grants):
+            raise ValueError(
+                "The list of grants must not be empty. Also, the UE ID "
+                "in all grants must be the same"
+            )
+        
+        ue_id = grants[0].ue_id
+
+        if not self.ue_has_buffer(ue_id):
+            raise ValueError(
+                f"UE {ue_id} does not have a buffer. The buffer must "
+                f"have been created during start simulation"
+            )
+        
+        ue_stack = self.ue_stacks.get(ue_id)
+        
+        packets = []
+        extracted_bytes = 0
+        
+        for grant in grants:
+            lcid = grant.lcid
+            num_bytes = grant.num_bytes
+
+            lc_packets, lc_extracted_bytes = ue_stack.get_packets_from_lc(lcid, num_bytes)
+            
+            packets.extend(lc_packets)
+            extracted_bytes += lc_extracted_bytes
+
+        self.current_total_size -= extracted_bytes
+
+        return packets, extracted_bytes
+            
+    def upd_buffers_all(self) -> None:
+        """
+        Обновление буферов всех UE.
+        """
+        new_total_size = 0
+        for ue_stack in self.ue_stacks.values():
+            new_buffers_size = ue_stack.upd_buffers()
+            new_total_size += new_buffers_size
+
+        self.current_total_size = new_total_size
+
+    def ue_has_buffer(self, ue_id: int) -> bool:
+        """
+        Проверка наличия буфера для соответствующего UE.
+
+        Args:
+            ue_id (int): Уникальный идентификатор UE.
+
+        Returns:
+            bool: True, если буфер существует, иначе False.
+        """
+        return ue_id in self.ue_stacks and self.ue_stacks[ue_id].ue_has_buffer()
+
+    def create_ue_buffer(self, ue_id: int, max_size: Optional[int] = None, bearers_info: Dict = None) -> None:
+        """
+        Создание буферов для соответствующего UE для каждого сконфигурированного
+        bearer'а.
+
+        Args:
+            ue_id (int): Уникальный идентификатор UE.
+            max_size (Optional[int], optional): Максимальный размер буфера (байты). 
+                По умолчанию None.
+            bearers_info (Dict, optional): Информация о сконфигурированных bearer'ах UE. 
+                По умолчанию None.
+
+        """
+        ue_buffer_size = self.per_ue_max if max_size is None else max_size
+        self.ue_stacks[ue_id] = UeProtocolStack(ue_id=ue_id)
+
+        if bearers_info is None:
+            return
+
+        bearers = bearers_info.get("bearers")
+
+        if bearers:
+            for bearer in bearers.values():
+                bearer_id = bearer.get("bearer_id")
+                qci = bearer.get("qci")
+                lcid = self._get_lcid_from_bearer_id(bearer_id)
+
+                self.ue_stacks[ue_id].create_entities(lcid, qci, ue_buffer_size)
+
+    def remove_ue_buffer(self, ue_id: int) -> None:
+        """
+        Удаление буферов для соответствующего UE.
+
+        Args:
+            ue_id (int): Уникальный идентификатор UE.
+
+        """
+        if self.ue_has_buffer(ue_id):
+            ue_stack = self.ue_stacks.get(ue_id)
+            ue_stack.clear_buffers()
+
+            del self.ue_stacks[ue_id]
+
+    def get_stats(self) -> Dict:
+        """
+        Получение агрегированной статистики по буферам всех UE.
+
+        Returns:
+            Dict: Словарь со статистикой, содержащий:
+                total_buffer_size: int - Текущий размер буфера БС (байты).
+                total_buffer_capacity: int - Максимальный размер буфера БС (байты).
+                total_packets_added: int - Общее кол-во добавленных пакетов.
+                total_packets_dropped: int - Общее кол-во отброшенных пакетов.
+                total_packets_expired: int - Общее кол-во просроченных пакетов.
+                packets_added_per_ue: Dict - Кол-во добавленных пакетов для каждого UE.
+                packets_dropped_per_ue: Dict - Кол-во отброшенных пакетов для каждого UE.
+                packets_expired_per_ue: Dict - Кол-во просроченных пакетов для каждого UE.
+                buffer_size_per_ue_per_qci: Dict - Текущий размер буфера для каждого QCI каждого UE.
+                extracted_bytes_per_ue_per_qci: Dict - Кол-во извлечённых байт для каждого QCI каждого UE.
+                packets_added_per_ue_per_qci: Dict - Кол-во добавленных пакетов для каждого QCI каждого UE.
+                packets_dropped_per_ue_per_qci: Dict - Кол-во отброшенных пакетов для каждого QCI каждого UE.
+                packets_expired_per_ue_per_qci: Dict - Кол-во просроченных пакетов для каждого QCI каждого UE.
+                oldest_delay_per_ue_per_qci: Dict - Максимальная задержка пакетов для каждого QCI каждого UE.
+                avg_delay_per_ue_per_qci: Dict - Средняя задержка пакетов для каждого QCI каждого UE.
+
+        """
+        # Общая статистика со всех буфеов всех UE
+        total_packets_added = 0
+        total_packets_dropped = 0
+        total_packets_expired = 0
+
+        # Статистика со всех буфеов для каждого UE
+        packets_added_per_ue = {}
+        packets_dropped_per_ue = {}
+        packets_expired_per_ue = {}
+
+        # Статистика для каждого отдельного QCI каждого UE
+        buffer_size_per_ue_per_qci = {}
+        extracted_bytes_per_ue_per_qci = {}
+        packets_added_per_ue_per_qci = {}
+        packets_dropped_per_ue_per_qci = {}
+        packets_expired_per_ue_per_qci = {}
+
+        # Задержки для каждого отдельного QCI каждого UE
+        oldest_delay_per_ue_per_qci = {}
+        avg_delay_per_ue_per_qci = {}
+
+        for ue_stack in self.ue_stacks.values():
+            ue_id = ue_stack.ue_id
+            ue_stack_stats = ue_stack.get_stats()
+
+            total_packets_added += ue_stack_stats.get("ue_packets_added")
+            total_packets_dropped += ue_stack_stats.get("ue_packets_dropped")
+            total_packets_expired += ue_stack_stats.get("ue_packets_expired")
+
+            packets_added_per_ue[ue_id] = ue_stack_stats.get("ue_packets_added")
+            packets_dropped_per_ue[ue_id] = ue_stack_stats.get("ue_packets_dropped")
+            packets_expired_per_ue[ue_id] = ue_stack_stats.get("ue_packets_expired")
+
+            buffer_size_per_ue_per_qci[ue_id] = ue_stack_stats.get("buffer_size_per_qci")
+            extracted_bytes_per_ue_per_qci[ue_id] = ue_stack_stats.get("extracted_bytes_per_qci")
+            packets_added_per_ue_per_qci[ue_id] = ue_stack_stats.get("packets_added_per_qci")
+            packets_dropped_per_ue_per_qci[ue_id] = ue_stack_stats.get("packets_dropped_per_qci")
+            packets_expired_per_ue_per_qci[ue_id] = ue_stack_stats.get("packets_expired_per_qci")
+
+            oldest_delay_per_ue_per_qci[ue_id] = ue_stack_stats.get("oldest_delay_per_qci")
+            avg_delay_per_ue_per_qci[ue_id] = ue_stack_stats.get("avg_delay_per_qci")
+
+        stats = {
+            "total_buffer_size": self.current_total_size,
+            "total_buffer_capacity": self.global_max,
+            "total_packets_added": total_packets_added,
+            "total_packets_dropped": total_packets_dropped,
+            "total_packets_expired": total_packets_expired,
+            "packets_added_per_ue": packets_added_per_ue,
+            "packets_dropped_per_ue": packets_dropped_per_ue,
+            "packets_expired_per_ue": packets_expired_per_ue,
+            "buffer_size_per_ue_per_qci": buffer_size_per_ue_per_qci,
+            "extracted_bytes_per_ue_per_qci": extracted_bytes_per_ue_per_qci,
+            "packets_added_per_ue_per_qci": packets_added_per_ue_per_qci,
+            "packets_dropped_per_ue_per_qci": packets_dropped_per_ue_per_qci,
+            "packets_expired_per_ue_per_qci": packets_expired_per_ue_per_qci,
+            "oldest_delay_per_ue_per_qci": oldest_delay_per_ue_per_qci,
+            "avg_delay_per_ue_per_qci": avg_delay_per_ue_per_qci,
+        }
+
+        return stats
+
+    def _get_lcid_from_bearer_id(self, bearer_id: int) -> int:
+        """
+        Преобразование bearer ID в идентификатор логического канала.
+        
+        LCID 0, 1 и 2 отводятся для SRB (Signaling Radio Bearers), поэтому
+        LCID для DRB = Bearer ID + 2.
+
+        Args:
+            bearer_id (int): Уникальный идентификатор bearer.
+
+        Returns:
+            int: Идентификатор логического канала (LCID).
+
+        """
+        return bearer_id + 2
 
 
 class BaseStation:
@@ -652,10 +1454,7 @@ class BaseStation:
         if use_simple_buffer:
             self.buffer_manager = SimpleBufferManager(global_max, per_ue_max)
         else:
-            raise NotImplementedError(
-                "Currently, only Simple Buffer is supported. To start the "
-                "simulation, set the use_simple_buffer flag to True"
-            )
+            self.buffer_manager = LayeredBufferManager(global_max, per_ue_max)
 
         # Связь с моделью канала
         self.ch_model_type = ch_model_type
@@ -713,9 +1512,6 @@ class BaseStation:
         Args:
             ue: Объект UserEquipment для регистрации
         """
-        if not self.buffer_manager.ue_has_buffer(ue.UE_ID):
-            self.buffer_manager.create_ue_buffer(ue.UE_ID, self.per_ue_max)
-            
         self.registered_ues[ue.UE_ID] = ue
         ue.serving_bs = self
 
@@ -732,74 +1528,3 @@ class BaseStation:
         ue.SET_TRAFFIC_MODEL(model)
 
         # @sherokiddo: "Предусмотреть валидацию"
-
-    def _handle_generated_packets(self, packets: List[Packet]):
-        """
-        Callback для обработки сгенерированных пакетов.
-
-        Автоматически вызывается PacketManager при генерации.
-        Маршрутизирует пакеты в правильные буферы.
-        """
-        # print(f"[✓ CALLBACK] _handle_generated_packets вызван! {len(packets)} пакетов")
-        for pkt in packets:
-            # Получаем буфер для UE
-            if pkt.ue_id not in self.ue_buffers:
-                continue
-
-            buffer = self.ue_buffers[pkt.ue_id]
-
-            # TODO: Если есть LayeredBuffer - маршрутизация по QCI
-            # buffer_layer = buffer.get_buffer_for_qci(pkt.qci)
-            # buffer_layer.ADD_PACKET(pkt, pkt.creation_time)
-
-            # Пока просто добавляем в общий буфер
-            success = buffer.ADD_PACKET(pkt, pkt.creation_time)
-
-            if not success:
-                # Пакет задропан буфером
-                pass
-
-    def setup_ue_traffic_multi_bearer(self, ue_id: int, bearers: List[Dict]):
-        """
-        Настройка multi-bearer трафика для UE.
-
-        Args:
-            ue_id: ID пользователя
-            bearers: Список конфигураций bearers
-
-        Example:
-            bs.setup_ue_traffic_multi_bearer(
-                 ue_id=1,
-                 bearers=[
-                     {
-                         'model_type': 'Poisson',
-                         'qci': 1,
-                         'traffic_type': TrafficType.VOIP,
-                         'packet_rate': 50,
-                         'max_bitrate': 0.064
-                     },
-                     {
-                         'model_type': 'OnOff',
-                         'qci': 7,
-                         'traffic_type': TrafficType.VIDEO_STREAM,
-                         'duration_on': 2,
-                         'duration_off': 3,
-                         'packet_rate': 200,
-                         'max_bitrate': 2.0
-                     }
-                 ]
-             )
-        """
-        for bearer_config in bearers:
-            self.traffic_manager.add_bearer(ue_id=ue_id, **bearer_config)
-
-    def generate_traffic_all_ues(self, current_time: int, update_interval: int):
-        """Генерация трафика для ВСЕХ UE."""
-        for ue_id in self.registered_ues:
-            packets = self.traffic_manager.generate_packets(
-                ue_id=ue_id, current_time=current_time, update_interval=update_interval
-            )
-            # Если callback не вызван (почему-то), добавляем вручную
-            if packets:
-                for pkt in packets:
-                    self.ue_buffers[ue_id].ADD_PACKET(pkt, current_time)
