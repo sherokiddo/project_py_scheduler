@@ -239,6 +239,11 @@ def sim_with_manager_qos():
     # =============================================================================
     #             НАСТРОЙКА БАЗОВОЙ СТАНЦИИ И КОЛЛЕКЦИИ ПОЛЬЗОВАТЕЛЕЙ
     # =============================================================================
+    
+    # Сброс и создание карты
+    MapBorders._instance = None
+    MapBorders(-1000, 1000, -1000, 1000)
+    x_min, x_max, y_min, y_max = MapBorders().get_borders()
 
     # Создание и настройка базовой станции
     bs = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMa", use_simple_buffer=False)
@@ -253,9 +258,12 @@ def sim_with_manager_qos():
         np.random.seed(GLOBALS.SEED)
 
     # Генерация заданного числа UE в коллекцию
-    ue_collection.ADD_RANDOM_USERS(num_ue=5)
-
-    MapBorders(-1000, 1000, -1000, 1000)
+    ue_collection.ADD_RANDOM_USERS(num_ue=5,
+                                   x_min=x_min,
+                                   x_max=x_max,
+                                   y_min=y_min,
+                                   y_max=y_max,
+                                   ue_class="random")
 
     # Установка модели передвижения для всех пользователей коллекции
     ue_collection.SET_MOBILITY_MODEL("RandomWaypoint")
@@ -321,7 +329,7 @@ def sim_with_manager_qos():
 
     # Включение verbose логирования. Для вывода всех логов в файл нужно
     # поставить флаг to_file=True.
-    sim.enable_verbose_log()
+    sim.enable_verbose_log(to_file=True)
 
     # Установка менеджера статистики
     sim.set_stats_manager(
@@ -339,5 +347,5 @@ def sim_with_manager_qos():
 
 
 if __name__ == "__main__":
-    sim_with_manager()
-    # sim_with_manager_qos()
+    # sim_with_manager()
+    sim_with_manager_qos()
