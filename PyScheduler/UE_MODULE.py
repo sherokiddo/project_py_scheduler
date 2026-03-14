@@ -474,7 +474,7 @@ class UserEquipment:
                 self.dist_to_BS_2D, self.serving_bs.height - self.UE_height
             )
 
-    def UPD_CH_QUALITY(self) -> None:
+    def UPD_CH_QUALITY(self, channel_update_interval: int = 1) -> None:
         """
         Обновить качество канала связи согласно модели распространения сигнала.
 
@@ -487,9 +487,34 @@ class UserEquipment:
         if not self.serving_bs.channel_model:
             raise ValueError("Ошибка! У базовой станции не инициализирована модель канала!")
 
-        displacement = np.hypot(
-            self.position[0] - self.coordinates[-2][0], self.position[1] - self.coordinates[-2][1]
-        )
+        if self.is_indoor:
+            self._calculate_distances_to_BS(
+                self.serving_bs.position, self.serving_bs.height
+            )
+        else:
+            self.dist_to_BS_2D = np.hypot(
+                self.position[0] - self.serving_bs.position[0],
+                self.position[1] - self.serving_bs.position[1],
+            )
+            self.dist_to_BS_2D_out = self.dist_to_BS_2D
+            self.dist_to_BS_3D = np.hypot(
+                self.dist_to_BS_2D,
+                self.serving_bs.height - self.UE_height
+            )
+
+        # displacement = np.hypot(
+        #     self.position[0] - self._last_ch_position[0],
+        #     self.position[1] - self._last_ch_position[1]
+        # )
+        # self._last_ch_position = self.position
+
+        STATIC_UE_VELOCITY = 0.2
+        effective_velocity = max(self.velocity, STATIC_UE_VELOCITY)
+        displacement = effective_velocity * (channel_update_interval / 1000.0)
+        #TODO: TDL некорректно работает при displacement = 0
+        # этот метод нужно хорошо протестировать и проверить
+        # изучить residual movement в 3GPP. Пока решение временное
+        
         if isinstance(self.serving_bs.channel_model, RMaModel):
             if self.UE_height == 0.0:
                 if self.is_indoor == True:
@@ -589,7 +614,7 @@ class UserEquipment:
         )
 
         # EWMA обновление average_throughput для Proportional Fair
-        alpha = 0.001  # временный хардкод, вывести в управление.
+        alpha = 0.002  # временный хардкод, вывести в управление.
         average_throughput_past = self.average_throughput
         self.average_throughput = (
             1 - alpha
@@ -616,7 +641,7 @@ class UserEquipment:
         )
 
         # EWMA обновление average_throughput для Proportional Fair
-        alpha = 0.001  # временный хардкод, вывести в управление.
+        alpha = 0.002  # временный хардкод, вывести в управление.
         average_throughput_past = self.average_throughput
         self.average_throughput = (
             1 - alpha
@@ -627,6 +652,8 @@ class UserEquipment:
 
         # Обновление общей статистики
         self.total_dl_transmitted_bits += bits_dl_transmitted
+
+        #TODO: Сделать ручку для регулирования порога EWMA (alpha=) в симуляции
 
     def UPD_BUFFER(self, current_time: int):
         """Обновление задержки пакетов в буфере"""
@@ -835,7 +862,11 @@ class UECollection:
         """
         return list(self.users.values())
 
-    def UPDATE_ALL_USERS(self, current_time: int, update_interval: int):
+    def UPDATE_ALL_USERS(self, current_time: int,
+                         update_interval: int,
+                         mobility_update_interval: int = None,
+                         channel_update_interval: int = None,
+                         ):
         """
         Обновить состояние всех пользователей в коллекции.
 
@@ -844,12 +875,18 @@ class UECollection:
             update_interval (int): Интервал обновления состояния UE (мс).
 
         """
+        # Если отдельные интервалы не заданы — старое поведение
+        mob_interval = mobility_update_interval or update_interval
+        ch_interval = channel_update_interval or update_interval
+
         for ue in self.users.values():
             # Обновление позиции
-            ue.UPD_POSITION(update_interval)
+            if current_time % mob_interval == 0:
+                ue.UPD_POSITION(mob_interval)
 
             # Обновление качества канала
-            ue.UPD_CH_QUALITY()
+            if current_time % ch_interval == 0:
+                ue.UPD_CH_QUALITY(ch_interval)
 
     def GET_ACTIVE_USERS(self) -> List[UserEquipment]:
         """
@@ -885,10 +922,10 @@ class UECollection:
     def ADD_RANDOM_USERS(
         self,
         num_ue: int,
-        x_min: float = -1000,
-        x_max: float = 1000,
-        y_min: float = -1000,
-        y_max: float = 1000,
+        x_min: float = None,
+        x_max: float = None,
+        y_min: float = None,
+        y_max: float = None,
         ue_class: str = "random",
     ):
         """
@@ -1032,3 +1069,6 @@ def test_buffer_fifo():
 
     # 7. Очистка буфера
     buffer.DESTROY_BUFFER()
+
+    #TODO: Тесты выше, они вообще работают? Проверить и перенести либо в модуль
+    # тестов либо в папку с тестами
