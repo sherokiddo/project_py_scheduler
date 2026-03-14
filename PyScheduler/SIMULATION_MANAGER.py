@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 import GLOBALS
 import numpy as np
 from BS_MODULE import BaseStation
-from RES_GRID import RES_GRID_LTE
+from RES_GRID import RES_GRID_LTE_CACHED
 from SCHEDULER import SchedulerInterface
 from TRAFFIC_MODEL import PacketManager, SimpleGenerator, TrafficType
 from UE_MODULE import UECollection
@@ -1179,13 +1179,11 @@ class SimulationManager:
             # Проверка обязательных параметров симуляции
             self._check_required_parameters()
 
-            # Расчёт числа кадров для ресурсной сетки
-            num_frames = int(np.ceil(self.sim_config.sim_duration / 10))
-            if self.sim_config.verbose:
-                print(f"[SIMULATION] Calculated number of frames for resource grid: {num_frames}")
-
             # Создание ресурсной сетки
-            lte_grid = RES_GRID_LTE(bandwidth=self.base_station.bandwidth, num_frames=num_frames)
+            lte_grid = RES_GRID_LTE_CACHED(
+                bandwidth=self.base_station.bandwidth,
+                window_size=50
+            )
             if self.sim_config.verbose and lte_grid:
                 print(
                     f"[SIMULATION] The resource grid has been initialized. "
