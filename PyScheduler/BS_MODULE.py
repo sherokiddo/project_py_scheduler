@@ -385,6 +385,8 @@ class SimpleBufferManager(IBufferManager):
         self.global_max = global_max
         self.per_ue_max = per_ue_max
         self.current_total_size = 0
+
+        self.global_packets_dropped = 0
         
     def add_packet(self, ue_id: int, packet: Packet) -> bool:
         """
@@ -408,6 +410,7 @@ class SimpleBufferManager(IBufferManager):
             )
             
         if self.current_total_size + packet.size > self.global_max:
+            self.global_packets_dropped += 1
             return False
             
         if self.buffers[ue_id].add_packet(packet):
@@ -536,6 +539,7 @@ class SimpleBufferManager(IBufferManager):
             Dict: Словарь со статистикой, содержащий:
                 total_buffer_size: int - Текущий размер буфера БС (байты).
                 total_buffer_capacity: int - Максимальный размер буфера БС (байты).
+                global_packets_dropped: int - Кол-во отброшенных пакетов из-за переполнения буфера БС.
                 total_packets_added: int - Общее кол-во добавленных пакетов.
                 total_packets_dropped: int - Общее кол-во отброшенных пакетов.
                 total_packets_expired: int - Общее кол-во просроченных пакетов.
@@ -580,6 +584,7 @@ class SimpleBufferManager(IBufferManager):
         stats = {
             "total_buffer_size": self.current_total_size,
             "total_buffer_capacity": self.global_max,
+            "global_packets_dropped": self.global_packets_dropped,
             "total_packets_added": total_packets_added,
             "total_packets_dropped": total_packets_dropped,
             "total_packets_expired": total_packets_expired,
@@ -1117,6 +1122,8 @@ class LayeredBufferManager(IBufferManager):
         self.per_ue_max = per_ue_max
         self.current_total_size = 0
 
+        self.global_packets_dropped = 0
+
     def add_packet(self, ue_id: int, packet: Packet) -> bool:
         """
         Добавление пакета в буфер соответствующего UE.
@@ -1139,6 +1146,7 @@ class LayeredBufferManager(IBufferManager):
             )
         
         if self.current_total_size + packet.size > self.global_max:
+            self.global_packets_dropped += 1
             return False
         
         ue_stack = self.ue_stacks.get(ue_id)
@@ -1299,6 +1307,7 @@ class LayeredBufferManager(IBufferManager):
             Dict: Словарь со статистикой, содержащий:
                 total_buffer_size: int - Текущий размер буфера БС (байты).
                 total_buffer_capacity: int - Максимальный размер буфера БС (байты).
+                global_packets_dropped: int - Кол-во отброшенных пакетов из-за переполнения буфера БС.
                 total_packets_added: int - Общее кол-во добавленных пакетов.
                 total_packets_dropped: int - Общее кол-во отброшенных пакетов.
                 total_packets_expired: int - Общее кол-во просроченных пакетов.
@@ -1359,6 +1368,7 @@ class LayeredBufferManager(IBufferManager):
         stats = {
             "total_buffer_size": self.current_total_size,
             "total_buffer_capacity": self.global_max,
+            "global_packets_dropped": self.global_packets_dropped,
             "total_packets_added": total_packets_added,
             "total_packets_dropped": total_packets_dropped,
             "total_packets_expired": total_packets_expired,
