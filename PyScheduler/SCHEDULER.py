@@ -110,6 +110,7 @@ import time
 from dataclasses import dataclass
 from BS_MODULE import BaseStation
 from typing import Dict, List, Optional
+from patterns.observer import EventBus, EventType
 
 @dataclass(slots=True)
 class SchedulingGrant:
@@ -292,7 +293,8 @@ class SchedulerInterface:
                  verbose_pdcch=False,
                  window_size=100,
                  enable_window=True,
-                 verbose = False):
+                 verbose=False,
+                 event_bus: Optional[EventBus] = None):
 
         self.lte_grid = lte_grid
         self.lte_grid.SET_BS(bs)
@@ -331,6 +333,7 @@ class SchedulerInterface:
         self.sb_cqi_upd_interval = 1
 
         self.verbose = verbose
+        self._event_bus = event_bus
 
         self.harq_manager = None  # Заготовка для HARQ
 
@@ -403,6 +406,18 @@ class SchedulerInterface:
         # ЭТАП 5: PDCCH allocation
         ues_with_pdcch = self._allocate_pdcch(priority_list_filtered)
         self._last_pdcch_blocked_count = len(priority_list_filtered) - len(ues_with_pdcch)
+        if self._event_bus is not None and self._last_pdcch_blocked_count > 0:
+            pdcch_ids = {u['UE_ID'] for u in ues_with_pdcch}
+            blocked_ids = [u['UE_ID'] for u in priority_list_filtered if u['UE_ID'] not in pdcch_ids]
+            self._event_bus.publish_simple(
+                EventType.PDCCH_BLOCKED,
+                data={
+                    'blocked_count': self._last_pdcch_blocked_count,
+                    'blocked_ue_ids': blocked_ids,
+                },
+                source='Scheduler',
+                tti=tti,
+            )
         if not ues_with_pdcch:
             return self._empty_result()
 
@@ -427,6 +442,17 @@ class SchedulerInterface:
                                 )
 
         # ЭТАП 8: Result formation
+        if self._event_bus is not None:
+            self._event_bus.publish_simple(
+                EventType.SCHEDULING_COMPLETED,
+                data={
+                    'allocated_rb_count': allocated_rbs,
+                    'active_ue_count': active_ues,
+                    'eligible_ue_count': len(eligible_ues),
+                },
+                source='Scheduler',
+                tti=tti,
+            )
         return self._build_result(allocation, users, eligible_ues, tti)
 
     def get_stats(self) -> Dict:
@@ -922,6 +948,18 @@ class SchedulerInterface:
             transmitted_bits = GLOBALS.bytes_to_bits(total_bytes) + remainder_bits
             self.last_ue_transmitted_bits[ueid] = transmitted_bits
             ue.UPD_DL_THROUGHPUT_BPS(transmitted_bits, time_interval_ms)
+            if self._event_bus is not None and total_bytes > 0:
+                self._event_bus.publish_simple(
+                    EventType.PACKET_TRANSMITTED,
+                    data={
+                        'ue_id': ueid,
+                        'transmitted_bytes': total_bytes,
+                        'transmitted_bits': transmitted_bits,
+                        'allocated_rbs': allocated_rbs,
+                    },
+                    source='Scheduler',
+                    tti=tti,
+                )
 
             total_bits_transmitted += transmitted_bits
             if total_bytes > 0:

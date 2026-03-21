@@ -75,6 +75,7 @@ from typing import Dict, List, Optional, Tuple
 import GLOBALS
 import numpy as np
 from TRAFFIC_MODEL import MMPPModel, OnOffModel, PoissonModel
+from patterns.observer import EventBus, EventType
 
 
 class Packet:
@@ -798,12 +799,16 @@ class UECollection:
     Задел, чтобы не создавать их вручную и можно было регулировать количество.
     """
 
-    def __init__(self):
+    def __init__(self, event_bus: Optional[EventBus] = None):
         """
         Инициализация коллекции UE.
 
+        Args:
+            event_bus: Опциональная шина событий (паттерн Observer).
+
         """
         self.users = {}  # Словарь {UE_ID: UserEquipment}
+        self._event_bus = event_bus
 
     def ADD_USER(self, ue: UserEquipment) -> bool:
         """
@@ -883,6 +888,18 @@ class UECollection:
             # Обновление позиции
             if current_time % mob_interval == 0:
                 ue.UPD_POSITION(mob_interval)
+                if self._event_bus is not None:
+                    self._event_bus.publish_simple(
+                        EventType.UE_POSITION_UPDATED,
+                        data={
+                            'ue_id': ue.UE_ID,
+                            'x': ue.position[0] if hasattr(ue, 'position') else None,
+                            'y': ue.position[1] if hasattr(ue, 'position') else None,
+                            'velocity': getattr(ue, 'velocity', None),
+                        },
+                        source='UECollection',
+                        tti=current_time,
+                    )
 
             # Обновление качества канала
             if current_time % ch_interval == 0:

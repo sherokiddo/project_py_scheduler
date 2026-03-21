@@ -39,6 +39,7 @@ from TRAFFIC_MODEL import PacketManager, SimpleGenerator, TrafficType
 from UE_MODULE import UECollection
 from MOBILITY_MODEL import MapBorders
 from tqdm import tqdm
+from patterns.observer import EventBus, EventType
 
 # ==============================================================================
 #                          ОБРАБОТЧИК СТАТИСТИКИ
@@ -924,12 +925,16 @@ class SimulationManager:
 
     """
 
-    def __init__(self):
+    def __init__(self, event_bus: Optional[EventBus] = None):
         """
         Инициализация менеджера симуляции.
 
         Создаёт объекты конфигураций, а также контейнеры для базовой
         станции и коллекции пользователей.
+
+        Args:
+            event_bus: Опциональная шина событий (паттерн Observer).
+                       Если передана — модули публикуют события в неё.
 
         """
         self.sim_config = SimulationConfig()
@@ -947,6 +952,7 @@ class SimulationManager:
         self.scheduler = None
 
         self.traffic_gen = None
+        self._event_bus = event_bus
 
     def set_sim_duration(self, sim_duration: int) -> None:
         """
@@ -1050,6 +1056,8 @@ class SimulationManager:
             )
 
         self.ue_collection = ue_collection
+        if self._event_bus is not None:
+            self.ue_collection._event_bus = self._event_bus
 
     def set_base_station(self, base_station: BaseStation) -> None:
         """
@@ -1069,6 +1077,8 @@ class SimulationManager:
             )
 
         self.base_station = base_station
+        if self._event_bus is not None:
+            self.base_station._event_bus = self._event_bus
 
         if self.base_station.use_simple_buffer:
             self.sim_config.use_legacy_traffic = True
@@ -1204,6 +1214,7 @@ class SimulationManager:
                 window_size=self.sched_config.window_size,
                 enable_window=self.sched_config.enable_window,
                 verbose=self.sim_config.verbose,
+                event_bus=self._event_bus,
             )
 
             # Инициализация менеджера статистики
@@ -1238,6 +1249,18 @@ class SimulationManager:
                         f"amc={self.stats_config.amc_level})"
                     )
 
+            if self._event_bus is not None:
+                self._event_bus.publish_simple(
+                    EventType.SIMULATION_STARTED,
+                    data={
+                        'sim_duration': self.sim_config.sim_duration,
+                        'algorithm': self.sched_config.algorithm,
+                        'ue_count': len(self.ue_collection.GET_ALL_USERS()),
+                    },
+                    source='SimulationManager',
+                    tti=0,
+                )
+
             try:
                 pbar = tqdm(
                     total=self.sim_config.sim_duration,
@@ -1271,11 +1294,34 @@ class SimulationManager:
 
                     GLOBALS.CURRENT_TIME = tti
 
+                    if self._event_bus is not None:
+                        self._event_bus.publish_simple(
+                            EventType.TTI_STARTED,
+                            data={'tti': tti},
+                            source='SimulationManager',
+                            tti=tti,
+                        )
+
                     _ = self.run_tti(current_time=tti)
+
+                    if self._event_bus is not None:
+                        self._event_bus.publish_simple(
+                            EventType.TTI_COMPLETED,
+                            data={'tti': tti},
+                            source='SimulationManager',
+                            tti=tti,
+                        )
 
                     pbar.update(1)
                     if self.stats_manager and (tti % self.stats_manager.config.collect_interval == 0):
                         self.stats_manager.collect(tti)
+                        if self._event_bus is not None:
+                            self._event_bus.publish_simple(
+                                EventType.METRICS_COLLECTED,
+                                data={'tti': tti},
+                                source='StatsManager',
+                                tti=tti,
+                            )
 
                     if self.stats_manager and (tti % JFI_INTERVAL_TTI == 0):
                         ue_avg_throughputs = {
@@ -1312,6 +1358,12 @@ class SimulationManager:
                     # Экспорт в CSV
                     output_filename = f"{self.stats_config.file_prefix}.csv"
                     self.stats_manager.export_csv(output_filename, locale="ru")
+                    if self._event_bus is not None:
+                        self._event_bus.publish_simple(
+                            EventType.METRICS_EXPORTED,
+                            data={'filename': output_filename, 'format': 'csv'},
+                            source='StatsManager',
+                        )
 
                     # Отладочный момент для глобального JI (Fairness)
                     ue_avg_throughputs = {}
@@ -1337,7 +1389,22 @@ class SimulationManager:
                             detailed_filename = f"{self.stats_config.file_prefix}_detailed.json"
                             self.stats_manager.export_detailed_json(detailed_filename)
 
+            except Exception as exc:
+                if self._event_bus is not None:
+                    self._event_bus.publish_simple(
+                        EventType.SIMULATION_ERROR,
+                        data={'error': str(exc), 'error_type': type(exc).__name__},
+                        source='SimulationManager',
+                    )
+                raise
+
             finally:
+                if self._event_bus is not None:
+                    self._event_bus.publish_simple(
+                        EventType.SIMULATION_STOPPED,
+                        data={'sim_duration': self.sim_config.sim_duration},
+                        source='SimulationManager',
+                    )
                 # Возвращение консольного вывода
                 if pbar is not None:
                     pbar.close()
@@ -1514,8 +1581,26 @@ class SimulationManager:
 
                 # Кладем пакеты в буфер
                 if packets:
+                    if self._event_bus is not None:
+                        self._event_bus.publish_simple(
+                            EventType.PACKET_GENERATED,
+                            data={
+                                'ue_id': ue_id,
+                                'packet_count': len(packets),
+                                'total_bytes': sum(p.size for p in packets),
+                            },
+                            source='SimpleGenerator',
+                            tti=current_time,
+                        )
                     for pkt in packets:
-                        self.base_station.buffer_manager.add_packet(ue_id, pkt)
+                        success = self.base_station.buffer_manager.add_packet(ue_id, pkt)
+                        if not success and self._event_bus is not None:
+                            self._event_bus.publish_simple(
+                                EventType.UE_BUFFER_OVERFLOW,
+                                data={'ue_id': ue_id, 'packet_size': pkt.size},
+                                source='SimulationManager',
+                                tti=current_time,
+                            )
 
         # Bearers mode (Layered Buffer + Packet Manager)
         else:

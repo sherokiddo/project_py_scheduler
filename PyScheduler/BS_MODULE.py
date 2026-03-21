@@ -20,6 +20,7 @@ from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
+from patterns.observer import EventBus, EventType
 
 import GLOBALS
 import numpy as np
@@ -618,6 +619,7 @@ class BaseStation:
         ch_model_type: str = None,
         ch_model_params: dict = None,
         enable_tdl: bool = False,
+        event_bus: Optional[EventBus] = None,
     ):
         """
         Инициализация базовой станции.
@@ -663,6 +665,7 @@ class BaseStation:
         # TODO: enable_tdl необходимо заменить на Strategy-паттерн
         self.enable_tdl = enable_tdl
         self.registered_ues = {}
+        self._event_bus = event_bus
 
         if ch_model_type is not None:
             self._init_channel_model(ch_model_params or {})
@@ -718,6 +721,16 @@ class BaseStation:
             
         self.registered_ues[ue.UE_ID] = ue
         ue.serving_bs = self
+        if self._event_bus is not None:
+            self._event_bus.publish_simple(
+                EventType.UE_REGISTERED,
+                data={
+                    'ue_id': ue.UE_ID,
+                    'ue_class': getattr(ue, 'ue_class', None),
+                    'position': getattr(ue, 'position', None),
+                },
+                source='BaseStation',
+            )
 
         # TODO: сделать метод DEREG_UE и сопутствующие изменения
 
