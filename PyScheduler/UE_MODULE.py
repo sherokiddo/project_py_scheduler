@@ -68,12 +68,16 @@
 #      - Добавлено динамическое установление атрибутов в UPD_POSITION.
 #------------------------------------------------------------------------------
 """
+from __future__ import annotations
 import numpy as np
 import random
 import GLOBALS
 from collections import deque
 from typing import Dict, List, Optional, Union, Tuple
 from TRAFFIC_MODEL import PoissonModel, OnOffModel, MMPPModel
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from SCHEDULER import SchedulerInterface
 
 class Packet:
     """Класс для представления сетевого пакета"""
@@ -656,7 +660,7 @@ class UserEquipment:
             step = (22.976 + 6.934) / 14
             return int(1 + (SINR + 6.934) / step)
 
-    def receive_tb(self, ue_id: int, rb_list: List[int], cqi: int, 
+    def receive_tb(self, ue_id: int, rb_list: List[int], cqi: int, base_bler: float,
                 process_id: int = 0, is_retransmission: bool = False) -> bool:
         """
         Моделирует приём TB с учётом BLER и HARQ.
@@ -671,15 +675,10 @@ class UserEquipment:
         Returns:
             True если ACK (успешный приём), False если NACK
         """
-        # 1.Расчёт среднего SINR
-        sinr_vals = [self.get_sinr(ue_id, rb) for rb in rb_list]
-        sinr_avg = sum(sinr_vals) / len(sinr_vals)
-        
-        # 2. Получение BLER из таблицы
-        base_bler = self._lookup_bler(sinr_avg, cqi)
-        
+
         # 3. HARQ soft combining — понижение BLER на каждую ретрансмиссию
         bler = base_bler
+
         if is_retransmission and hasattr(self, 'harq_manager'):
             process = self.harq_manager.processes.get(ue_id, [None]*8)[process_id]
             if process is not None:
@@ -688,7 +687,6 @@ class UserEquipment:
 
         # 4. Вероятностная модель ошибки принятия TB
         tb_error = random.random() < bler
-
         return not tb_error
         
     def _calculate_distances_to_BS(self) -> None:

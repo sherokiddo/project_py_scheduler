@@ -85,9 +85,12 @@
 #------------------------------------------------------------------------------
 """
 
+from __future__ import annotations
 from typing import Dict, List, Optional, Union, Tuple
-from BS_MODULE import BaseStation
-from enum import Enum
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from BS_MODULE import BaseStation
+from enum import Enum, auto
 from CHANNEL_MODEL import ChannelModel
 import numpy as np
 import GLOBALS
@@ -98,6 +101,11 @@ from typing import Tuple
 #==============================================================================
 #                              ИНТЕРФЕЙС МОДУЛЯ
 #==============================================================================
+
+# HARQ: настройки по умолчанию 
+HARQ_DEFAULT_SOFTBUFFER_DTYPE = np.int16   # Тип для LLR-подобных soft-значений (компактно)
+HARQ_DEFAULT_MAX_NCB = 100000              # Стартовый размер (при необходимости буфер расширим)
+
 
 class SchedulerInterface:
     """
@@ -187,7 +195,7 @@ class SchedulerInterface:
         self.verbose = verbose
         
         self.harq_manager = None  # Заготовка для HARQ
-        
+
         if self.verbose:
             print(f"[SCHEDULER] Initialized {self.__class__.__name__}")
         
@@ -1126,26 +1134,14 @@ class HARQState(Enum):
     """
     Состояния HARQ-процесса.
     """
-    IDLE = 0           # Процесс свободен
-    WAITING_ACK = 1    # Ожидание ACK/NACK
-    RETRANSMIT = 2     # Требуется повторная передача
-    
+    IDLE = auto()           # Процесс свободен
+    WAITING_ACK = auto()    # Ожидание ACK/NACK
+    RETRANSMIT = auto()     # Требуется повторная передача
+    FAIL = auto()           # Когда процесс исчерпал max_tx или вышел по таймауту
+
 class HARQProcess:
     """
     Класс для управления одним HARQ-процессом.
-    
-    Attributes:
-        process_id: Идентификатор процесса (0-7 для LTE)
-        state: Текущее состояние процесса
-        tx_count: Число попыток передачи (включая начальную)
-        max_tx: Максимальное число передач
-        tb_data: Буфер транспортного блока
-        rv_sequence: Последовательность Redundancy Version
-        cqi: Текущий CQI для передачи
-        allocated_rbs: Список выделенных RB
-        self.soft_bits: История soft bits всех передач
-        self.soft_bits_combined: Результат combining
-        self.llr_accumulator: Накопитель LLR значений
     """
     
     def __init__(self, process_id: int, max_tx: int = 4):
@@ -1159,12 +1155,18 @@ class HARQProcess:
             tx_count: Счетчик текущей попытки передачи
             tb_data: Сохраняемые транспортные блоки для передачи/повтора
             rv_sequence: Стандартная циклическая последовательность Redundancy Versions
-            combined_rvs: Список RV, использованных для данного TB
             cqi: Channel Quality Indicator для UE в данной передаче
             allocated_rbs: Список выделенных ресурсных блоков
-            soft_bits: Список массивов soft bits (LLR) каждой попытки (для soft combining)
-            soft_bits_combined: Итоговый объединённый массив soft bits
-            llr_accumulator: Накопитель LLR для soft combining
+            soft_bits: Список массивов soft bits (LLR) каждой попытки (для soft combining).
+                        Используется только для улучшения шансов ретрансмисси IR в softbuffer.
+                        Здесь используется как история принятых softbits для дебага
+            combined_rvs: Список RV, использованных для данного TB
+            n_cb: 
+            softbuffer: 
+            softbuffer_valid_len: 
+            k0: TTI, когда стартовала текущая HARQ-передача (первая попытка TB)
+            last_tx_tti: TTI последней (ре)передачи этого TB
+            ack_timeout_tti: ACK/NACK ожидание таймаута (в TTI).
         """
         self.process_id = process_id
         self.state = HARQState.IDLE
@@ -1175,44 +1177,88 @@ class HARQProcess:
         self.cqi = None
         self.allocated_rbs = []
         self.soft_bits = []
-        self.soft_bits_combined = None
-        self.llr_accumulator = None
         self.combined_rvs = []
+        # Pre-allocated softbuffer
+        self.n_cb: int = 0 # Активная длина кодблока/softbits для текущего TB
+        self.softbuffer = np.zeros(HARQ_DEFAULT_MAX_NCB, dtype=HARQ_DEFAULT_SOFTBUFFER_DTYPE)
+        self.softbuffer_valid_len: int = 0  # Сколько элементов реально валидно (== n_cb)
+        self.k0 = None          
+        self.last_tx_tti = None 
+        self.ack_timeout_tti = 12  # 12 TTI ~= 12 ms при TTI=1ms (DTX watchdog) (8 процессов + с небольшим запасом на дискретность/очередь событий в симуляторе)
+
+    def _ensure_softbuffer(self, n_cb: int) -> None:
+        """
+        Гарантирует, что pre-allocated softbuffer имеет длину минимум n_cb.
+        """
+        if n_cb <= 0:
+            self.n_cb = 0
+            self.softbuffer_valid_len = 0
+            return
+        if n_cb > self.softbuffer.shape[0]:
+            # Расширяем с запасом, чтобы не аллоцировать на каждой ретрансляции
+            new_len = max(n_cb, int(self.softbuffer.shape[0] * 1.5))
+            self.softbuffer = np.zeros(new_len, dtype=self.softbuffer.dtype)
+        self.n_cb = n_cb
+        self.softbuffer_valid_len = n_cb
+
+    def reset_softbuffer(self, n_cb: int) -> None:
+        """
+        Сброс softbuffer для нового TB (или после ACK/сброса процесса).
+        """
+        self._ensure_softbuffer(n_cb)
+        if self.softbuffer_valid_len > 0:
+            self.softbuffer[: self.softbuffer_valid_len] = 0
+
+    def soft_combine(self, soft_bits_received: np.ndarray) -> None:
+        """
+        Накопление LLR-подобных значений в softbuffer (упрощённый IR soft combining).
+        """
+        if soft_bits_received is None:
+            return
+        # Гарантируем numpy-массив нужного типа
+        rx = np.asarray(soft_bits_received, dtype=self.softbuffer.dtype)
+
+        n_cb = int(rx.shape[0])
+        self._ensure_softbuffer(n_cb)
+
+        # Сатурирующее сложение 
+        acc = self.softbuffer[:n_cb].astype(np.int32) + rx.astype(np.int32)
+        acc = np.clip(acc, np.iinfo(self.softbuffer.dtype).min, np.iinfo(self.softbuffer.dtype).max)
+        self.softbuffer[:n_cb] = acc.astype(self.softbuffer.dtype)
+
         
-    def start_transmission(self, tb_data: bytes, cqi: int, rbs: List[int],
+    def start_transmission(self, tti: int,  tb_data: bytes, cqi: int, rbs: List[int],
                             soft_bits_received=None ):
         """
         Начало новой передачи TB.
         
         Args:
-            tb_data: Данные транспортного блока
-            cqi: Channel Quality Indicator
-            rbs: Список выделенных resource blocks
+            state: Текущее состояние процесса HARQ (IDLE, WAITING_ACK, RETRANSMIT)
+            tx_count: Счетчик текущей попытки передачи
+            tb_data: Сохраняемые транспортные блоки для передачи/повтора
+            cqi: Channel Quality Indicator для UE в данной передаче
+            allocated_rbs: Список выделенных resource blocks
+            k0: k0/TTI привязка TB (защита от запоздавшего ACK/NACK)
             soft_bits_received: soft bits из канала (numpy array LLR значений)
                                 если None - создаётся нулевой accumulator
+            reset_softbuffer(0) # Сброс pre-allocated softbuffer перед новым TB
             combined_rvs: Список RV, использованных для данного TB
-            
         """
         self.state = HARQState.WAITING_ACK
         self.tx_count = 1
         self.tb_data = tb_data
         self.cqi = cqi
         self.allocated_rbs = rbs
+        self.k0 = tti 
+        self.last_tx_tti = tti
+        self.reset_softbuffer(0)
         # инициализируем список RV для IR combining (первый RV)
-        try:
-            self.combined_rvs = [self.get_current_rv()]
-        except Exception:
-            self.combined_rvs = []
-
+        self.combined_rvs = [self.get_current_rv()]
+      
         # Сохранить soft bits первой передачи
         if soft_bits_received is not None:
             self.soft_bits.append(np.array(soft_bits_received).copy())
-            # Инициализировать accumulator с первыми soft bits
-            self.llr_accumulator = np.array(soft_bits_received).copy()
-        else:
-            # Если soft bits не переданы, создать нулевой accumulator
-            self.llr_accumulator = None
-        
+
     def handle_ack(self):
         """
         Обработка положительного подтверждения (ACK).
@@ -1220,6 +1266,7 @@ class HARQProcess:
         # При положительном подтверждении очищаем комбинированные RV и освобождаем процесс
         self.combined_rvs = []
         self.reset()
+        self.reset_softbuffer(0) # Сброс softbuffer (pre-allocated) перед следующим TB
         self.tx_count = 0
         self.tb_data = None # Процесс освобождается
         
@@ -1230,36 +1277,16 @@ class HARQProcess:
         Returns:
             True если возможна повторная передача, False если достигнут лимит
         """
+        # если ещё можно повторять — планируем ретрансмит
         if self.tx_count < self.max_tx:
             self.tx_count += 1
             self.state = HARQState.RETRANSMIT
-
-            # SOFT COMBINING: ГЛАВНАЯ ЛОГИКА
             if soft_bits_received is not None:
-                soft_bits_received = np.array(soft_bits_received)
-                self.soft_bits.append(soft_bits_received.copy())
-                
-                # Суммировать LLR значения
-                if self.llr_accumulator is not None:
-                    # Проверить совпадение размеров
-                    if len(self.llr_accumulator) == len(soft_bits_received):
-                        # LLR_новый = LLR_старый + LLR_новый
-                        self.llr_accumulator = self.llr_accumulator + soft_bits_received
-                        # Сохранить результат combining
-                        self.soft_bits_combined = self.llr_accumulator.copy()
-                    else:
-                        # Если размеры не совпадают, использовать новые bits
-                        self.llr_accumulator = soft_bits_received.copy()
-                else:
-                    # Если accumulator ещё не инициализирован
-                    self.llr_accumulator = soft_bits_received.copy()
-                    self.soft_bits_combined = soft_bits_received.copy()
-
+                self.soft_bits.append(np.array(soft_bits_received).copy())
             return True
-        else:
-            # Достигнут максимум передач, сбрасываем процесс
-            self.reset()
-            return False
+
+        self.state = HARQState.FAIL
+        return False
             
     def get_current_rv(self) -> int:
         """
@@ -1282,8 +1309,11 @@ class HARQProcess:
         self.combined_rvs = []
         # Очистить soft bits при сбросе
         self.soft_bits = []
-        self.soft_bits_combined = None
-        self.llr_accumulator = None
+        # Сброс привязки к TB (k0) и времени последней передачи
+        self.k0 = None
+        self.last_tx_tti = None
+        self.reset_softbuffer(0)
+
         
     def is_idle(self) -> bool:
         """
@@ -1299,12 +1329,11 @@ class HARQProcess:
 
     def get_combined_soft_bits(self):
         """
-        Получить объединённые soft bits после combining.
-        
-        Returns:
-            numpy array с суммированными LLR значениями (или None)
+        Возвращение текущего накопленного буфера (валидной части)
         """
-        return self.soft_bits_combined
+        if self.softbuffer_valid_len <= 0:
+            return None
+        return self.softbuffer[: self.softbuffer_valid_len].copy()
     
     def get_soft_bits_history(self):
         """
@@ -1313,22 +1342,10 @@ class HARQProcess:
         Returns:
             List[numpy array] - soft bits для каждой попытки передачи
         """
-        return self.soft_bits
-    
-    def get_llr_accumulator(self):
-        """
-        Получить текущий LLR accumulator.
-        """
-        return self.llr_accumulator
-
+        return self.soft_bits 
 class HARQManager:
     """
     Менеджер HARQ-процессов для всех UE в системе.
-    
-    Attributes:
-        num_processes: Число HARQ-процессов на UE (обычно 8 для LTE)
-        max_tx: Максимальное число передач на процесс
-        processes: Словарь {ue_id: [HARQProcess, ...]}
     """
     
     def __init__(self, num_processes: int = 8, max_tx: int = 4):
@@ -1337,16 +1354,27 @@ class HARQManager:
         
         Args:
             num_processes: Число HARQ-процессов на UE (по умолчанию 8)
-            max_tx: Максимальное число передач (по умолчанию 4)
+            max_tx: Максимальное число передач на пооцесс (по умолчанию 4)
+            processes: Словарь {ue_id: [HARQProcess, ...]}
+            self.n_ko_ue:
+            - NACK (явный негативный HARQ feedback),
+            - DTX/потеря feedback (таймаут ожидания ACK/NACK по watchdog'у)
+            self.current_tti: Текущий TTI
+            self.feedback_queue: Очередь обратной связи: элементы (handle_tti, ue_id, process_id, ack, rv)
+            self.combining_stats: Статистика комбинирования IR
+            self.rlf_threshold_nko: Порог для триггера RLF (суррогат)
+            self.rlf_ue: Флаг RLF по UE: True => запрещаем новые передачи и ретрансляции для UE
         """
         self.num_processes = num_processes
         self.max_tx = max_tx
         self.processes: Dict[int, List[HARQProcess]] = {}
-        # Текущий TTI
+        self.n_ko_ue: Dict[int, int] = {}
+        self.rlf_threshold_nko: int = 100 # Смысл порога в нашей модели:
+                                          # acktimeouttti=12 TTI => одно KO по таймауту может происходить раз ~12ms,
+                                          # поэтому 100 KO ~ 1.2 секунды устойчивых неуспехов до объявления RLF
+        self.rlf_ue: Dict[int, bool] = {}
         self.current_tti: Optional[int] = None
-        # Очередь обратной связи: элементы (handle_tti, ue_id, process_id, ack, rv)
-        self.feedback_queue: List[Tuple[int, int, int, bool, int]] = []
-        # Статистика комбинирования IR
+        self.feedback_queue: List[Tuple[int, int, int, bool, int, object, object]] = []
         self.combining_stats = {'combined_success': 0, 'combined_fail': 0}
         
     def init_ue(self, ue_id: int):
@@ -1355,12 +1383,20 @@ class HARQManager:
         
         Args:
             ue_id: Идентификатор UE
+
         """
         if ue_id not in self.processes:
             self.processes[ue_id] = [
                 HARQProcess(pid, self.max_tx) 
                 for pid in range(self.num_processes)
             ]
+        
+        # инициализация счетчиков
+        if ue_id not in self.n_ko_ue:
+            self.n_ko_ue[ue_id] = 0
+        if ue_id not in self.rlf_ue:
+            self.rlf_ue[ue_id] = False
+
             
     def get_idle_process(self, ue_id: int) -> Optional[HARQProcess]:
         """
@@ -1372,6 +1408,9 @@ class HARQManager:
         Returns:
             Свободный HARQProcess или None если все заняты
         """
+        if self.rlf_ue.get(ue_id, False):
+            return None
+
         if ue_id not in self.processes:
             self.init_ue(ue_id)
             
@@ -1390,6 +1429,10 @@ class HARQManager:
         Returns:
             HARQProcess требующий ретрансмиссии или None
         """
+
+        if self.rlf_ue.get(ue_id, False):
+            return None
+
         if ue_id not in self.processes:
             return None
             
@@ -1428,24 +1471,89 @@ class HARQManager:
                 proc.handle_ack()
                 self.combining_stats['combined_success'] += 1
             else:
-                # Передать soft bits в handle_nack
-                success = proc.handle_nack(soft_bits_received=soft_bits_received)
-                if success:
-                    proc.combined_rvs.append(rv)
+                can_retx = proc.handle_nack(soft_bits_received=soft_bits_received)
+
+                if can_retx:
+                    # RV FIX: добавляем RV СЛЕДУЮЩЕЙ попытки (tx_count уже увеличен)
+                    rv_next = proc.get_current_rv()
+                    proc.combined_rvs.append(rv_next)
                 else:
                     self.combining_stats['combined_fail'] += 1
             return
 
         # Работаем c симуляцией задержки HARQ RTT (DL LTE обычно 4 TTI)
         handle_tti = self.current_tti + 4
-        self.feedback_queue.append((handle_tti, ue_id, process_id, ack, rv, soft_bits_received))
+        k0 = proc.k0
+        self.feedback_queue.append((handle_tti, ue_id, process_id, ack, rv, soft_bits_received, k0))
 
     def set_current_tti(self, tti: int):
         """
         Устанавливает текущий TTI и обрабатывает очередь обратной связи, срок которой наступил.
+        1) processfeedbackqueue(): применяем реальные ACK/NACK, пришедшие к этому TTI.
+        2) checktimeouts(): затем таймаутим процессы, по которым feedback не пришёл
+        в разумный срок (ack_timeout_tti).
         """
         self.current_tti = tti
         self.process_feedback_queue()
+        self.checktimeouts(tti)
+
+    def checktimeouts(self, tti: int) -> None:
+        """
+        Проходит по всем HARQ-процессам всех UE и для каждого процесса в состоянии
+        WAITINGACK проверяет, сколько TTI прошло с момента k0 (TTI первой передачи TB).
+
+        Если возраст (tti - k0) >= ack_timeout_tti, трактуем отсутствие feedback как DTX:
+        - не выполняем soft combining (потому что softbits не пришли),
+        - переводим процесс в RETRANSMIT через handlenack(None).
+        """
+        # Timeout только для процессов, которые ждут ACK/NACK
+        for ue_id, procs in self.processes.items():
+            for proc in procs:
+                if proc.state != HARQState.WAITING_ACK:
+                    continue
+                if proc.k0 is None:
+                    continue
+
+                age = tti - proc.k0
+                if age >= proc.ack_timeout_tti:
+                    self.mark_ko(ue_id)
+                    if self.rlf_ue.get(ue_id, False):
+                        continue
+                    # DTX / lost feedback: трактуем как NACK без softbits
+                    can_retx = proc.handle_nack(soft_bits_received=None)
+
+                    if can_retx:
+                        # RV FIX: следующая попытка после таймаута
+                        rv_next = proc.get_current_rv()
+                        proc.combined_rvs.append(rv_next)
+                    else:
+                        self.combining_stats['combined_fail'] += 1
+
+    def mark_ko(self, ue_id: int) -> None:
+        """
+        Зафиксировать одно KO-событие для UE и обновить состояние RLF.
+
+        KO-события берём только из того, что уже есть в проекте:
+        - NACK в HARQ feedback,
+        - DTX/таймаут ожидания feedback (acktimeouttti).
+        """
+        if ue_id not in self.n_ko_ue:
+            self.n_ko_ue[ue_id] = 0
+        if ue_id not in self.rlf_ue:
+            self.rlf_ue[ue_id] = False
+
+        self.n_ko_ue[ue_id] += 1
+        if self.n_ko_ue[ue_id] >= self.rlf_threshold_nko:
+            self.rlf_ue[ue_id] = True
+
+
+    def mark_ok(self, ue_id: int) -> None:
+        """
+        Зафиксировать успех (ACK) для UE: сбросить KO-счётчик и снять RLF.
+        """
+        self.n_ko_ue[ue_id] = 0
+        self.rlf_ue[ue_id] = False
+
 
     def process_feedback_queue(self):
         """
@@ -1455,19 +1563,34 @@ class HARQManager:
             return
         remaining = []
         for item in self.feedback_queue:
-            handle_tti, ue_id, process_id, ack, rv, soft_bits_received = item
+            handle_tti, ue_id, process_id, ack, rv, soft_bits_received, k0 = item
             if handle_tti <= self.current_tti:
                 if ue_id not in self.processes:
                     continue
                 proc = self.processes[ue_id][process_id]
+                if k0 is not None and proc.k0 is not None and k0 != proc.k0:
+                    continue
                 if ack:
+                    self.mark_ok(ue_id)
                     if proc.combined_rvs:
                         self.combining_stats['combined_success'] += 1
                     proc.handle_ack()
                 else:
-                    s = proc.handle_nack(soft_bits_received)
-                    if s:
-                        proc.combined_rvs.append(rv)
+                    self.mark_ko(ue_id)
+                    # UE объявлен в состоянии RLF: прекращаем обработку для него
+                    # (и далее он будет отфильтрован в get_idle_process/get_retransmission_process)
+                    if self.rlf_ue.get(ue_id, False):
+                        continue
+
+                    # Pre-allocated soft combining (накопление soft-информации в буфере процесса)
+                    proc.soft_combine(soft_bits_received)
+
+                    can_retx = proc.handle_nack(soft_bits_received=None)
+
+                    if can_retx:
+                        # RV FIX: берем RV следующей попытки (tx_count уже увеличен внутри handle_nack)
+                        rv_next = proc.get_current_rv()
+                        proc.combined_rvs.append(rv_next)
                     else:
                         self.combining_stats['combined_fail'] += 1
             else:
@@ -1567,25 +1690,6 @@ class AdaptiveModulationAndCoding:
         """
         return self.mcs_to_qm_itbs(mcs)
 
-    """# Таблица соответствия CQI → (Modulation Order, Code Rate)
-    CQI_TO_MCS = {
-        1: (2, 0.152),   # QPSK
-        2: (2, 0.234),   # QPSK
-        3: (2, 0.377),   # QPSK
-        4: (2, 0.601),   # QPSK
-        5: (4, 0.369),   # 16QAM
-        6: (4, 0.479),   # 16QAM
-        7: (4, 0.601),   # 16QAM
-        8: (6, 0.455),   # 64QAM
-        9: (6, 0.554),   # 64QAM
-        10: (6, 0.650),  # 64QAM
-        11: (6, 0.754),  # 64QAM
-        12: (6, 0.852),  # 64QAM
-        13: (6, 0.926),  # 64QAM
-        14: (6, 0.953),  # 64QAM
-        15: (6, 0.978)   # 64QAM
-    }"""
-
     def GET_BITS_PER_RB(self, cqi: int) -> int:
         """
         Количество бит на один RB для данного CQI.
@@ -1625,19 +1729,16 @@ class AdaptiveModulationAndCoding:
         x1, y1 = xs[idx], ys[idx]
         return y0 + (y1 - y0) * (sinr_dB - x0) / (x1 - x0)
 
-    def is_tb_error(self, sinr_avg_dB: float, cqi: int) -> bool:
+    def is_tb_error(self, sinr_avg_db: float, cqi: int) -> bool:
         """
-        Генерация ошибки TB. True, если TB ошибочен по BLER-таблице.
+        Моделирование ошибки TB на основе BLER-таблицы GLOBALS.BLER_TABLE.
         """
-        bler = self.lookup_bler(sinr_avg_dB, cqi)
+        bler = self.lookup_bler(sinr_avg_db, cqi=cqi)
         return random.random() < bler
-
-        # ==== Совместимость со старым интерфейсом ChannelModel ====
 
     def get_mcs_from_cqi(self, cqi: int) -> int:
         """
         CQI (1–15) → MCS (0–28).
-        Раньше был ChannelModel.get_mcs_from_cqi.
         """
         return self.cqi_to_mcs(cqi)
 
@@ -1934,7 +2035,7 @@ class RoundRobinScheduler(SchedulerInterface):
         Returns:
             Dict[int, List[int]]: Allocation map {ue_id: [rb_indices]}
         """
-        allocation = {ue['UE_ID']: [] for ue in ues_with_pdcch}
+        allocation = {ue["UE_ID"]: [] for ue in ues_with_pdcch}
         rbg_size = self.lte_grid.GET_RBG_SIZE()
         total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size
         
@@ -1947,7 +2048,7 @@ class RoundRobinScheduler(SchedulerInterface):
         for rbg_idx in range(total_rbg):
             ue = ues_with_pdcch[ue_index % num_ues]
             ue_id = ue['UE_ID']
-            
+
             if ue['bs_buffer_size'] > 0:
                 if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, ue_id):
                     rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
@@ -1957,7 +2058,7 @@ class RoundRobinScheduler(SchedulerInterface):
                     transmitted_bits = len(rb_indices) * bits_per_rb * 2
                     transmitted_bytes = transmitted_bits // 8
                     ue['bs_buffer_size'] = max(0, ue['bs_buffer_size'] - transmitted_bytes)
-            
+
             ue_index += 1
         
         self.rr_rbg_offset = ue_index % num_ues
@@ -2255,13 +2356,14 @@ class RoundRobinScheduler_OLD:
                         rbg_capacity = len(rb_indices) * bits_per_rb * 2
                         remaining_buffer[ue_id] -= min(remaining_buffer[ue_id], rbg_capacity)
 
-                        # --- HARQ: передача TB через канал ---
+                        # HARQ: передача TB через канал 
                         # пытаемся найти процесс для ретрансмиссии
                         harq_proc = self.harq_manager.get_retransmission_process(ue_id)
                         if harq_proc:
                             proc_id = harq_proc.process_id
                             tb_data = harq_proc.tb_data
                             is_retx = True
+                            harq_proc.last_tx_tti = tti
                         else:
                             # новый процесс
                             harq_proc = self.harq_manager.get_idle_process(ue_id)
@@ -2272,7 +2374,7 @@ class RoundRobinScheduler_OLD:
                             
                             # формируем TB из буфера UE
                             tb_data = user['ue'].buffer.GET_BYTES(max_bytes)  # или ваш pack_transport_block
-                            harq_proc.start_transmission(tb_data, user['cqi'], rb_indices)
+                            harq_proc.start_transmission(tti, tb_data, user['cqi'], rb_indices)
                             is_retx = False
 
                         # передаём TB и получаем ACK/NACK

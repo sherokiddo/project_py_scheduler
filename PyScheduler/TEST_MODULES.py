@@ -6,12 +6,13 @@ import numpy as np
 import GLOBALS
 from BS_MODULE import BaseStation, Packet
 from CHANNEL_MODEL import UMaModel
-from MOBILITY_MODEL import MapBorders
+from MOBILITY_MODEL import MapBorders, RandomWaypointModel
 from RES_GRID import RES_GRID_LTE
-from SCHEDULER import ProportionalFairScheduler, HARQManager, AdaptiveModulationAndCoding
+from SCHEDULER import ProportionalFairScheduler, HARQManager, AdaptiveModulationAndCoding, RoundRobinScheduler, HARQState, SchedulerInterface
 from SIMULATION_MANAGER import SimulationManager
 from TRAFFIC_MODEL import PoissonModel
 from UE_MODULE import UECollection, UserEquipment
+import matplotlib.pyplot as plt
 
 def visualize_users_mobility(
     ue_collection: UECollection,
@@ -217,6 +218,101 @@ def sim_with_ue_collection():
                             sim_duration=sim_duration,
                             update_interval=update_interval)
     
+def plot_harq_comparison(sim_off, sim_on, x_max=4999, window=100):
+    
+    data_off = sim_off.get_harq_plot_data(x_max=x_max, window=window)
+    data_on = sim_on.get_harq_plot_data(x_max=x_max, window=window)
+
+    if data_off is None or data_on is None:
+        print("No HARQ data to compare")
+        return
+
+    y_max_tx = max(
+        max(data_off["avg_tx_smooth"]),
+        max(data_on["avg_tx_smooth"]),
+        1.0
+    )
+
+    fig, axes = plt.subplots(2, 1, figsize=(13, 8), sharex=True)
+
+    # Верхний график: среднее число передач одного TB
+    axes[0].plot(
+        data_off["tti"],
+        data_off["avg_tx_smooth"],
+        linewidth=2,
+        label="HARQ выключен"
+    )
+    axes[0].plot(
+        data_on["tti"],
+        data_on["avg_tx_smooth"],
+        linewidth=2,
+        label="HARQ включен"
+    )
+    axes[0].set_title(
+        f"Сравнение HARQ OFF и HARQ ON по передаче транспортных блоков"
+    )
+    axes[0].set_xlabel("TTI")
+    axes[0].set_ylabel("Среднее число\nпередач одного TB")
+    axes[0].set_xlim(0, x_max)
+    axes[0].set_ylim(0, y_max_tx * 1.05)
+    axes[0].grid(True)
+    axes[0].legend()
+
+    # Нижний график: доля успешно принятых TB
+    axes[1].plot(
+        data_off["tti"],
+        data_off["ack_rate_smooth"],
+        linewidth=2,
+        label="HARQ выключен"
+    )
+    axes[1].plot(
+        data_on["tti"],
+        data_on["ack_rate_smooth"],
+        linewidth=2,
+        label="HARQ включен"
+    )
+    axes[1].set_xlabel("TTI")
+    axes[1].set_ylabel("Доля успешно\nпринятых TB")
+    axes[1].set_xlim(0, x_max)
+    axes[1].set_ylim(0, 1.05)
+    axes[1].grid(True)
+    axes[1].legend()
+
+    plt.tight_layout()
+    plt.show()
+
+def build_sim(harq_enabled: bool):
+    bs = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMa")
+
+    ue_collection = UECollection()
+    GLOBALS.SEED = 42
+
+    ue_collection.ADD_RANDOM_USERS(num_ue=3)
+    MapBorders(-1000, 1000, -1000, 1000)
+    ue_collection.SET_MOBILITY_MODEL("RandomWaypoint")
+
+    poisson = PoissonModel(packet_rate=1000)
+    ue_collection.SET_TRAFFIC_MODEL(poisson)
+    ue_collection.REG_USERS_TO_BS(bs)
+
+    sim = SimulationManager()
+    sim.sched_config.harq_enabled = harq_enabled
+    sim.set_base_station(bs)
+    sim.set_ue_collection(ue_collection)
+    sim.set_scheduler(algorithm="RoundRobin")
+    sim.set_sim_duration(5000)
+
+    return sim
+
+def sim_compare_harq():
+    sim_off = build_sim(False)
+    sim_off.start_simulation()
+
+    sim_on = build_sim(True)
+    sim_on.start_simulation()
+
+    plot_harq_comparison(sim_off, sim_on, x_max=4999, window=100)
+
 def sim_with_manager():
     """
     Пример запуска симуляции с использованием менеджера.
@@ -259,6 +355,10 @@ def sim_with_manager():
     # Создание менеджера симуляции
     sim = SimulationManager()
     
+    # Включить или отключить HARQ
+    sim.sched_config.harq_enabled = False  # HARQ OFF
+    # sim.sched_config.harq_enabled = True # HARQ ON
+
     # Установка базовой станции
     sim.set_base_station(bs)
     
@@ -278,135 +378,12 @@ def sim_with_manager():
     
     # Включение логирования статистики в CSV-файл
     sim.enable_stats_log()
-    
+
     # Запуск симуляции
     sim.start_simulation()
-    
-# =============================================================================
-#                    ТЕСТИРОВАНИЕ BLER_TABLE ИЗ GLOBALS                
-# =============================================================================
-
-def test_bler_table():
-    print("BLER_TABLE contents:")
-    for cqi in range(1, 16):  # CQI от 1 до 15 
-        entries = GLOBALS.BLER_TABLE[cqi]
-        print(f"CQI {cqi}:")
-        for sinr, bler in entries:
-            print(f"\tSINR: {sinr:.2f}, BLER: {bler:.3f}")
-   
-def print_bler_range_by_cqi():
-    print("Диапазон BLER для каждого CQI:")
-    print("CQI | min(BLER) | max(BLER) | mean(BLER)")
-    for cqi in range(1, 16):
-        entries = GLOBALS.BLER_TABLE[cqi]
-        bler_list = [b for s, b in entries]
-        min_bler = min(bler_list)
-        max_bler = max(bler_list)
-        mean_bler = sum(bler_list)/len(bler_list)
-        print(f"{cqi:>3} | {min_bler:9.3f} | {max_bler:9.3f} | {mean_bler:9.3f}")
-
-def plot_bler_vs_sinr():
-    plt.figure(figsize=(10, 7))
-    for cqi in range(1, 16):
-        entries = GLOBALS.BLER_TABLE[cqi]
-        sinr = []
-        bler = []
-        for s, b in entries:
-            sinr.append(s)
-            bler.append(b)
-        plt.plot(sinr, bler, marker='o', label=f'CQI {cqi}')
-    plt.xlabel("SINR (дБ)")
-    plt.ylabel("BLER (Block Error Rate)")
-    plt.yscale('log')
-    plt.title("BLER vs SINR для разных CQI")
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
-
-# =============================================================================
-#                  ТЕСТИРОВАНИЕ RV/IR/RTT/Soft Combining             
-# =============================================================================
-
-def test_harq_ir_rtt():
-    manager = HARQManager(num_processes=2)
-    manager.init_ue(1)
-    proc = manager.get_idle_process(1)
-    tb_data = b"hello"
-    cqi = 15
-    rbs = [0, 1]
-    manager.current_tti = 0
-    # Начальная передача
-    proc.start_transmission(tb_data, cqi, rbs, soft_bits_received=[1.1, -0.9, 0.3])
-    # эмитируем серию NACK с новыми soft bits для IR/soft combining
-    print("HARQ IR cycle:")
-    for attempt in range(1, 5):
-        success = proc.handle_nack(soft_bits_received=[0.5*attempt, -0.2*attempt, 0.1*attempt])
-        rv = proc.get_current_rv()
-        print(f"Attempt {attempt}: RV={rv}, Success={success}, Combined soft bits={proc.get_combined_soft_bits()}")
-    # Проверить правильность RV последовательности, накопление soft bits
-
-# =============================================================================
-#             ТЕСТИРОВАНИЕ HARQ RTT (ОТЛОЖЕННАЯ ОБРАТНАЯ СВЯЗЬ)           
-# =============================================================================
-
-def test_harq_rtt():
-    manager = HARQManager(num_processes=2)
-    manager.init_ue(1)
-    manager.current_tti = 5
-    ack = False
-    process_id = 0
-    soft_bits = [0.7, -0.5, 0.12]
-    manager.handle_feedback(1, process_id, ack, soft_bits_received=soft_bits)
-    
-    # Очередь сразу после постановки feedback 
-    print("Feedback Queue before RTT advance:", manager.feedback_queue)
-
-    # Сдвигаем TTI, чтобы элемент должен был быть обработан (RTT=4)
-    manager.set_current_tti(9)
-    
-    # Очередь после обработки 
-    print("Feedback Queue after RTT:", manager.feedback_queue)
-
-# =============================================================================
-#             ТЕСТИРОВАНИЕ ПОЛУЧЕНИЯ ДАННЫХ ИЗ ТАБЛИЦ        
-# =============================================================================
-
-from CHANNEL_MODEL import ChannelModel
-from BS_MODULE import BaseStation
-def test_channel_model_tables():
-    bs = BaseStation()
-    ch = ChannelModel(bs)
-    for cqi in range(1, 16):
-        bler = ch.lookup_bler(0, cqi)
-        mcs = ch.get_mcs_from_cqi(cqi)
-        itbs, qam = ch.get_itbs_from_mcs(mcs)
-        tbs = ch.get_tbs(itbs, 10)
-        print(f"CQI={cqi}, BLER@0dB={bler}, MCS={mcs}, ITBS={itbs}, QBAM={qam}, TBS@10RB={tbs}")
-
-# =============================================================================
-#                        ТЕСТИРОВАНИЕ CQI to MCS, ITBS, TBS           
-# =============================================================================
-
-def test_cqi_to_mcs_table():
-    amc = AdaptiveModulationAndCoding()
-    CQI_vals = list(range(1, 16))
-
-    for cqi in CQI_vals:
-        mcs = amc.cqi_to_mcs(cqi)
-        qm, itbs = amc.mcs_to_qm_itbs(mcs)
-        tbs = GLOBALS.TB_SIZE_TABLE[itbs][10]
-        print(f"CQI={cqi:2d} -> MCS={mcs:2d}, Qm={qm}, ITBS={itbs}, TBS(11PRB)={tbs}")
-
+        
 if __name__ == "__main__":
     #debug_simulation()
     #sim_with_ue_collection()
-    #sim_with_manager()
-    #test_bler_table() #1
-    #print_bler_range_by_cqi() #1
-    #plot_bler_vs_sinr() #1
-    #test_tables() #2
-    #test_harq_ir_rtt() #3
-    #test_harq_rtt() #4
-    #test_channel_model_tables() #5
-    test_cqi_to_mcs_table() #6
+    # sim_with_manager()
+    sim_compare_harq()

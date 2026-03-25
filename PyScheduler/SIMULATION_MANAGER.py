@@ -22,7 +22,10 @@ import GLOBALS
 from UE_MODULE import UECollection
 from BS_MODULE import BaseStation
 from RES_GRID import RES_GRID_LTE
-from SCHEDULER import SchedulerInterface
+from SCHEDULER import HARQManager, AdaptiveModulationAndCoding, SchedulerInterface, HARQState
+import math
+from collections import defaultdict
+import matplotlib.pyplot as plt
 
 @dataclass
 class SimulationConfig:
@@ -61,6 +64,7 @@ class SchedulerConfig:
     max_dl_cce_allowance: Optional[int] = None
     window_size: int = 100
     enable_window: bool = True
+    harq_enabled: bool = False
 
 class SimulationManager:
     """
@@ -82,6 +86,14 @@ class SimulationManager:
         
         self.ue_collection = None
         self.base_station = None
+
+        self.harq_log = {
+            "tti": [],
+            "ue_id": [],
+            "tx_count": [],
+            "ack": [],
+            "harq_enabled": []
+        }
         
     def set_sim_duration(self, sim_duration: int) -> None:     
         """
@@ -268,6 +280,16 @@ class SimulationManager:
                 verbose=self.sim_config.verbose
             )
             
+            amc_offset = defaultdict(float)
+
+            TARGET_BLER = 0.10
+            DELTA_ACK = 0.10
+            DELTA_NACK = DELTA_ACK * (1.0 - TARGET_BLER) / TARGET_BLER  # для 10% => 0.9
+            OFFSET_MIN, OFFSET_MAX = -5.0, 5.0
+
+            def clamp(x, lo, hi):
+                return lo if x < lo else hi if x > hi else x
+
             # Основной цикл симуляции
             for tti in range(self.sim_config.sim_duration):
                 
@@ -294,7 +316,222 @@ class SimulationManager:
                 
                 # Планирование ресурсов
                 sched_result = scheduler.schedule(tti, users)
-                
+
+                allocation = sched_result.get("allocation", {})
+
+                if self.sim_config.verbose:
+                    keys = list(allocation.keys())
+                    print(f"[TTI={tti}] ALLOC keys sample={keys[:5]} types={[type(k).__name__ for k in keys[:5]]}")
+
+                harq_enabled = getattr(self.sched_config, "harq_enabled", True)
+
+                if harq_enabled:
+                    # GUARD — строго ДО set_current_tti
+                    if getattr(scheduler, "harq_manager", None) is None:
+                        scheduler.harq_manager = HARQManager(num_processes=8, max_tx=4)
+
+                    # ВАЖНО: 1 раз на TTI — обработка RTT очереди + таймаутов
+                    scheduler.harq_manager.set_current_tti(tti)
+                else:
+                    # HARQ выключен — гарантируем, что UE не будет пытаться soft-combine
+                    pass
+
+                for u in users:
+                    ue_id = int (u["UE_ID"])
+                    rb_list = allocation.get(ue_id, [])
+                    if not rb_list:
+                        continue
+
+                    ue_obj = u["ue"]
+                    cqi = u["cqi"]
+
+                    if harq_enabled:
+                        # HARQ init guard (из-за UE_ID 1..N)
+                        if ue_id not in scheduler.harq_manager.processes:
+                            scheduler.harq_manager.init_ue(ue_id)
+
+                        # чтобы UE мог soft-combining
+                        ue_obj.harq_manager = scheduler.harq_manager
+                    else:
+                        # HARQ-OFF: UE не должен soft-combine
+                        ue_obj.harq_manager = None
+
+                    # 1) base_bler
+                    sinr_avg = float(ue_obj.SINR)
+                    base_bler = AdaptiveModulationAndCoding.lookup_bler(sinr_avg, cqi)
+
+                    if not harq_enabled:
+                        process_id = 0
+                        is_retx = False
+
+                        # HARQ-OFF: считаем AMC так же, как в HARQ-ON 
+                        n_prb = len(rb_list)
+                        mcs_base = scheduler.amc.cqi_to_mcs(cqi)
+                        off = amc_offset.get(ue_id, 0.0)
+                        mcs_eff = int(round(mcs_base + off))
+                        mcs_eff = max(0, min(28, mcs_eff))
+                        qm, itbs = scheduler.amc.mcs_to_qm_itbs(mcs_eff)
+
+                        tbs_bits = GLOBALS.TB_SIZE_TABLE[itbs][n_prb]
+                        tbs_bytes = int(math.ceil(tbs_bits / 8))
+
+                        print(
+                            f"[TTI={tti}] HARQ-OFF_TX UE={ue_id} "
+                            f"CQI={cqi} MCS_base={mcs_base} MCS_eff={mcs_eff} off={off:+.2f} "
+                            f"ITBS={itbs} Qm={qm} PRB={n_prb} TBS_bytes={tbs_bytes} "
+                            f"SINR={sinr_avg:.2f} base_bler={base_bler:.4g}"
+                        )
+
+                        ack = ue_obj.receive_tb(
+                            ue_id=ue_id,
+                            rb_list=rb_list,
+                            cqi=cqi,
+                            base_bler=base_bler,
+                            process_id=process_id,
+                            is_retransmission=False,
+                        )
+
+                        # Логирование для графика
+                        self.harq_log["tti"].append(tti)
+                        self.harq_log["ue_id"].append(ue_id)
+                        self.harq_log["tx_count"].append(proc.tx_count if harq_enabled else 1) # HARQ-OFF → TX всегда 1
+                        self.harq_log["ack"].append(int(ack))  
+                        self.harq_log["harq_enabled"].append(harq_enabled)
+                        
+                        print(f"[TTI={tti}] HARQ-OFF UE={ue_id} ACK={int(ack)} "
+                            f"CQI={cqi} SINR={sinr_avg:.2f} base_bler={base_bler:.4g} "
+                            f"PRB={len(rb_list)}")
+
+                        # AMC offset update 
+                        if ack:
+                            amc_offset[ue_id] = clamp(amc_offset[ue_id] + DELTA_ACK, OFFSET_MIN, OFFSET_MAX)
+                        else:
+                            amc_offset[ue_id] = clamp(amc_offset[ue_id] - DELTA_NACK, OFFSET_MIN, OFFSET_MAX)
+
+                        if self.sim_config.verbose:
+                            print(f"[TTI={tti}] AMC_OFF UE={ue_id} ack={int(ack)} off={amc_offset[ue_id]:.2f}")
+
+                        continue
+
+                    # 2) выбрать процесс: ретрансмит или новый
+                    harq_proc = scheduler.harq_manager.get_retransmission_process(ue_id)
+
+                    if harq_proc is not None:
+                        if harq_proc.tb_data is None or len(harq_proc.tb_data) == 0:
+                            harq_proc.reset()
+                            continue
+
+                        # страховка
+                        if harq_proc.k0 is None:
+                            harq_proc.reset()
+                            continue
+
+                        process_id = harq_proc.process_id
+                        is_retx = True
+
+                        # ВАЖНО: после "отправки" ретрансмит тоже ждёт ACK
+                        harq_proc.state = HARQState.WAITING_ACK
+                        harq_proc.last_tx_tti = tti
+
+                    else:
+                        harq_proc = scheduler.harq_manager.get_idle_process(ue_id)
+                        
+                        if harq_proc is None:
+                            continue
+
+                        process_id = harq_proc.process_id
+                        is_retx = False
+
+                        #Новый TB: считаем размер TB по CQI и числу RB
+                        n_prb = len(rb_list)
+                        mcs_base = scheduler.amc.cqi_to_mcs(cqi)
+                        off = amc_offset.get(ue_id, 0.0)
+                        mcs_eff = int(round(mcs_base + off))
+                        mcs_eff = max(0, min(28, mcs_eff))
+                        qm, itbs = scheduler.amc.mcs_to_qm_itbs(mcs_eff)
+                        mcs = mcs_eff  # дальше по коду используем уже эффективный MCS
+
+                        tbs_bits = GLOBALS.TB_SIZE_TABLE[itbs][n_prb]
+                        tbs_bytes = int(math.ceil(tbs_bits / 8))
+
+                        tb_data = bytes(tbs_bytes)  # заглушка правильного размера
+
+                        harq_proc.start_transmission(
+                            tti=tti,
+                            tb_data=tb_data,    
+                            cqi=cqi,
+                            rbs=rb_list,
+                            soft_bits_received=None
+                        )
+
+                        # метаданные для AMC/HARQ логов 
+                        harq_proc.mcs = mcs
+                        harq_proc.itbs = itbs
+                        harq_proc.qm = qm
+                        harq_proc.n_prb = n_prb
+                        harq_proc.tbs_bytes = tbs_bytes
+                        harq_proc.sinr = sinr_avg
+                        harq_proc.base_bler = base_bler
+                        harq_proc.tbs_bits = tbs_bits
+
+                        rv = harq_proc.get_current_rv()  # для новой передачи tx_count=1 => RV=0
+                        print(f"[TTI={tti}] NEW_TB UE={ue_id} pid={process_id} "
+                            f"CQI={cqi} MCS_base={mcs_base} MCS_eff={mcs_eff} offset={amc_offset.get(ue_id, 0.0):+.2f} ITBS={itbs} Qm={qm} "
+                            f"PRB={n_prb} TBS_bytes={tbs_bytes} "
+                            f"SINR={sinr_avg:.2f} base_bler={base_bler:.4g} RV={rv}")
+
+                    # RX TB
+                    ack = ue_obj.receive_tb(
+                        ue_id=ue_id,
+                        rb_list=rb_list,
+                        cqi=cqi,
+                        base_bler=base_bler,
+                        process_id=process_id,
+                        is_retransmission=is_retx,
+                    )
+                    
+                    # Логирование HARQ для графика, для обеих веток
+                    if harq_enabled:
+                        proc = scheduler.harq_manager.processes[ue_id][process_id]
+                        tx_count = proc.tx_count
+                    else:
+                        tx_count = 1
+
+                    self.harq_log["tti"].append(tti)
+                    self.harq_log["ue_id"].append(ue_id)
+                    self.harq_log["tx_count"].append(tx_count)
+                    self.harq_log["ack"].append(int(ack))
+                    self.harq_log["harq_enabled"].append(harq_enabled)
+
+                    # AMC offset update: только по первой передаче TB (не по ретрансмитам)
+                    if not is_retx:
+                        if ack:
+                            amc_offset[ue_id] = clamp(amc_offset[ue_id] + DELTA_ACK, OFFSET_MIN, OFFSET_MAX)
+                        else:
+                            amc_offset[ue_id] = clamp(amc_offset[ue_id] - DELTA_NACK, OFFSET_MIN, OFFSET_MAX)
+
+                        print(f"[TTI={tti}] AMC_OFF UE={ue_id} ack={int(ack)} off={amc_offset[ue_id]:.2f}")
+
+                    # лог размера TB на ретрансмите
+                    if is_retx:
+                        print(f"[TTI={tti}] RETX_TB UE={ue_id} pid={process_id} "
+                            f"TBS_bytes={getattr(harq_proc, 'tbs_bytes', len(harq_proc.tb_data))}")
+
+                    # feedback (будет обработан через RTT=4 внутри HARQManager)
+                    scheduler.harq_manager.handle_feedback(ue_id, process_id, ack)
+
+                    proc = scheduler.harq_manager.processes[ue_id][process_id]
+
+                    if proc.state == HARQState.FAIL:
+                        print(f"[TTI={tti}] HARQ_FAIL UE={ue_id} pid={process_id} tx={proc.tx_count} k0={proc.k0}")
+
+                    if (not ack) or is_retx:
+                        rv = proc.get_current_rv() if hasattr(proc, "get_current_rv") else -1
+                        print(
+                            f"[TTI={tti}] RX UE={ue_id} pid={process_id} reTX={int(is_retx)} "
+                            f"ACK={int(ack)} tx={proc.tx_count} k0={proc.k0} RV={rv} "
+                            f"SINR={sinr_avg:.2f} base_bler={base_bler:.4g}")
+                                        
                 # Вывод статистики в CSV файл
                 if self.sim_config.stats_log:
                     self._stats_logging(sched_result)
@@ -389,3 +626,151 @@ class SimulationManager:
                 row = [GLOBALS.CURRENT_TIME, ue_id, num_rbs, rbs, num_cce, 
                        tx_bits, buf_size, cqi, subband_cqi, sinr]
                 writer.writerow(row)
+
+    def plot_harq_results(self, x_max=None, y_max=None, window=100):
+        import matplotlib.pyplot as plt
+
+        tti_list = self.harq_log["tti"]
+        ack_list = self.harq_log["ack"]
+        tx_list = self.harq_log["tx_count"]
+
+        if not tti_list:
+            print("HARQ log is empty")
+            return
+
+        if x_max is None:
+            x_max = max(tti_list)
+
+        full_tti = list(range(x_max + 1))
+
+        # Сколько TB было в каждом TTI
+        tb_count_per_tti = [0] * (x_max + 1)
+
+        # Сколько успешных TB было в каждом TTI
+        ack_per_tti = [0] * (x_max + 1)
+
+        # Сумма tx_count по всем TB в данном TTI
+        tx_sum_per_tti = [0] * (x_max + 1)
+
+        for i, tti in enumerate(tti_list):
+            if 0 <= tti <= x_max:
+                tb_count_per_tti[tti] += 1
+                ack_per_tti[tti] += int(ack_list[i])
+                tx_sum_per_tti[tti] += tx_list[i]
+
+        # Среднее число передач на TB в каждом TTI
+        avg_tx_per_tti = []
+        success_rate_per_tti = []
+
+        for tti in range(x_max + 1):
+            tb_cnt = tb_count_per_tti[tti]
+            if tb_cnt > 0:
+                avg_tx_per_tti.append(tx_sum_per_tti[tti] / tb_cnt)
+                success_rate_per_tti.append(ack_per_tti[tti] / tb_cnt)
+            else:
+                avg_tx_per_tti.append(0.0)
+                success_rate_per_tti.append(0.0)
+
+        def moving_average(data, win):
+            if win <= 1:
+                return data[:]
+            out = []
+            s = 0.0
+            q = []
+            for x in data:
+                q.append(x)
+                s += x
+                if len(q) > win:
+                    s -= q.pop(0)
+                out.append(s / len(q))
+            return out
+
+        avg_tx_smooth = moving_average(avg_tx_per_tti, window)
+        success_rate_smooth = moving_average(success_rate_per_tti, window)
+
+        if y_max is None:
+            y_max = max(max(avg_tx_per_tti), max(avg_tx_smooth))
+            if y_max < 1.0:
+                y_max = 1.0
+
+        fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+
+        # Верхний график: среднее число передач
+        axes[0].plot(full_tti, avg_tx_per_tti, alpha=0.25, label="Avg TX count per TTI")
+        axes[0].plot(full_tti, avg_tx_smooth, linewidth=2, label=f"Moving average ({window} TTI)")
+        axes[0].set_ylabel("Avg TX count")
+        axes[0].set_title(f"HARQ {'ON' if self.sched_config.harq_enabled else 'OFF'}")
+        axes[0].set_xlim(0, x_max)
+        axes[0].set_ylim(0, y_max)
+        axes[0].grid(True)
+        axes[0].legend()
+
+        # Нижний график: доля успешных TB
+        axes[1].plot(full_tti, success_rate_per_tti, alpha=0.25, label="ACK rate per TTI")
+        axes[1].plot(full_tti, success_rate_smooth, linewidth=2, label=f"Moving average ({window} TTI)")
+        axes[1].set_xlabel("TTI")
+        axes[1].set_ylabel("ACK rate")
+        axes[1].set_xlim(0, x_max)
+        axes[1].set_ylim(0, 1.05)
+        axes[1].grid(True)
+        axes[1].legend()
+
+        plt.tight_layout()
+        plt.show()
+
+    def get_harq_plot_data(self, x_max=None, window=100):
+        tti_list = self.harq_log["tti"]
+        ack_list = self.harq_log["ack"]
+        tx_list = self.harq_log["tx_count"]
+
+        if not tti_list:
+            return None
+
+        if x_max is None:
+            x_max = max(tti_list)
+
+        full_tti = list(range(x_max + 1))
+
+        tb_count_per_tti = [0] * (x_max + 1)
+        ack_per_tti = [0] * (x_max + 1)
+        tx_sum_per_tti = [0] * (x_max + 1)
+
+        for i, tti in enumerate(tti_list):
+            if 0 <= tti <= x_max:
+                tb_count_per_tti[tti] += 1
+                ack_per_tti[tti] += int(ack_list[i])
+                tx_sum_per_tti[tti] += tx_list[i]
+
+        avg_tx_per_tti = []
+        success_rate_per_tti = []
+
+        for tti in range(x_max + 1):
+            tb_cnt = tb_count_per_tti[tti]
+            if tb_cnt > 0:
+                avg_tx_per_tti.append(tx_sum_per_tti[tti] / tb_cnt)
+                success_rate_per_tti.append(ack_per_tti[tti] / tb_cnt)
+            else:
+                avg_tx_per_tti.append(0.0)
+                success_rate_per_tti.append(0.0)
+
+        def moving_average(data, win):
+            if win <= 1:
+                return data[:]
+            out = []
+            s = 0.0
+            q = []
+            for x in data:
+                q.append(x)
+                s += x
+                if len(q) > win:
+                    s -= q.pop(0)
+                out.append(s / len(q))
+            return out
+
+        return {
+            "tti": full_tti,
+            "avg_tx_raw": avg_tx_per_tti,
+            "avg_tx_smooth": moving_average(avg_tx_per_tti, window),
+            "ack_rate_raw": success_rate_per_tti,
+            "ack_rate_smooth": moving_average(success_rate_per_tti, window),
+        }
