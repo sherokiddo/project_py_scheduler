@@ -1216,7 +1216,7 @@ class SimulationManager:
                         )
                 # Режим Layered Buffer
                 else:
-                    bearers_info = self.traffic_gen.get_bearer_info(ue.UE_ID)
+                    bearers_info = self.traffic_gen.get_bearers_info(ue.UE_ID)
                     self.base_station.buffer_manager.create_ue_buffer(
                         ue.UE_ID, self.base_station.per_ue_max, bearers_info
                     )

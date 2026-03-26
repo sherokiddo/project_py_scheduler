@@ -821,6 +821,28 @@ class SimpleGenerator(ITrafficGeneratorInterface):
             del self._packets_per_ue[ue_id]
 
 
+@dataclass(slots=True)
+class BearerInfo:
+    """
+    Информация о конкретном bearer'е пользователя.
+
+    Attributes:
+        bearer_id (int): Уникальный ID bearer внутри UE.
+        model (str): Модель генерации трафика.
+        qci (int): QoS Class Identifier (1-9).
+        gbr (Optional[int]): Гарантированный bitrate для данного bearer'а, если задан.
+        mbr (Optional[int]): Максимальный bitrate для данного bearer'а, если задан.
+        enabled (bool): Активен ли данный bearer.
+
+    """
+    bearer_id: int
+    model: str
+    qci: int
+    gbr: Optional[int]
+    mbr: Optional[int]
+    enabled: bool
+
+
 @dataclass
 class Bearer:
     """
@@ -865,16 +887,37 @@ class Bearer:
         if self.mbr is not None and self.mbr <= 0:
             raise ValueError(f"MBR value must be > 0, got {self.mbr}")
 
-    def get_info(self) -> Dict:
+    def get_info(self) -> BearerInfo:
         """Информация о bearer"""
-        return {
-            "bearer_id": self.bearer_id,
-            "model": self.model.get_model_name(),
-            "qci": self.qci.value,
-            "gbr": self.gbr,
-            "mbr": self.mbr,
-            "enabled": self.enabled,
-        }
+        return BearerInfo(
+            bearer_id=self.bearer_id,
+            model=self.model.get_model_name(),
+            qci=self.qci.value,
+            gbr=self.gbr,
+            mbr=self.mbr,
+            enabled=self.enabled,
+        )
+
+
+@dataclass(slots=True)
+class UeBearersInfo:
+    """
+    Информация о bearer'ах пользователя (UE).
+
+    Содержит сводные данные по всем bearer'ам пользователя,
+    а также информацию по каждому из них.
+
+    Attributes:
+        ue_id (int): Уникальный идентификатор UE.
+        num_bearers (int): Общее количество bearer'ов.
+        active_bearers (int): Количество активных bearer'ов.
+        bearers (Dict[int, BearerInfo]): Словарь информации по bearer'ам:
+
+    """
+    ue_id: int
+    num_bearers: int
+    active_bearers: int
+    bearers: Dict[int, BearerInfo]
 
 
 class UeTrafficProfile:
@@ -995,14 +1038,14 @@ class UeTrafficProfile:
             raise ValueError(f"Bearer {bearer_id} not found")
         self.bearers[bearer_id].enabled = enabled
 
-    def get_profile_info(self) -> Dict:
+    def get_bearers_info(self) -> UeBearersInfo:
         """Информация о профиле"""
-        return {
-            "ue_id": self.ue_id,
-            "num_bearers": len(self.bearers),
-            "active_bearers": len(self.get_active_bearers()),
-            "bearers": {bid: b.get_info() for bid, b in self.bearers.items()},
-        }
+        return UeBearersInfo(
+            ue_id=self.ue_id,
+            num_bearers=len(self.bearers),
+            active_bearers=len(self.get_active_bearers()),
+            bearers={bid: b.get_info() for bid, b in self.bearers.items()},
+        )
 
     def clear_all(self):
         """Очистка всех bearers"""
@@ -1352,25 +1395,18 @@ class PacketManager(ITrafficGeneratorInterface):
             profile.clear_all()
             del self.ue_profiles[ue_id]
 
-    def get_bearer_info(self, ue_id: int, bearer_id: Optional[int] = None) -> Dict:
+    def get_bearers_info(self, ue_id: int) -> Optional[UeBearersInfo]:
         """
         Информация о bearers UE.
 
         Args:
             ue_id: ID пользователя
-            bearer_id: ID bearer (если None - все bearers)
 
         Returns:
-            Dict: Информация о bearers
+            UeBearersInfo: Информация о bearers
         """
         if ue_id not in self.ue_profiles:
-            return {}
+            return None
 
         profile = self.ue_profiles[ue_id]
-
-        if bearer_id is not None:
-            if bearer_id not in profile.bearers:
-                return {}
-            return profile.bearers[bearer_id].get_info()
-        else:
-            return profile.get_profile_info()
+        return profile.get_bearers_info()

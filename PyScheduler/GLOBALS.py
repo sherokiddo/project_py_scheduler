@@ -38,6 +38,7 @@ SUBBAND_SIZE = {
     20: 4      # 20 MHz → 4 RB for subband
 }
 
+SRB_LCID_OFFSET = 2
 
 # =============================================================================
 #                   ПАРАМЕТРЫ МОДЕЛИ Tapped Delay Line (TDL)               

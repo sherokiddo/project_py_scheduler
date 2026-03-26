@@ -23,7 +23,7 @@ from typing import Dict, List, Tuple, Optional
 
 import GLOBALS
 import numpy as np
-from TRAFFIC_MODEL import Packet, QCI
+from TRAFFIC_MODEL import Packet, QCI, UeBearersInfo
 from UE_MODULE import UserEquipment
 
 @dataclass(slots=True)
@@ -328,7 +328,7 @@ class IBufferManager(ABC):
         pass
     
     @abstractmethod
-    def create_ue_buffer(self, ue_id: int, max_size: Optional[int] = None, bearers_info: Dict = None) -> None:
+    def create_ue_buffer(self, ue_id: int, max_size: Optional[int] = None, bearers_info: UeBearersInfo = None) -> None:
         """
         Создание буфера для соответствующего UE.
 
@@ -336,7 +336,7 @@ class IBufferManager(ABC):
             ue_id (int): Уникальный идентификатор UE.
             max_size (Optional[int], optional): Максимальный размер буфера (байты). 
                 По умолчанию None.
-            bearers_info (Dict, optional): Информация о сконфигурированных bearer'ах UE. 
+            bearers_info (UeBearersInfo, optional): Информация о сконфигурированных bearer'ах UE. 
                 По умолчанию None.
 
         """
@@ -504,7 +504,7 @@ class SimpleBufferManager(IBufferManager):
         """
         return ue_id in self.buffers
     
-    def create_ue_buffer(self, ue_id: int, max_size: Optional[int] = None, bearers_info: Dict = None) -> None:
+    def create_ue_buffer(self, ue_id: int, max_size: Optional[int] = None, bearers_info: UeBearersInfo = None) -> None:
         """
         Создание буфера для соответствующего UE.
 
@@ -512,7 +512,7 @@ class SimpleBufferManager(IBufferManager):
             ue_id (int): Уникальный идентификатор UE.
             max_size (Optional[int], optional): Максимальный размер буфера (байты). 
                 По умолчанию None.
-            bearers_info (Dict, optional): Информация о сконфигурированных bearer'ах UE. 
+            bearers_info (UeBearersInfo, optional): Информация о сконфигурированных bearer'ах UE. 
                 По умолчанию None.
 
         """
@@ -528,6 +528,7 @@ class SimpleBufferManager(IBufferManager):
 
         """
         if self.ue_has_buffer(ue_id):
+            self.current_total_size -= self.buffers[ue_id].current_size
             self.buffers[ue_id].clear_buffer()
             del self.buffers[ue_id]
 
@@ -770,7 +771,6 @@ class RLCUM(RLCEntity):
         """
         extracted_packets = []
         extracted_bytes = 0
-        self.extracted_bytes_in_tti = 0
 
         while self.tx_buffer and extracted_bytes < num_bytes_to_extract:
             packet = self.tx_buffer[0]
@@ -857,6 +857,7 @@ class RLCUM(RLCEntity):
         self.packets_added = 0
         self.packets_dropped = 0
         self.packets_expired = 0
+        self.extracted_bytes = 0
 
     def get_stats(self) -> Dict:
         """
@@ -1028,11 +1029,19 @@ class UeProtocolStack:
         """
         Очистка всех буферов UE.
 
+        Returns:
+            int: Общий размер очищенных буферов.
+
         """
+        freed_size = 0
+
         for rlc_entity in self.rlc_entities.values():
+            freed_size += rlc_entity.current_tx_buffer_size
             rlc_entity.clear_buffer()
 
         self.rlc_entities.clear()
+
+        return freed_size
 
     def get_stats(self) -> Dict:
         """
@@ -1256,7 +1265,7 @@ class LayeredBufferManager(IBufferManager):
         """
         return ue_id in self.ue_stacks and self.ue_stacks[ue_id].ue_has_buffer()
 
-    def create_ue_buffer(self, ue_id: int, max_size: Optional[int] = None, bearers_info: Dict = None) -> None:
+    def create_ue_buffer(self, ue_id: int, max_size: Optional[int] = None, bearers_info: UeBearersInfo = None) -> None:
         """
         Создание буферов для соответствующего UE для каждого сконфигурированного
         bearer'а.
@@ -1265,7 +1274,7 @@ class LayeredBufferManager(IBufferManager):
             ue_id (int): Уникальный идентификатор UE.
             max_size (Optional[int], optional): Максимальный размер буфера (байты). 
                 По умолчанию None.
-            bearers_info (Dict, optional): Информация о сконфигурированных bearer'ах UE. 
+            bearers_info (UeBearersInfo, optional): Информация о сконфигурированных bearer'ах UE. 
                 По умолчанию None.
 
         """
@@ -1275,15 +1284,15 @@ class LayeredBufferManager(IBufferManager):
         if bearers_info is None:
             return
 
-        bearers = bearers_info.get("bearers")
+        bearers = bearers_info.bearers
 
-        if bearers:
-            for bearer in bearers.values():
-                bearer_id = bearer.get("bearer_id")
-                qci = bearer.get("qci")
-                lcid = self._get_lcid_from_bearer_id(bearer_id)
+        for bearer in bearers.values():
+            bearer_id = bearer.bearer_id
+            qci = bearer.qci
 
-                self.ue_stacks[ue_id].create_entities(lcid, qci, ue_buffer_size)
+            lcid = self._get_lcid_from_bearer_id(bearer_id)
+
+            self.ue_stacks[ue_id].create_entities(lcid, qci, ue_buffer_size)
 
     def remove_ue_buffer(self, ue_id: int) -> None:
         """
@@ -1295,7 +1304,8 @@ class LayeredBufferManager(IBufferManager):
         """
         if self.ue_has_buffer(ue_id):
             ue_stack = self.ue_stacks.get(ue_id)
-            ue_stack.clear_buffers()
+            freed_size = ue_stack.clear_buffers()
+            self.current_total_size -= freed_size
 
             del self.ue_stacks[ue_id]
 
@@ -1400,7 +1410,7 @@ class LayeredBufferManager(IBufferManager):
             int: Идентификатор логического канала (LCID).
 
         """
-        return bearer_id + 2
+        return bearer_id + GLOBALS.SRB_LCID_OFFSET
 
 
 class BaseStation:

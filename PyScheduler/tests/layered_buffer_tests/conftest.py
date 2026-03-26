@@ -8,7 +8,7 @@ sys.path.insert(0, str(ROOT))
 
 import GLOBALS
 from BS_MODULE import LayeredBufferManager
-from TRAFFIC_MODEL import Packet, QCI
+from TRAFFIC_MODEL import Packet, QCI, BearerInfo, UeBearersInfo
 from SCHEDULER import SchedulingGrant, SchedulerInterface
 
 @pytest.fixture(autouse=True)
@@ -24,22 +24,38 @@ def manager():
         per_ue_max=5_000
     )
 
+def make_bearer(bearer_id: int, qci: int) -> BearerInfo:
+    return BearerInfo(
+        bearer_id=bearer_id,
+        model="TestModel",
+        qci=qci,
+        gbr=None,
+        mbr=None,
+        enabled=True,
+    )
+
 @pytest.fixture
 def single_bearer():
-    return {
-        "bearers": {
-            1: {"bearer_id": 1, "qci": 9}
-        }
-    }
+    return UeBearersInfo(
+        ue_id=1,
+        num_bearers=1,
+        active_bearers=1,
+        bearers={
+            1: make_bearer(1, 9),
+        },
+    )
 
 @pytest.fixture
 def two_bearers():
-    return {
-        "bearers": {
-            1: {"bearer_id": 1, "qci": 9},
-            2: {"bearer_id": 2, "qci": 1},
-        }
-    }
+    return UeBearersInfo(
+        ue_id=1,
+        num_bearers=2,
+        active_bearers=2,
+        bearers={
+            1: make_bearer(1, 9),
+            2: make_bearer(2, 1),
+        },
+    )
 
 @pytest.fixture
 def packet():

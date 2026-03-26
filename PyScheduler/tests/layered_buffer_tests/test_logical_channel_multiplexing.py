@@ -1,18 +1,28 @@
 """
 Тесты на проверку работы Logical Channel Multiplexing
 """
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from TRAFFIC_MODEL import BearerInfo, UeBearersInfo
 
 def test_logical_channel_multiplexing(manager, scheduler, packet, qci):
 
     scheduler.lte_grid.bs.use_simple_buffer = False
 
-    bearers_info = {
-        "bearers": {
-            1: {"bearer_id": 1, "qci": 1},
-            2: {"bearer_id": 2, "qci": 2},
-            3: {"bearer_id": 3, "qci": 5},
-        }
-    }
+    bearers_info = UeBearersInfo(
+        ue_id=1,
+        num_bearers=3,
+        active_bearers=3,
+        bearers={
+            1: BearerInfo(bearer_id=1, model="TestModel", qci=1, gbr=None, mbr=None, enabled=True),
+            2: BearerInfo(bearer_id=2, model="TestModel", qci=2, gbr=None, mbr=None, enabled=True),
+            3: BearerInfo(bearer_id=3, model="TestModel", qci=5, gbr=None, mbr=None, enabled=True),
+        },
+    )
 
     manager.create_ue_buffer(1, None, bearers_info)
 
