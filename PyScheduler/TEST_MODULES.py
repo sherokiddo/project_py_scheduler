@@ -231,7 +231,121 @@ def sim_with_manager():
     )
 
 
+def sim_with_manager_qos():
+    """
+    Пример запуска симуляции с использованием менеджера и QoS трафиком.
+
+    """
+    # =============================================================================
+    #             НАСТРОЙКА БАЗОВОЙ СТАНЦИИ И КОЛЛЕКЦИИ ПОЛЬЗОВАТЕЛЕЙ
+    # =============================================================================
+    
+    # Сброс и создание карты
+    MapBorders._instance = None
+    MapBorders(-1000, 1000, -1000, 1000)
+    x_min, x_max, y_min, y_max = MapBorders().get_borders()
+
+    # Создание и настройка базовой станции
+    bs = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMa", use_simple_buffer=False)
+
+    # Создание коллекции пользовательских устройств
+    ue_collection = UECollection()
+
+    # Установка сида
+    GLOBALS.SEED = 42
+    
+    if GLOBALS.SEED is not None:
+        np.random.seed(GLOBALS.SEED)
+
+    # Генерация заданного числа UE в коллекцию
+    ue_collection.ADD_RANDOM_USERS(num_ue=5,
+                                   x_min=x_min,
+                                   x_max=x_max,
+                                   y_min=y_min,
+                                   y_max=y_max,
+                                   ue_class="random")
+
+    # Установка модели передвижения для всех пользователей коллекции
+    ue_collection.SET_MOBILITY_MODEL("RandomWaypoint")
+
+    # Регистрация всех пользователей коллекции в базовой станции
+    ue_collection.REG_USERS_TO_BS(bs)
+
+    # =============================================================================
+    #                        НАСТРОЙКА МЕНЕДЖЕРА СИМУЛЯЦИИ
+    # =============================================================================
+
+    # Создание менеджера симуляции
+    sim = SimulationManager()
+
+    # Установка базовой станции
+    sim.set_base_station(bs)
+
+    # Установка коллекции пользователей
+    sim.set_ue_collection(ue_collection)
+
+    # Установка планировщика. Можно передвать параметры, которые
+    # поддерживает SchedulerInterface.
+    sim.set_scheduler(algorithm="ProportionalFair")
+
+    # Настраиваем модели для каждого UE
+    config = [
+        {
+        "ue_id": 1,
+        "bearers": [
+            {"model_type": "Poisson", "qci": 1, "packet_rate": 100},
+            {"model_type": "Poisson", "qci": 5, "packet_rate": 200},
+            {"model_type": "Poisson", "qci": 7, "packet_rate": 1500}]
+        },
+        {
+        "ue_id": 2,
+        "bearers": [
+            {"model_type": "Poisson", "qci": 4, "packet_rate": 500},
+            {"model_type": "Poisson", "qci": 8, "packet_rate": 1000}]
+        },
+        {
+        "ue_id": 3,
+        "bearers": [
+            {"model_type": "Poisson", "packet_rate": 1000}]
+        },
+        {
+        "ue_id": 4,
+        "bearers": [
+            {"model_type": "Poisson", "qci": 6, "packet_rate": 1000},
+            {"model_type": "Poisson", "qci": 7, "packet_rate": 1500},
+            {"model_type": "Poisson", "qci": 8, "packet_rate": 1200}]
+        },
+        {
+        "ue_id": 5,
+        "bearers": [
+            {"model_type": "Poisson", "qci": 1, "packet_rate": 100}]
+        },
+    ]
+    
+    sim.setup_traffic_profiles(config)
+
+    # Установка длительности симуляции
+    sim.set_sim_duration(5000)
+
+    # Включение verbose логирования. Для вывода всех логов в файл нужно
+    # поставить флаг to_file=True.
+    sim.enable_verbose_log(to_file=True)
+
+    # Установка менеджера статистики
+    sim.set_stats_manager(
+        enabled=True,
+        collect_interval=1,
+        history_max_len=5000,
+        scheduler_level="full",
+        amc_level="full",
+        pdcch_level="basic",
+        file_prefix="emp_stats",
+    )
+
+    # Запуск симуляции
+    sim.start_simulation()
+
+
 if __name__ == "__main__":
-    # debug_simulation()
-    # sim_with_ue_collection()
-    sim_with_manager()
+    # sim_with_manager()
+    sim_with_manager_qos()

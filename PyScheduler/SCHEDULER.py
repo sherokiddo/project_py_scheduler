@@ -804,20 +804,20 @@ class SchedulerInterface:
 
     def _logical_channel_multiplexing(self, tb_size: int, buffer_status_list: List) -> List[SchedulingGrant]:
         """
-        Мультиплексирование логических каналов  в пределах одного транспортного
-        блока. В режиме Simple Buffer весь размер транспортного блока выделяется
-        единственному буферу UE. В режиме Layered Buffer предполагается
-        распределение TB между несколькими логическими каналами (не реализовано).
-
+        Мультиплексирование логических каналов  в пределах одного транспортного 
+        блока. В режиме Simple Buffer весь размер транспортного блока выделяется 
+        единственному буферу UE. В режиме Layered Buffer предполагается 
+        распределение TB между несколькими логическими каналами.
+        
         Args:
             tb_size (int): Размер транспортного блока (байты).
             buffer_status_list (List): Список состояний буферов UE.
 
         Raises:
             ValueError: Если количество полученных BufferStatus'ов в режиме
-                Simple Buffer не равно 1.
-            NotImplementedError: Если активирован режим Layered Buffer,
-                который пока не поддерживается..
+                Simple Buffer не равно 1, список полученных BufferStatus'ов в режиме
+                Layered Buffer пуст или значения UE ID у полученных BufferStatus'ов 
+                в режиме Layered Buffer отличаются.
 
         Returns:
             List[SchedulingGrant]: Список грантов, определяющих количество байт,
@@ -842,10 +842,35 @@ class SchedulerInterface:
 
         # Layered buffer mode
         else:
-            raise NotImplementedError(
-                "Currently, only Simple Buffer is supported."
-            )
+            if not buffer_status_list:
+                raise ValueError(
+                    "The buffer status list must not be empty."
+                )
+        
+            if not all(status.ue_id == buffer_status_list[0].ue_id for status in buffer_status_list):
+                raise ValueError(
+                    "The UE ID in all buffer statuses must be the same"
+                )
+            
+            # Просто делим транспортный блок на равные части между всеми активными LC.
+            # Несправедливая стратегия, т.к. LC с малым количеством данных получает такой же
+            # объём транспортного блока, что и LC с большим количеством данных.
+            active_lcs = sum(1 for status in buffer_status_list if status.buffer_size > 0)
+            num_bytes_per_lc = tb_size // active_lcs
 
+            grants = []
+            for buffer_status in buffer_status_list:
+                if buffer_status.buffer_size > 0:
+                    grant = SchedulingGrant(
+                        ue_id=buffer_status.ue_id,
+                        num_bytes=num_bytes_per_lc,
+                        lcid=buffer_status.lcid,
+                    )
+
+                    grants.append(grant)
+
+            return grants
+                
     def _process_buffers(self, tti: int, users: List[Dict], allocation: Dict) -> None:
         """
         Обработка буферов и обновление throughput статистики.
@@ -906,7 +931,7 @@ class SchedulerInterface:
 
             # @IvanNoritsin: Мультиплексер принимает на вход размер транспорного
             # блока, но т.к. у нас нет этой системы просто пердаём вместимость
-            # выделенный ресурсных блоков
+            # выделенных ресурсных блоков
             grants = self._logical_channel_multiplexing(max_bytes, buffer_status_list)
 
             try:

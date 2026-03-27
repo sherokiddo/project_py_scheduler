@@ -888,17 +888,6 @@ class UECollection:
             if current_time % ch_interval == 0:
                 ue.UPD_CH_QUALITY(ch_interval)
 
-            # Генерация DL трафика, если задана модель
-            if ue.traffic_model is not None:
-                ue.serving_bs.GEN_TRFFC(
-                    current_time=current_time,
-                    update_interval=update_interval,
-                    ue_id=ue.UE_ID,
-                )
-
-    #TODO: Привязать и вывести ручки для управления временным интервалом
-    # обновления каналов
-
     def GET_ACTIVE_USERS(self) -> List[UserEquipment]:
         """
         Получить список активных пользователей (с данными в буфере).
