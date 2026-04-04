@@ -13,6 +13,15 @@
 # Версия Python Kernel: 3.12.9
 # v.1.1.0:
 # - Удален Packet, перенесен в TRAFFIC_MODEL.py
+# Версия: 1.1.1
+# Дата последнего изменения: 2026-04-01
+# Автор: Македон Никита
+# Версия Python Kernel: 3.12.9
+# v.1.1.1:
+# - Оптимизирован метод обновления буфера
+# - Ускорено удаление просроченных пакетов
+# - Добавлен быстрый режим обработки FIFO-очереди
+# - Сохранена прежняя логика работы и статистики
 #------------------------------------------------------------------------------
 """
 
@@ -126,6 +135,8 @@ class SimpleBuffer:
         self.packets_added = 0
         self.packets_dropped = 0
         self.packets_expired = 0
+        self._deadline_monotonic_ok = True
+        self._tail_deadline = None
         
     def add_packet(self, packet: Packet) -> bool:
         """
@@ -213,21 +224,55 @@ class SimpleBuffer:
         """
         Удаление просроченных пакетов из буфера.
         """
-        valid_packets = []
+        if not self.buffer:
+            self._tail_deadline = None
+            self._deadline_monotonic_ok = True
+            return
+
+        if self._deadline_monotonic_ok:
+            expired_bytes = 0
+            expired_count = 0
+
+            while self.buffer and self.buffer[0].deadline <= GLOBALS.CURRENT_TIME:
+                pkt = self.buffer.popleft()
+                expired_bytes += pkt.size
+                expired_count += 1
+
+            if expired_count:
+                self.current_size -= expired_bytes
+                if self.current_size < 0:
+                    self.current_size = 0
+                self.packets_expired += expired_count
+
+            if self.buffer:
+                self._tail_deadline = self.buffer[-1].deadline
+            else:
+                self._tail_deadline = None
+                self._deadline_monotonic_ok = True
+            return
+
+        valid_packets = deque()
+        current_size = 0
         expired_count = 0
-        
+        prev_deadline = None
+        monotonic_ok = True
+
         for packet in self.buffer:
             if packet.deadline > GLOBALS.CURRENT_TIME:
                 valid_packets.append(packet)
+                current_size += packet.size
+                if prev_deadline is not None and packet.deadline < prev_deadline:
+                    monotonic_ok = False
+                prev_deadline = packet.deadline
             else:
                 expired_count += 1
-                
-        self.buffer = deque(valid_packets)
-        self.current_size = max(0, sum(p.size for p in valid_packets))
-        
+
+        self.buffer = valid_packets
+        self.current_size = current_size
         self.packets_expired += expired_count
-            
-    
+        self._deadline_monotonic_ok = monotonic_ok
+        self._tail_deadline = prev_deadline
+
     def get_buffer_status(self) -> BufferStatus:
         """
         Формирование статуса буфера на текущий момент. 
@@ -256,6 +301,8 @@ class SimpleBuffer:
         self.packets_added = 0
         self.packets_dropped = 0
         self.packets_expired = 0
+        self._deadline_monotonic_ok = True
+        self._tail_deadline = None
         
 
 class IBufferManager(ABC):

@@ -54,6 +54,16 @@
 #   Тесты
 #   - Убраны в tests/test_res_grid.py
 #   - Добавлены новые для RES_GRID_LTE_CACHED
+#   v1.1.1 - 2026-04-01:
+#   Автор: Македон Никита
+#   Версия Python Kernel: 3.12.9
+#   - Продолжена оптимизация ресурсной сетки LTE
+#   - Добавлено более компактное хранение назначений RBG
+#   - Уменьшены накладные расходы на создание объектов TTI
+#   - Реализовано ленивое создание детальной структуры subframe/slot
+#   - Ускорена работа allocate/release и генерации bitmap
+#   - Сохранена совместимость со старой реализацией сетки
+#   - Добавлен новый тест test_res_grid_equivalence
 #------------------------------------------------------------------------------
 """
 
@@ -359,9 +369,11 @@ class Frame:
 class RES_GRID_LTE_CACHED(GridInterface):
     """
     Сетка LTE с кэшированием скользящего окна (100x экономия памяти)
-    
-    ОПТИМИЗАЦИЯ УРОВНЯ 1:
-    - Кэширование get_rbg_indices() для избежания пересчёта
+
+    Основная оптимизация для профиля:
+    - Ведём per-TTI массив rbg_alloc (RBG -> UE_ID/None) и строим bitmap из него за O(total_rbg),
+      вместо сканирования всех RB в каждом bitmap (которое порождает миллионы GET_RES_BLCK).
+    - Оставляем legacy-scan (fallback) для валидации/совместимости.
     """
 
     # Словарь соответствия полосы частот и количества RB согласно стандарту LTE
@@ -369,156 +381,253 @@ class RES_GRID_LTE_CACHED(GridInterface):
     
     # Словарь размеров ресурсных групп по TS 36.213
     RBG_SIZE_TABLE = {1.4: 1, 3: 2, 5: 2, 10: 3, 15: 4, 20: 4}
-    
-    def __init__(self, bandwidth: float = 10, window_size: int = 100, 
-                 cp_type: str = "normal", verbose: bool = False):
+
+    def __init__(self, bandwidth: float = 10, window_size: int = 100,
+                 cp_type: str = "normal", verbose: bool = False,
+                 enable_bitmap_cache: bool = True,
+                 enable_resgrid_numpy: bool = False,
+                 fast_rbg_only: bool = True):
         if bandwidth not in self.BANDWIDTH_TO_RB:
             raise ValueError(f"Недопустимая полоса: {list(self.BANDWIDTH_TO_RB.keys())}")
-        
+
         self.bandwidth = bandwidth
         self.rb_per_slot = self.BANDWIDTH_TO_RB[bandwidth]
         self.num_rb = self.rb_per_slot * 2
         self.cache = SlidingWindowCache(window_size)
         self.current_tti, self.bs, self.verbose = 0, None, verbose
-        
-        # ОПТИМИЗАЦИЯ УРОВНЯ 1: Кэш для get_rbg_indices()
+
         self._rbg_indices_cache: Dict[int, List[int]] = {}
-    
-    def _get_or_create_subframe(self, tti: int) -> Subframe:
-        """Получить из кэша или создать новый Subframe (главный метод оптимизации!)"""
+
+        self.enable_bitmap_cache = enable_bitmap_cache
+        self.enable_resgrid_numpy = enable_resgrid_numpy
+        self.strict_rb_precheck = False   # fast mode по умолчанию
+        self.lazy_subframe = True         # subframe создаём только при необходимости
+        self.fast_rbg_only = fast_rbg_only
+
+        self._rbg_size = self.RBG_SIZE_TABLE[self.bandwidth]
+        self._total_rbg = (self.rb_per_slot + self._rbg_size - 1) // self._rbg_size
+
+        try:
+            import numpy as _np  # noqa: F401
+            self._np_available = True
+        except Exception:
+            self._np_available = False
+            self.enable_resgrid_numpy = False
+
+    def _get_or_create_tti_state(self, tti: int) -> Dict:
         cached = self.cache.get(tti)
         if cached:
-            return cached['subframe']
-        
-        sf = Subframe(tti % 10, self.rb_per_slot)
-        self.cache.put(tti, {'tti': tti, 'subframe': sf})
+            return cached
+
+        sf = None
+        if not self.lazy_subframe:
+            sf = Subframe(tti % 10, self.rb_per_slot)
+
+        state = {
+            'tti': tti,
+            'subframe': sf,
+            'rbg_alloc': [None] * self._total_rbg,
+        }
+
+        if self.enable_resgrid_numpy and self._np_available:
+            import numpy as np
+            state['rbg_alloc_np'] = np.full((self._total_rbg,), -1, dtype=np.int32)
+
+        self.cache.put(tti, state)
         if self.verbose:
-            print(f"[RES_GRID] Created Subframe for TTI {tti}")
-        return sf
-    
-    
-    def allocate_rbg(self, tti: int, rbg_idx: int, ue_id: int) -> bool:
-        """
-        Выделить ресурсную группу (RBG) пользователю.
-        
-        ОПТИМИЗАЦИЯ УРОВНЯ 3:
-        - Достаем subframe 1 раз вместо 50+ обращений к кэшу
-        - Уменьшаем cache.get() вызовы с 5M до 60k
-        """
-        # Достаем subframe из кэша один раз
-        sf = self._get_or_create_subframe(tti)
-        rb_indices = self.get_rbg_indices(rbg_idx)
-        
-        for slot_idx in [0, 1]:
-            slot = sf.GET_SLOT(slot_idx)
-            if not slot:
-                continue
-            
-            for freq in rb_indices:
-                rb = slot.GET_RES_BLCK(freq)
-                if not (rb and rb.ASSIGN_RB(ue_id)):
-                    # Откатываем выделение при ошибке
-                    self.release_rbg(tti, rbg_idx)
-                    return False
-        
-        return True
-    
-    def release_rbg(self, tti: int, rbg_idx: int) -> bool:
-        """
-        Освободить ресурсную группу (RBG).
-        
-        ОПТИМИЗАЦИЯ УРОВНЯ 3:
-        - Единственное обращение к кэшу в начале
-        """
-        sf = self._get_or_create_subframe(tti)
-        
-        for slot_idx in [0, 1]:
-            slot = sf.GET_SLOT(slot_idx)
-            if not slot:
-                continue
-            
-            for freq in self.get_rbg_indices(rbg_idx):
-                rb = slot.GET_RES_BLCK(freq)
-                if rb:
-                    rb.RELEASE_RB()
-        
-        return True
-    
-    def get_rbg_indices(self, rbg_idx: int) -> List[int]:
-        """
-        Получить freq_idx в RBG
-        
-        ОПТИМИЗАЦИЯ УРОВНЯ 1:
-        - Результат кэшируется, так как не зависит от TTI
-        - Вместо 5.9М вызовов пересчёта → максимум 16-25 вызовов
-        """
-        # Проверка кэша
-        if rbg_idx not in self._rbg_indices_cache:
-            size = self.RBG_SIZE_TABLE[self.bandwidth]
-            start = rbg_idx * size
-            self._rbg_indices_cache[rbg_idx] = list(
-                range(start, min(start + size, self.rb_per_slot))
-            )
-        return self._rbg_indices_cache[rbg_idx]
-    
-    def get_rbg_size(self) -> int:
-        return self.RBG_SIZE_TABLE[self.bandwidth]
-    
-    def generate_bitmap(self, tti: int, ue_id: int) -> List[int]:
-        """
-        Bitmap распределения RBG для пользователя.
-        
-        ОПТИМИЗАЦИЯ УРОВНЯ 3:
-        - Один выход к кэшу, затем работа с локальными объектами
-        """
-        sf = self._get_or_create_subframe(tti)
-        total_rbg = (self.rb_per_slot + self.get_rbg_size() - 1) // self.get_rbg_size()
-        bitmap = []
-        
-        for rbg_idx in range(total_rbg):
-            allocated = False
-            
-            for slot_idx in [0, 1]:
-                if allocated:
-                    break
-                
-                slot = sf.GET_SLOT(slot_idx)
-                if not slot:
+            print(f"[RES_GRID] Created TTI state for TTI {tti}")
+        return state
+
+    def _get_or_create_subframe(self, tti: int) -> Subframe:
+        state = self._get_or_create_tti_state(tti)
+        sf = state.get('subframe')
+
+        if sf is None:
+            sf = Subframe(tti % 10, self.rb_per_slot)
+            state['subframe'] = sf
+
+            alloc = state.get('rbg_alloc', [])
+            for rbg_idx, owner in enumerate(alloc):
+                if owner is None:
                     continue
-                
-                for freq in self.get_rbg_indices(rbg_idx):
-                    rb = slot.GET_RES_BLCK(freq)
+
+                rb_indices = self.get_rbg_indices(rbg_idx)
+                for slot in sf.slots:
+                    rb_by_freq = slot.resource_blocks_by_freq
+                    for freq in rb_indices:
+                        rb = rb_by_freq.get(freq)
+                        if rb:
+                            rb.ASSIGN_RB(owner)
+
+            if self.verbose:
+                print(f"[RES_GRID] Materialized Subframe for TTI {tti}")
+
+        return sf
+
+    def allocate_rbg(self, tti: int, rbg_idx: int, ue_id: int) -> bool:
+        """Выделить RBG (Resource Block Group) пользователю.
+
+        Цели:
+        - Быстрый O(1) pre-check по компактной карте rbg_alloc (и rbg_alloc_np при наличии).
+        - В fast path не выполняем полный обход RB (и не материализуем Subframe), если в этом нет нужды.
+        - RB-структуры обновляем только если Subframe уже существует, либо если включён strict_rb_precheck.
+
+        Важно:
+        - Источник истины в cached-версии: state['rbg_alloc'] (и state['rbg_alloc_np'] если включено).
+        - При lazy_subframe=True subframe может быть None, пока не нужен legacy-scan/отладка.
+        """
+        state = self._get_or_create_tti_state(tti)
+
+        # --- O(1) pre-check занятости RBG ---
+        if 'rbg_alloc_np' in state:
+            if int(state['rbg_alloc_np'][rbg_idx]) != -1:
+                return False
+        else:
+            if state['rbg_alloc'][rbg_idx] is not None:
+                return False
+
+        strict = bool(getattr(self, 'strict_rb_precheck', False))
+
+        # --- STRICT PATH: полная проверка RB (дороже, но максимально строго) ---
+        if strict:
+            sf = self._get_or_create_subframe(tti)
+            rb_indices = self.get_rbg_indices(rbg_idx)
+
+            for slot in sf.slots:
+                rb_by_freq = slot.resource_blocks_by_freq
+                for freq in rb_indices:
+                    rb = rb_by_freq.get(freq)
+                    if rb is None or not rb.CHCK_RB():
+                        return False
+
+            # Commit: обновляем компактную карту
+            state['rbg_alloc'][rbg_idx] = ue_id
+            if 'rbg_alloc_np' in state:
+                state['rbg_alloc_np'][rbg_idx] = int(ue_id)
+
+            # Commit: обновляем RB-структуры
+            for slot in sf.slots:
+                rb_by_freq = slot.resource_blocks_by_freq
+                for freq in rb_indices:
+                    rb = rb_by_freq.get(freq)
+                    if not (rb and rb.ASSIGN_RB(ue_id)):
+                        self.release_rbg(tti, rbg_idx)
+                        return False
+
+            return True
+
+        # --- FAST PATH: только компактная карта, RB-слой трогаем только если он уже существует ---
+        state['rbg_alloc'][rbg_idx] = ue_id
+        if 'rbg_alloc_np' in state:
+            state['rbg_alloc_np'][rbg_idx] = int(ue_id)
+
+        sf = state.get('subframe')
+        if sf is None:
+            return True
+
+        rb_indices = self.get_rbg_indices(rbg_idx)
+        assigned = []
+
+        for slot in sf.slots:
+            rb_by_freq = slot.resource_blocks_by_freq
+            for freq in rb_indices:
+                rb = rb_by_freq.get(freq)
+                if rb and rb.ASSIGN_RB(ue_id):
+                    assigned.append(rb)
+                else:
+                    state['rbg_alloc'][rbg_idx] = None
+                    if 'rbg_alloc_np' in state:
+                        state['rbg_alloc_np'][rbg_idx] = -1
+                    for r in assigned:
+                        r.RELEASE_RB()
+                    return False
+
+        return True
+
+
+    def release_rbg(self, tti: int, rbg_idx: int) -> bool:
+        state = self._get_or_create_tti_state(tti)
+
+        # Всегда чистим компактную карту
+        state['rbg_alloc'][rbg_idx] = None
+        if 'rbg_alloc_np' in state:
+            state['rbg_alloc_np'][rbg_idx] = -1
+
+        # RB трогаем только если subframe уже существует
+        sf = state.get('subframe')
+        if sf is None and self.strict_rb_precheck:
+            sf = self._get_or_create_subframe(tti)
+
+        if sf is not None:
+            rb_indices = self.get_rbg_indices(rbg_idx)
+            for slot in sf.slots:
+                rb_by_freq = slot.resource_blocks_by_freq
+                for freq in rb_indices:
+                    rb = rb_by_freq.get(freq)
+                    if rb:
+                        rb.RELEASE_RB()
+
+        return True
+
+    def get_rbg_indices(self, rbg_idx: int) -> List[int]:
+        cached = self._rbg_indices_cache.get(rbg_idx)
+        if cached is None:
+            start = rbg_idx * self._rbg_size
+            cached = list(range(start, min(start + self._rbg_size, self.rb_per_slot)))
+            self._rbg_indices_cache[rbg_idx] = cached
+        return cached
+
+    def get_rbg_size(self) -> int:
+        return self._rbg_size
+
+    def _generate_bitmap_legacy_scan(self, tti: int, ue_id: int) -> List[int]:
+        sf = self._get_or_create_subframe(tti)
+        bitmap = []
+        for rbg_idx in range(self._total_rbg):
+            allocated = False
+            rb_indices = self.get_rbg_indices(rbg_idx)
+            for slot in sf.slots:
+                rb_by_freq = slot.resource_blocks_by_freq
+                for freq in rb_indices:
+                    rb = rb_by_freq.get(freq)
                     if rb and rb.UE_ID == ue_id:
                         allocated = True
                         break
-            
+                if allocated:
+                    break
             bitmap.append(1 if allocated else 0)
-        
         return bitmap
-    
+
+    def generate_bitmap(self, tti: int, ue_id: int) -> List[int]:
+        if self.enable_bitmap_cache:
+            state = self._get_or_create_tti_state(tti)
+            if 'rbg_alloc_np' in state:
+                arr = state['rbg_alloc_np']
+                return (arr == ue_id).astype('int8').tolist()
+            alloc = state['rbg_alloc']
+            return [1 if v == ue_id else 0 for v in alloc]
+        return self._generate_bitmap_legacy_scan(tti, ue_id)
+
     def get_window_stats(self) -> Dict:
-        """Получить статистику кэша для мониторинга"""
         return self.cache.get_stats()
-    
+
     def SET_BS(self, bs: BaseStation):
         self.bs = bs
-    
-    # Legacy методы для совместимости с SCHEDULER.py
+
     def ALLOCATE_RBG(self, tti: int, rbg_idx: int, UE_ID: int) -> bool:
         return self.allocate_rbg(tti, rbg_idx, UE_ID)
-    
+
     def RELEASE_RBG(self, tti: int, rbg_idx: int) -> bool:
         return self.release_rbg(tti, rbg_idx)
-    
+
     def GET_RBG_INDICES(self, rbg_idx: int) -> List[int]:
         return self.get_rbg_indices(rbg_idx)
-    
+
     def GET_RBG_SIZE(self) -> int:
         return self.get_rbg_size()
-    
+
     def GENERATE_BITMAP(self, tti: int, UE_ID: int) -> List[int]:
         return self.generate_bitmap(tti, UE_ID)
-
 
 # ============================================================================
 # ОРИГИНАЛЬНАЯ РЕАЛИЗАЦИЯ (v1.0.2) - ДЛЯ СОВМЕСТИМОСТИ
@@ -675,15 +784,29 @@ class RES_GRID_LTE:
 
     def ALLOCATE_RBG(self, tti: int, rbg_idx: int, UE_ID: int) -> bool:
         rb_indices = self.GET_RBG_INDICES(rbg_idx)
-        success = True
+        subframe = tti % 10
+
+        # ---------- PRE-CHECK ----------
         for slot in [0, 1]:
-            slot_id = f"sub_{tti%10}_slot_{slot}"
+            slot_id = f"sub_{subframe}_slot_{slot}"
             for freq in rb_indices:
-                if not self.ALLOCATE_RB(tti, slot_id, freq, UE_ID):
-                    success = False
-                    self.RELEASE_RBG(tti, rbg_idx)
-                    break
-        return success
+                rb = self.GET_RB(tti, slot_id, freq)
+                if rb is None or not rb.CHCK_RB():
+                    return False
+
+        # ---------- COMMIT ----------
+        allocated_pairs = []
+        for slot in [0, 1]:
+            slot_id = f"sub_{subframe}_slot_{slot}"
+            for freq in rb_indices:
+                if self.ALLOCATE_RB(tti, slot_id, freq, UE_ID):
+                    allocated_pairs.append((slot_id, freq))
+                else:
+                    for sid, f in allocated_pairs:
+                        self.RELEASE_RB(tti, sid, f)
+                    return False
+
+        return True
 
     def RELEASE_RBG(self, tti: int, rbg_idx: int) -> bool:
         subframe = tti % 10
