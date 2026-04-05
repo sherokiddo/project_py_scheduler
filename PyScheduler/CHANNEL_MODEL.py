@@ -23,6 +23,137 @@ import random
 import GLOBALS
 
 
+class ChannelInterface:
+    def __init__(self, bs: BaseStation):
+        self.bs = bs
+
+    @staticmethod
+    def get_conditions():
+        """
+        Возвращает словарь доступных состояний канала.
+        """
+        conditions = {"RMa": RMaModel, "UMa": UMaModel, "UMi": UMiModel, "RMa-SC": RMaModel_SC}
+        return conditions
+
+    @staticmethod
+    def validate_parameters(
+        model: str,
+        cond_update_period: float,
+        freq_fad_nlos_model: str,
+        freq_fad_los_model: str,
+        ds_profile: str,
+        los_arrival_angle: float,
+    ) -> None:
+        """
+        Валидация параметров модели канала.
+
+        Args:
+            model (str): Тип модели ('RMa', 'UMa', 'UMi', 'RMa-SC').
+            cond_update_period (float): Период обновления (мс).
+            freq_fad_nlos_model (str): TDL-профиль NLOS.
+            freq_fad_los_model (str): TDL-профиль LOS.
+            ds_profile (str): Профиль задержек.
+            los_arrival_angle (float): Угол прихода LOS (радианы).
+
+        Raises:
+            ValueError: При невалидных параметрах.
+            TypeError: При неправильном типе данных.
+        """
+        if not isinstance(model, str) or not model:
+            raise ValueError("model должен быть непустой строкой")
+
+        if cond_update_period < 0:
+            raise ValueError("cond_update_period не может быть отрицательным")
+
+        if not 0 <= los_arrival_angle <= 2 * np.pi:
+            raise ValueError(
+                f"los_arrival_angle должен быть в [0, 2π], получен {los_arrival_angle}"
+            )
+
+        valid_fad_models = {"TDL-A", "TDL-B", "TDL-C", "TDL-D", "TDL-E"}
+        if freq_fad_nlos_model not in valid_fad_models:
+            raise ValueError(f"freq_fad_nlos_model {freq_fad_nlos_model} не в {valid_fad_models}")
+        if freq_fad_los_model not in valid_fad_models:
+            raise ValueError(f"freq_fad_los_model {freq_fad_los_model} не в {valid_fad_models}")
+
+        valid_ds_profiles = {"short", "normal", "long"}
+        if ds_profile not in valid_ds_profiles:
+            raise ValueError(f"ds_profile {ds_profile} не в {valid_ds_profiles}")
+
+    def create(
+        self,
+        cond: str,
+        cond_update_period: float = 0.0,
+        freq_fad_nlos_model: str = "TDL-A",
+        freq_fad_los_model: str = "TDL-D",
+        ds_profile: str = "normal",
+        los_arrival_angle: float = np.pi / 4,
+        o2i_model: str = "low",
+        W: float = 20.0,
+        h: float = 5.0,
+    ):
+        ChannelInterface.validate_parameters(
+            cond,
+            cond_update_period,
+            freq_fad_nlos_model,
+            freq_fad_los_model,
+            ds_profile,
+            los_arrival_angle,
+        )
+
+        conds = self.get_conditions()
+        if cond not in conds:
+            raise ValueError(f"Unknown condition '{cond}'. Valid: {', '.join(conds.keys())}")
+
+        model_cls = conds[cond]
+
+        # Базовые параметры
+        kwargs = {
+            "bs": self.bs,
+            "cond_update_period": cond_update_period,
+            "freq_fad_nlos_model": freq_fad_nlos_model,
+            "freq_fad_los_model": freq_fad_los_model,
+            "ds_profile": ds_profile,
+            "los_arrival_angle": los_arrival_angle,
+        }
+
+        # Специфика моделей
+        if cond == "RMa":
+            kwargs.update({"W": W, "h": h})
+        elif cond in ("UMa", "UMi"):
+            kwargs["o2i_model"] = o2i_model
+
+        return model_cls(**kwargs)
+
+    def get_available_conds():
+        """
+        Выводит на экран список названий доступных моделей.
+        """
+        conds = list(ChannelInterface.get_conditions().keys())
+        print("Доступные модели:", conds)
+
+
+class ChannelState:
+    """
+    Класс для хранения состояния канала с поддержкой пространственной согласованности.
+
+    Поддерживает пространственную и временную корреляцию shadow fading и LOS/NLOS состояний.
+    """
+
+    def __init__(self):
+        """Инициализация состояния канала."""
+        self.last_position: np.ndarray = None
+        self.last_shadow_fading: float = 0.0
+        self.last_los_state: bool = None
+        self.first_call: bool = True
+        self.o2i_building_loss: float = None
+        self.o2i_car_loss: float = None
+
+    def reset(self):
+        """Сброс состояния канала."""
+        self.__init__()
+
+
 class ChannelModel:
     """
     Базовый класс для моделей радиоканалов.
@@ -30,11 +161,17 @@ class ChannelModel:
     SHADOW_FADING_INFO = {}
     CHANNEL_COND_INFO = {}
     O2I_INFO = {}
-    
-    def __init__(self, bs: BaseStation, cond_update_period: float = 0.0, 
-                 freq_fad_nlos_model: str = "TDL-A", 
-                 freq_fad_los_model: str = "TDL-D", ds_profile: str = "normal",
-                 los_arrival_angle: float = np.pi / 4):
+
+    def __init__(
+        self,
+        bs: BaseStation,
+        cond_update_period: float = 0.0,
+        freq_fad_nlos_model: str = "TDL-A",
+        freq_fad_los_model: str = "TDL-D",
+        ds_profile: str = "normal",
+        los_arrival_angle: float = np.pi / 4,
+        spatial_consistency=False,
+    ):
         """
         Инициализация базового класса моделей радиоканала.
 
@@ -42,25 +179,42 @@ class ChannelModel:
             bs (BaseStation): Объект базовой станции.
             cond_update_period (float, optional): Период обновления состояния
                 радиоканала (мс) По умолчанию 0.0.
-            freq_fad_nlos_model (str, optional): Модель для получения 
+            freq_fad_nlos_model (str, optional): Модель для получения
             частотно-селективных замираний при NLOS. По умолчанию "TDL-A".
-            freq_fad_los_model (str, optional): Модель для получения 
+            freq_fad_los_model (str, optional): Модель для получения
             частотно-селективных замираний при LOS. По умолчанию "TDL-D"
-            ds_profile (str, optional): Профиль разброса задержек. 
+            ds_profile (str, optional): Профиль разброса задержек.
                 По умолчанию "normal".
-            los_arrival_angle (float, optional): Угол прихода LOS-компоненты. 
+            los_arrival_angle (float, optional): Угол прихода LOS-компоненты.
                 По умолчанию np.pi / 4.
-            
-                
+
+
         """
         self.bs = bs
         self.cond_update_period = cond_update_period
-        self.freq_fading = TDLModel(bs, freq_fad_nlos_model,
-                                    freq_fad_los_model, ds_profile,
-                                    los_arrival_angle)
-        
-    def _get_sigma_sf(self, channel_condition: str, d_2D: float = None, 
-                      UE_height: float = None) -> float:
+        self.spatial_consistency = spatial_consistency
+        if self.spatial_consistency:
+            self.channel_state = ChannelState()
+        else:
+            self.channel_state = None
+        self.channel_state = ChannelState() if self.spatial_consistency else None
+
+        # Корреляционные расстояния
+        self.correlation_dist_LOS = 37.0
+        self.correlation_dist_NLOS = 50.0
+        self.los_correlation_length = 50.0
+        self.sf_correlation_distance_los = 37.0
+        self.sf_correlation_distance_nlos = 50.0
+
+        # O2I модель
+        self.o2i_model = "low"  # или "high"
+        self.freq_fading = TDLModel(
+            bs, freq_fad_nlos_model, freq_fad_los_model, ds_profile, los_arrival_angle
+        )
+
+    def _get_sigma_sf(
+        self, channel_condition: str, d_2D: float = None, UE_height: float = None
+    ) -> float:
         """
         Возвращает стандартное отклонение теневого затенения (SF) для
         заданного состояния канала (LOS/NLOS).
@@ -354,6 +508,9 @@ class ChannelModel:
             float: Значение SINR (дБ).
 
         """
+
+        # TODO: Необходимо интегрировать SC
+
         path_loss = self._calculate_path_loss(
             UE_ID, displacement, d_2D, d_2D_in, d_3D, UE_height, ue_class
         )
@@ -368,16 +525,170 @@ class ChannelModel:
         P_noise = -174 + 10 * np.log10(self.bs.bandwidth * 1e6)
 
         SINR = P_signal - 10 * np.log10(10 ** (P_interference / 10) + 10 ** (P_noise / 10))
-        
-        channel_cond = self.CHANNEL_COND_INFO[UE_ID].get("cond")
-        channel_model = self.__class__.__name__
-        gain_on_RB = self.freq_fading.calculate_channel_gain(UE_ID, 
-                                                             channel_cond, 
-                                                             channel_model, 
-                                                             ue_class)
-        SINR_on_RB = SINR + gain_on_RB
-        
-        return SINR_on_RB
+
+        if self.bs.enable_tdl:
+            channel_cond = self.CHANNEL_COND_INFO[UE_ID].get("cond")
+            channel_model = self.__class__.__name__
+            gain_on_RB = self.freq_fading.calculate_channel_gain(
+                UE_ID, channel_cond, channel_model, ue_class
+            )
+            SINR_on_RB = SINR + gain_on_RB
+            return SINR_on_RB
+        return SINR
+
+    def _calculate_correlated_shadow_fading_sc(
+        self, current_position: np.ndarray, sigma_sf: float, is_los: bool
+    ) -> float:
+        """
+        Расчет коррелированного shadow fading для SC режима.
+
+        Args:
+            current_position: Текущая позиция UE [x, y] в метрах
+            sigma_sf: Стандартное отклонение shadow fading в дБ
+            is_los: Состояние LOS/NLOS канала
+
+        Returns:
+            Коррелированное значение shadow fading в дБ
+        """
+        correlation_distance = (
+            self.sf_correlation_distance_los if is_los else self.sf_correlation_distance_nlos
+        )
+
+        if self.channel_state.last_position is None:
+            self.channel_state.last_shadow_fading = np.random.normal(0, sigma_sf)
+            self.channel_state.last_position = current_position.copy()
+            return self.channel_state.last_shadow_fading
+
+        delta_d = np.linalg.norm(current_position - self.channel_state.last_position)
+
+        if delta_d < 0.01:  # Обновлять только при движении > 0.01м, костыль
+            return self.channel_state.last_shadow_fading
+
+        R = np.exp(-delta_d / correlation_distance)
+
+        new_sf = R * self.channel_state.last_shadow_fading + np.sqrt(1 - R**2) * np.random.normal(
+            0, sigma_sf
+        )
+
+        self.channel_state.last_shadow_fading = new_sf
+        self.channel_state.last_position = current_position.copy()
+
+        return new_sf
+
+    def _calculate_path_loss_sc(
+        self,
+        d_2D: float,
+        d_2D_in: float,
+        d_3D: float,
+        UE_height: float,
+        ue_class: str,
+        current_position: np.ndarray,
+    ) -> float:
+        """Расчёт значения затухания сигнала на основе SC логики"""
+        base_los_prob = self._calculate_los_probability(d_2D)
+        is_LOS = self._calculate_spatially_consistent_los(current_position, base_los_prob)
+
+        if is_LOS:
+            PL = self._calculate_los_path_loss_sc(d_2D, d_3D, UE_height, current_position)
+        else:
+            PL = self._calculate_nlos_path_loss_sc(d_2D, d_3D, UE_height, current_position)
+
+        # O2I потери для SC режима
+        if ue_class == "indoor":
+            o2i_loss = self._calculate_o2i_building_loss_sc(
+                getattr(self, "o2i_model", "low"), d_2D_in, self.bs.frequency_GHz
+            )
+            PL = PL + o2i_loss
+        elif ue_class == "car":
+            o2i_loss = self._calculate_o2i_car_loss_sc()
+            PL = PL + o2i_loss
+
+        return PL
+
+    def _calculate_spatially_consistent_los(
+        self, current_position: np.ndarray, base_los_prob: float
+    ) -> bool:
+        """
+        Расчет пространственно-согласованного состояния LOS/NLOS.
+
+        Args:
+            current_position: Текущая позиция UE [x, y] в метрах
+            base_los_prob: Базовая вероятность LOS
+
+        Returns:
+            Состояние канала: True для LOS, False для NLOS
+        """
+        if (
+            self.channel_state.first_call
+            or self.channel_state.last_position is None
+            or self.channel_state.last_los_state is None
+        ):
+            # Первый вызов - инициализация на основе базовой вероятности
+
+            self.channel_state.last_los_state = base_los_prob > 0.5
+            return self.channel_state.last_los_state
+
+        delta_d = np.linalg.norm(current_position - self.channel_state.last_position)
+
+        if delta_d < 0.01:  # non-3GPP костыль, но допустимый
+            return self.channel_state.last_los_state
+
+        state_correlation = np.exp(-delta_d / self.los_correlation_length)
+
+        if np.random.random() < state_correlation:
+            current_los_state = self.channel_state.last_los_state
+        else:
+            current_los_state = np.random.random() <= base_los_prob
+
+        self.channel_state.last_los_state = current_los_state
+        self.channel_state.last_position = current_position.copy()
+
+        return current_los_state
+
+    def _calculate_o2i_building_loss_sc(
+        self, model_type: str, d_2D_in: float, fc_GHz: float
+    ) -> float:
+        """Расчёт O2I потерь для зданий (SC режим)."""
+        if self.channel_state.o2i_building_loss is None:
+            L_concrete = 5 + 4 * fc_GHz
+
+            if model_type == "low":
+                L_glass = 2 + 0.2 * fc_GHz
+                PL_tw = 5 - 10 * np.log10(
+                    0.3 * 10 ** (-L_glass / 10) + 0.7 * 10 ** (-L_concrete / 10)
+                )
+                sigma_p = 4.4
+            elif model_type == "high":
+                L_IRR_glass = 23 + 0.3 * fc_GHz
+                PL_tw = 5 - 10 * np.log10(
+                    0.7 * 10 ** (-L_IRR_glass / 10) + 0.3 * 10 ** (-L_concrete / 10)
+                )
+                sigma_p = 6.5
+
+            PL_in = 0.5 * d_2D_in
+            random_loss = np.random.normal(0, sigma_p)
+            self.channel_state.o2i_building_loss = PL_tw + PL_in + random_loss
+
+        return self.channel_state.o2i_building_loss
+
+    def _calculate_o2i_car_loss_sc(self) -> float:
+        """Расчёт O2I потерь для автомобилей (SC режим)."""
+        if self.channel_state.o2i_car_loss is None:
+            self.channel_state.o2i_car_loss = np.random.normal(9, 5)
+
+        return self.channel_state.o2i_car_loss
+
+    def _calculate_los_path_loss_sc(
+        self, d_2D: float, d_3D: float, UE_height: float, current_position: np.ndarray
+    ) -> float:
+        """SC LOS path loss. Должен быть переопределен в дочерних классах."""
+        raise NotImplementedError
+
+    def _calculate_nlos_path_loss_sc(
+        self, d_2D: float, d_3D: float, UE_height: float, current_position: np.ndarray
+    ) -> float:
+        """SC NLOS path loss. Должен быть переопределен в дочерних классах."""
+        raise NotImplementedError
 
 
 class RMaModel(ChannelModel):
@@ -385,10 +696,18 @@ class RMaModel(ChannelModel):
     Модель радиоканала для сельской местности (Rural Macro - RMa).
     Реализует расчеты для сценариев макросотового покрытия в сельской местности.
     """
-    def __init__(self, bs: BaseStation, W: float = 20.0, h: float = 5.0, 
-                 cond_update_period: float = 0.0, freq_fad_nlos_model: str = "TDL-A",
-                 freq_fad_los_model: str = "TDL-D", ds_profile: str = "normal",
-                 los_arrival_angle: float = np.pi / 4):
+
+    def __init__(
+        self,
+        bs: BaseStation,
+        W: float = 20.0,
+        h: float = 5.0,
+        cond_update_period: float = 0.0,
+        freq_fad_nlos_model: str = "TDL-A",
+        freq_fad_los_model: str = "TDL-D",
+        ds_profile: str = "normal",
+        los_arrival_angle: float = np.pi / 4,
+    ):
         """
         Инициализация модели RMa.
 
@@ -398,24 +717,30 @@ class RMaModel(ChannelModel):
             h (float, optional): Средняя высота зданий в метрах. По умолчанию 5.0.
             cond_update_period (float, optional): Период обновления состояния
                 радиоканала (мс). По умолчанию 0.0.
-            freq_fad_nlos_model (str, optional): Модель для получения 
+            freq_fad_nlos_model (str, optional): Модель для получения
             частотно-селективных замираний при NLOS. По умолчанию "TDL-A".
-            freq_fad_los_model (str, optional): Модель для получения 
+            freq_fad_los_model (str, optional): Модель для получения
             частотно-селективных замираний при LOS. По умолчанию "TDL-D"
-            ds_profile (str, optional): Профиль разброса задержек. 
+            ds_profile (str, optional): Профиль разброса задержек.
                 По умолчанию "normal".
-            los_arrival_angle (float, optional): Угол прихода LOS-компоненты. 
+            los_arrival_angle (float, optional): Угол прихода LOS-компоненты.
                 По умолчанию np.pi / 4.
-                
+
         """
-        super().__init__(bs, cond_update_period, freq_fad_nlos_model, 
-                         freq_fad_los_model, ds_profile, los_arrival_angle)
-        
+        super().__init__(
+            bs,
+            cond_update_period,
+            freq_fad_nlos_model,
+            freq_fad_los_model,
+            ds_profile,
+            los_arrival_angle,
+        )
+
         self.W = W
         self.h = h
 
         self.bs.tx_power = self.bs.MACROCELL_TX_POWER[self.bs.bandwidth]
-        self.bs.height = 35.0
+        self.default_height = 35.0
 
         self.sigma_SF_LOS_1 = 4.0
         self.sigma_SF_LOS_2 = 6.0
@@ -461,7 +786,7 @@ class RMaModel(ChannelModel):
             float: Дистанция излома (м).
 
         """
-        d_BP = (2 * np.pi * self.bs.height * UE_height * self.bs.frequency_Hz) / 3.0e8
+        d_BP = (2 * np.pi * self.default_height * UE_height * self.bs.frequency_Hz) / 3.0e8
         return d_BP
 
     def _calculate_los_probability(self, UE_height: float, d_2D: float) -> float:
@@ -564,8 +889,9 @@ class RMaModel(ChannelModel):
                 161.04
                 - 7.1 * np.log10(self.W)
                 + 7.5 * np.log10(self.h)
-                - (24.37 - 3.7 * (self.h / self.bs.height) ** 2) * np.log10(self.bs.height)
-                + (43.42 - 3.1 * np.log10(self.bs.height)) * (np.log10(d_3D) - 3)
+                - (24.37 - 3.7 * (self.h / self.default_height) ** 2)
+                * np.log10(self.default_height)
+                + (43.42 - 3.1 * np.log10(self.default_height)) * (np.log10(d_3D) - 3)
                 + 20 * np.log10(self.bs.frequency_GHz)
                 - (3.2 * (np.log10(11.75 * UE_height)) ** 2 - 4.97)
             )
@@ -583,10 +909,17 @@ class UMaModel(ChannelModel):
     Модель радиоканала для городской макросотовой местности (Urban Macro - UMa).
     Реализует расчеты для сценариев макросотового покрытия в городских условиях.
     """
-    def __init__(self, bs: BaseStation, cond_update_period: float = 0.0, 
-                 o2i_model: str = "low", freq_fad_nlos_model: str = "TDL-A",
-                 freq_fad_los_model: str = "TDL-D", ds_profile: str = "normal",
-                 los_arrival_angle: float = np.pi / 4):
+
+    def __init__(
+        self,
+        bs: BaseStation,
+        cond_update_period: float = 0.0,
+        o2i_model: str = "low",
+        freq_fad_nlos_model: str = "TDL-A",
+        freq_fad_los_model: str = "TDL-D",
+        ds_profile: str = "normal",
+        los_arrival_angle: float = np.pi / 4,
+    ):
         """
         Инициализация модели UMa.
 
@@ -596,21 +929,27 @@ class UMaModel(ChannelModel):
                 радиоканала (мс). По умолчанию 0.0.
             o2i_model (str, optional): Модель проникновения в здание ('low' или 'high').
                 По умолчанию "low".
-            freq_fad_nlos_model (str, optional): Модель для получения 
+            freq_fad_nlos_model (str, optional): Модель для получения
             частотно-селективных замираний при NLOS. По умолчанию "TDL-A".
-            freq_fad_los_model (str, optional): Модель для получения 
+            freq_fad_los_model (str, optional): Модель для получения
             частотно-селективных замираний при LOS. По умолчанию "TDL-D"
-            ds_profile (str, optional): Профиль разброса задержек. 
+            ds_profile (str, optional): Профиль разброса задержек.
                 По умолчанию "normal".
-            los_arrival_angle (float, optional): Угол прихода LOS-компоненты. 
+            los_arrival_angle (float, optional): Угол прихода LOS-компоненты.
                 По умолчанию np.pi / 4.
-                
+
         """
-        super().__init__(bs, cond_update_period, freq_fad_nlos_model, 
-                         freq_fad_los_model, ds_profile, los_arrival_angle)
-        
+        super().__init__(
+            bs,
+            cond_update_period,
+            freq_fad_nlos_model,
+            freq_fad_los_model,
+            ds_profile,
+            los_arrival_angle,
+        )
+
         self.bs.tx_power = self.bs.MACROCELL_TX_POWER[self.bs.bandwidth]
-        self.bs.height = 25.0
+        self.default_height = 25.0
 
         self.sigma_SF_LOS = 4.0
         self.sigma_SF_NLOS = 6.0
@@ -657,7 +996,7 @@ class UMaModel(ChannelModel):
 
             h_E = np.random.choice(h_Es)
 
-        bs_height_prime = self.bs.height - h_E
+        bs_height_prime = self.default_height - h_E
         UE_height_prime = UE_height - h_E
 
         d_BP = (4 * bs_height_prime * UE_height_prime * self.bs.frequency_Hz) / 3.0e8
@@ -725,7 +1064,7 @@ class UMaModel(ChannelModel):
                 28
                 + 40 * np.log10(d_3D)
                 + 20 * np.log10(self.bs.frequency_GHz)
-                - 9 * np.log10(d_BP**2 + (self.bs.height - UE_height) ** 2)
+                - 9 * np.log10(d_BP**2 + (self.default_height - UE_height) ** 2)
             )
 
             return PL2
@@ -781,10 +1120,17 @@ class UMiModel(ChannelModel):
     Модель радиоканала для городской микросотовой местности (Urban Micro - UMi).
     Реализует расчеты для сценариев микросотового покрытия в городских условиях.
     """
-    def __init__(self, bs: BaseStation, cond_update_period: float = 0.0, 
-                 o2i_model: str = "low", freq_fad_nlos_model: str = "TDL-A",
-                 freq_fad_los_model: str = "TDL-D", ds_profile: str = "normal",
-                 los_arrival_angle: float = np.pi / 4):
+
+    def __init__(
+        self,
+        bs: BaseStation,
+        cond_update_period: float = 0.0,
+        o2i_model: str = "low",
+        freq_fad_nlos_model: str = "TDL-A",
+        freq_fad_los_model: str = "TDL-D",
+        ds_profile: str = "normal",
+        los_arrival_angle: float = np.pi / 4,
+    ):
         """
         Инициализация модели UMi.
 
@@ -794,21 +1140,27 @@ class UMiModel(ChannelModel):
                 радиоканала (мс). По умолчанию 0.0.
             o2i_model (str, optional): Модель проникновения в здание ('low' или 'high').
                 По умолчанию "low".
-            freq_fad_nlos_model (str, optional): Модель для получения 
+            freq_fad_nlos_model (str, optional): Модель для получения
             частотно-селективных замираний при NLOS. По умолчанию "TDL-A".
-            freq_fad_los_model (str, optional): Модель для получения 
+            freq_fad_los_model (str, optional): Модель для получения
             частотно-селективных замираний при LOS. По умолчанию "TDL-D"
-            ds_profile (str, optional): Профиль разброса задержек. 
+            ds_profile (str, optional): Профиль разброса задержек.
                 По умолчанию "normal".
-            los_arrival_angle (float, optional): Угол прихода LOS-компоненты. 
+            los_arrival_angle (float, optional): Угол прихода LOS-компоненты.
                 По умолчанию np.pi / 4.
-                
+
         """
-        super().__init__(bs, cond_update_period, freq_fad_nlos_model, 
-                         freq_fad_los_model, ds_profile, los_arrival_angle)
-        
+        super().__init__(
+            bs,
+            cond_update_period,
+            freq_fad_nlos_model,
+            freq_fad_los_model,
+            ds_profile,
+            los_arrival_angle,
+        )
+
         self.bs.tx_power = self.bs.MICROCELL_TX_POWER[self.bs.bandwidth]
-        self.bs.height = 10.0
+        self.default_height = 10.0
 
         self.sigma_SF_LOS = 4.0
         self.sigma_SF_NLOS = 7.82
@@ -831,7 +1183,7 @@ class UMiModel(ChannelModel):
         """
         h_E = 1.0
 
-        bs_height_prime = self.bs.height - h_E
+        bs_height_prime = self.default_height - h_E
         UE_height_prime = UE_height - h_E
 
         d_BP = (4 * bs_height_prime * UE_height_prime * self.bs.frequency_Hz) / 3.0e8
@@ -892,7 +1244,7 @@ class UMiModel(ChannelModel):
                 32.4
                 + 40 * np.log10(d_3D)
                 + 20 * np.log10(self.bs.frequency_GHz)
-                - 9.5 * np.log10(d_BP**2 + (self.bs.height - UE_height) ** 2)
+                - 9.5 * np.log10(d_BP**2 + (self.default_height - UE_height) ** 2)
             )
 
             return PL2
@@ -940,61 +1292,65 @@ class UMiModel(ChannelModel):
             return PL
 
         else:
-            return 10000.0   
-        
-        
+            return 10000.0
+
+
 class TDLModel:
     """
-    Мелкомасштабная модель многолучевого канала на основе Tapped Delay Line 
-    по 3GPP TR 38.901. Выполняет моделирование частотно-селективных замираний 
+    Мелкомасштабная модель многолучевого канала на основе Tapped Delay Line
+    по 3GPP TR 38.901. Выполняет моделирование частотно-селективных замираний
     и расчёт значения услиления/ослабления сигнала на различных частотах.
     """
+
     NUM_SINUSOIDS = 32
-    
-    def __init__(self, bs: BaseStation, nlos_model: str = "TDL-A", 
-                 los_model: str = "TDL-D", delay_spread_profile: str = "normal", 
-                 los_arrival_angle: float = np.pi / 4):
+
+    def __init__(
+        self,
+        bs: BaseStation,
+        nlos_model: str = "TDL-A",
+        los_model: str = "TDL-D",
+        delay_spread_profile: str = "normal",
+        los_arrival_angle: float = np.pi / 4,
+    ):
         """
         Инициализация модели TDL.
 
         Args:
             bs (BaseStation): Объект базовой станции.
-            nlos_model (str, optional): TDL модель для NLOS (TDL-A/B/C). 
+            nlos_model (str, optional): TDL модель для NLOS (TDL-A/B/C).
                 По умолчанию "TDL-A".
             los_model (str, optional): TDL модель для LOS (TDL-D/E).
                 По умолчанию "TDL-D".
-            delay_spread_profile (str, optional): Профиль разброса задержек. 
+            delay_spread_profile (str, optional): Профиль разброса задержек.
                 По умолчанию "normal".
-            los_arrival_angle (float, optional): Угол прихода LOS-компоненты. 
+            los_arrival_angle (float, optional): Угол прихода LOS-компоненты.
                 По умолчанию np.pi / 4.
 
         """
-        self._validate_parameters(
-            nlos_model, los_model, delay_spread_profile, los_arrival_angle
-        )
-        
+        self._validate_parameters(nlos_model, los_model, delay_spread_profile, los_arrival_angle)
+
         self.params_table = GLOBALS.TDL_PARAMS_TABLE
         self.delay_spread_table = GLOBALS.TDL_DELAY_SPREAD_TABLE
-        
+
         self.bs = bs
-        
+
         self.delay_spread_profile = delay_spread_profile
         self.los_arrival_angle = los_arrival_angle
-        
+
         self.nlos_norm_delay = self._get_params_value(nlos_model, "normalized_delay")
-        self.los_norm_delay = self._get_params_value(los_model, "normalized_delay")   
+        self.los_norm_delay = self._get_params_value(los_model, "normalized_delay")
         self.nlos_power_dB = self._get_params_value(nlos_model, "power_dB")
         self.los_power_dB = self._get_params_value(los_model, "power_dB")
         self.K_factor = self._get_params_value(los_model, "K_factor")
-        
+
         self.lam = GLOBALS.SPEED_OF_LIGHT / self.bs.frequency_Hz
         self.rb_freqs = self._get_rb_frequencies()
-        
+
         self.ues_info = {}
-        
-    def _validate_parameters(self, nlos_model: str, los_model: str, 
-                             delay_spread_profile: str, 
-                             los_arrival_angle: float) -> None:
+
+    def _validate_parameters(
+        self, nlos_model: str, los_model: str, delay_spread_profile: str, los_arrival_angle: float
+    ) -> None:
         """
         Валидация входных параметров.
 
@@ -1005,7 +1361,7 @@ class TDLModel:
             los_arrival_angle (float): Угол прихода LOS-компоненты.
 
         Raises:
-            ValueError: Если передана недопустимая TDL модель, профиль разброса 
+            ValueError: Если передана недопустимая TDL модель, профиль разброса
             задержек или угол прихода LOS-компоненты вне диапазона.
             TypeError: Если угол прихода LOS-компоненты не является числом.
 
@@ -1016,32 +1372,30 @@ class TDLModel:
                 f"Недопустимая TDL модель для NLOS: '{nlos_model}'. "
                 f"Разрешённые значения: {valid_nlos_models}"
             )
-        
+
         valid_los_models = ["TDL-D", "TDL-E"]
         if los_model not in valid_los_models:
             raise ValueError(
                 f"Недопустимая TDL модель для LOS: '{los_model}'. "
                 f"Разрешённые значения: {valid_los_models}"
             )
-            
+
         valid_ds_profiles = ["short", "normal", "long"]
         if delay_spread_profile not in valid_ds_profiles:
             raise ValueError(
                 f"Недопустимый профиль задержек: '{delay_spread_profile}'. "
                 f"Разрешённые значения: {valid_ds_profiles}"
             )
-            
+
         if not isinstance(los_arrival_angle, (int, float)):
-            raise TypeError(
-                "Значение los_arrival_angle должно быть числом (радианы)"
-            )
-        
+            raise TypeError("Значение los_arrival_angle должно быть числом (радианы)")
+
         if not (0 <= los_arrival_angle < 2 * np.pi):
             raise ValueError(
-                f"Недопустимое los_arrival_angle: {los_arrival_angle}. " 
+                f"Недопустимое los_arrival_angle: {los_arrival_angle}. "
                 f"Значение должно быть в диапазоне [0, 2π)"
-            )  
-        
+            )
+
     def _get_params_value(self, model: str, key: str):
         """
         Получение значения параметра TDL-модели из таблицы параметров.
@@ -1055,10 +1409,10 @@ class TDLModel:
 
         """
         return self.params_table[model].get(key)
-    
+
     def _get_delay_spread(self, channel_model: str, ue_class: str) -> float:
         """
-        Получение значения разброса задержек на основе крупномасштабной модели 
+        Получение значения разброса задержек на основе крупномасштабной модели
         канала и класса пользователя.
 
         Args:
@@ -1070,18 +1424,21 @@ class TDLModel:
 
         """
         if ue_class in {"car", "indoor"} and channel_model != "RMaModel":
-            table_key = "UMi_UMa_O2I" 
+            table_key = "UMi_UMa_O2I"
         else:
             table_key = channel_model
-            
-        profile = ("normal" if self.delay_spread_profile == "short" and 
-                   table_key == "UMi_UMa_O2I" else self.delay_spread_profile)
-        
+
+        profile = (
+            "normal"
+            if self.delay_spread_profile == "short" and table_key == "UMi_UMa_O2I"
+            else self.delay_spread_profile
+        )
+
         return self.delay_spread_table[table_key].get(profile)
-    
+
     def _get_rb_frequencies(self) -> np.ndarray:
         """
-        Вычисление частотных смещений для ресурсных блоков (RB) относительно 
+        Вычисление частотных смещений для ресурсных блоков (RB) относительно
         несущей.
 
         Returns:
@@ -1090,13 +1447,14 @@ class TDLModel:
         """
         rb_idx = np.arange(-self.bs.rb_per_slot // 2, self.bs.rb_per_slot // 2)
         rb_freqs = rb_idx * GLOBALS.RB_BANDWIDTH
-        
+
         return rb_freqs
-    
-    def _jakes_sum_of_sinusoids(self, f_doppler: float, alpha: np.ndarray, 
-                                phi: np.ndarray) -> np.ndarray:
+
+    def _jakes_sum_of_sinusoids(
+        self, f_doppler: float, alpha: np.ndarray, phi: np.ndarray
+    ) -> np.ndarray:
         """
-        Генерация коэффициентов замирания канала методом суммы синусоид Джейкса. 
+        Генерация коэффициентов замирания канала методом суммы синусоид Джейкса.
 
         Args:
             f_doppler (float): Доплеровская частота (Гц).
@@ -1110,11 +1468,12 @@ class TDLModel:
         t = GLOBALS.CURRENT_TIME * 1e-3
         arg = 2 * np.pi * f_doppler * t * np.cos(alpha) + phi
         tap_coeff = np.exp(1j * arg).sum(axis=1) / np.sqrt(self.NUM_SINUSOIDS)
-        
+
         return tap_coeff
-    
-    def _calculate_freq_response(self, UE_ID: int, channel_cond: str, 
-                                 channel_model: str, ue_class: str) -> np.ndarray:
+
+    def _calculate_freq_response(
+        self, UE_ID: int, channel_cond: str, channel_model: str, ue_class: str
+    ) -> np.ndarray:
         """
         Расчёт частотной характеристики канала для заданного UE на всех RB.
 
@@ -1128,90 +1487,89 @@ class TDLModel:
             np.ndarray: Частотная характеристика канала.
 
         """
-        if (UE_ID not in self.ues_info or 
-            self.ues_info[UE_ID]["cond"] != channel_cond):
-        
+        if UE_ID not in self.ues_info or self.ues_info[UE_ID]["cond"] != channel_cond:
             if channel_cond == "NLOS":
                 powers_lin = 10 ** (self.nlos_power_dB / 10.0)
                 normalized_delay = self.nlos_norm_delay
-            
+
             elif channel_cond == "LOS":
                 powers_lin = 10 ** (self.los_power_dB / 10.0)
                 normalized_delay = self.los_norm_delay
-            
+
             powers_lin = powers_lin / np.sum(powers_lin)
-        
+
             delay_spread = self._get_delay_spread(channel_model, ue_class)
             delays_ns = normalized_delay * delay_spread
 
             sqrt_path_powers = np.sqrt(powers_lin)
-          
+
             if UE_ID not in self.ues_info:
-                max_L = max(len(self.nlos_norm_delay), 
-                            len(self.los_norm_delay))
-                
+                max_L = max(len(self.nlos_norm_delay), len(self.los_norm_delay))
+
                 n = np.arange(1, self.NUM_SINUSOIDS + 1)
                 alpha_base = 2 * np.pi * n / self.NUM_SINUSOIDS
-                theta = np.random.uniform(-np.pi / self.NUM_SINUSOIDS, 
-                                          np.pi / self.NUM_SINUSOIDS, 
-                                          (max_L, self.NUM_SINUSOIDS))
+                theta = np.random.uniform(
+                    -np.pi / self.NUM_SINUSOIDS,
+                    np.pi / self.NUM_SINUSOIDS,
+                    (max_L, self.NUM_SINUSOIDS),
+                )
                 alpha = alpha_base + theta
                 phi = np.random.uniform(-np.pi, np.pi, (max_L, self.NUM_SINUSOIDS))
-                
-                self.ues_info[UE_ID] = {"alpha": alpha,
-                                        "phi": phi}
-            
+
+                self.ues_info[UE_ID] = {"alpha": alpha, "phi": phi}
+
             delays_s = delays_ns * 1e-9
-            path_phase_matrix = np.exp(-1j * 2 * np.pi * (self.rb_freqs[None, :] * 
-                                                          delays_s[:, None]))
-            self.ues_info[UE_ID].update({
-                "cond": channel_cond,
-                "sqrt_path_powers": sqrt_path_powers,
-                "path_phase_matrix": path_phase_matrix
-            })
-            
+            path_phase_matrix = np.exp(
+                -1j * 2 * np.pi * (self.rb_freqs[None, :] * delays_s[:, None])
+            )
+            self.ues_info[UE_ID].update(
+                {
+                    "cond": channel_cond,
+                    "sqrt_path_powers": sqrt_path_powers,
+                    "path_phase_matrix": path_phase_matrix,
+                }
+            )
+
         sqrt_path_powers = self.ues_info[UE_ID]["sqrt_path_powers"]
         alpha = self.ues_info[UE_ID]["alpha"]
         phi = self.ues_info[UE_ID]["phi"]
         path_phase_matrix = self.ues_info[UE_ID]["path_phase_matrix"]
-            
+
         ue = self.bs.registered_ues.get(UE_ID)
-        f_doppler = (ue.velocity / self.lam)  
-        
+        f_doppler = ue.velocity / self.lam
+
         L = len(path_phase_matrix)
-        tap_coeff = self._jakes_sum_of_sinusoids(f_doppler, 
-                                                 alpha[:L, :], 
-                                                 phi[:L, :])
-        
+        tap_coeff = self._jakes_sum_of_sinusoids(f_doppler, alpha[:L, :], phi[:L, :])
+
         if channel_cond == "LOS":
-            K_factor_lin = 10**(self.K_factor / 10)
-            
+            K_factor_lin = 10 ** (self.K_factor / 10)
+
             los_weight = np.sqrt(K_factor_lin / (K_factor_lin + 1.0))
             nlos_weight = np.sqrt(1.0 / (K_factor_lin + 1.0))
-            
+
             if "phi_los" not in self.ues_info[UE_ID]:
                 phi_los = np.random.uniform(-np.pi, np.pi)
                 self.ues_info[UE_ID]["phi_los"] = phi_los
             else:
                 phi_los = self.ues_info[UE_ID]["phi_los"]
- 
+
             t = GLOBALS.CURRENT_TIME * 1e-3
-            los_phase = (2.0 * np.pi * f_doppler * t * 
-                         np.cos(self.los_arrival_angle) + phi_los)
-            
+            los_phase = 2.0 * np.pi * f_doppler * t * np.cos(self.los_arrival_angle) + phi_los
+
             los_comp = np.exp(1j * los_phase)
             tap_coeff[0] = los_weight * los_comp + nlos_weight * tap_coeff[0]
-  
+
         scaled_tap_coeff = sqrt_path_powers * tap_coeff
-        
+
         H_f = (scaled_tap_coeff[:, None] * path_phase_matrix).sum(axis=0)
-        
+
         return H_f
-    
-    def calculate_channel_gain(self, UE_ID: int, channel_cond: str, 
-                               channel_model: str, ue_class: str) -> np.ndarray:
+
+    def calculate_channel_gain(
+        self, UE_ID: int, channel_cond: str, channel_model: str, ue_class: str
+    ) -> np.ndarray:
         """
-        Расчет коэффициента усиления/ослабления канала в дБ для каждого 
+        Расчет коэффициента усиления/ослабления канала в дБ для каждого
         ресурсного блока.
 
         Args:
@@ -1221,12 +1579,812 @@ class TDLModel:
             ue_class (str): Класс UE.
 
         Returns:
-            np.ndarray: Коэффициент усиления канала в дБ для каждого ресурсного 
+            np.ndarray: Коэффициент усиления канала в дБ для каждого ресурсного
             блока.
 
         """
-        H_f = self._calculate_freq_response(UE_ID, channel_cond, 
-                                          channel_model, ue_class)
-        
-        return 10 * np.log10(np.abs(H_f)**2)
-    
+        H_f = self._calculate_freq_response(UE_ID, channel_cond, channel_model, ue_class)
+        #@sherokiddo: я осмелился добавить сюда нормализацию значений
+        #аналогично той, что есть в MATLAB
+        gain_lin = np.abs(H_f) ** 2
+        gain_lin_norm = gain_lin / np.mean(gain_lin)
+        gain_dB = 10 * np.log10(gain_lin_norm)
+        return gain_dB
+
+
+class RMaModel_SC(ChannelModel):
+    """
+    Модель радиоканала для сельской местности (Rural Macro - RMa).
+    Реализует расчеты для сценариев макросотового покрытия в сельской местности.
+    """
+
+    # TODO: Необходимо добавить freq_fad_nlos_model, freq_fad_los_model, ds_profile, los_arrival_angle
+    #   параметры в конструктор и поправить вызов из ChannelInterface
+
+    def __init__(
+        self,
+        bs: BaseStation,
+        W: float = 20.0,
+        h: float = 5.0,
+        cond_update_period: float = 0.0,
+        spatial_consistency: bool = True,
+    ):
+        """
+        Инициализация модели RMa.
+
+        Args:
+            bs (BaseStation): Объект базовой станции.
+            W (float, optional): Средняя ширина улиц (м). По умолчанию 20.0.
+            h (float, optional): Средняя высота зданий в метрах. По умолчанию 5.0.
+            cond_update_period (float, optional): Период обновления состояния
+                радиоканала (мс). По умолчанию 0.0.
+
+        """
+        super().__init__(bs, cond_update_period, spatial_consistency)
+
+        self.W = W
+        self.h = h
+
+        self.bs.tx_power = self.bs.MACROCELL_TX_POWER[self.bs.bandwidth]
+        self.default_height = 35.0
+
+        self.sigma_SF_LOS_1 = 4.0
+        self.sigma_SF_LOS_2 = 6.0
+        self.sigma_SF_NLOS = 8.0
+
+        if spatial_consistency:
+            self.sf_correlation_distance_los = 37.0
+            self.sf_correlation_distance_nlos = 120.0
+            self.los_correlation_length = 60.0
+        else:
+            self.correlation_dist_LOS = 37
+            self.correlation_dist_NLOS = 120
+
+        self.o2i_model = "low"
+
+    def _get_sigma_sf(self, channel_condition: str, d_2D: float, UE_height: float) -> float:
+        """
+        Возвращает стандартное отклонение теневого затенения (SF) для
+        заданного состояния канала (LOS/NLOS).
+
+        Args:
+            channel_condition (str): Состояние радиоканала (LOS/NLOS).
+            d_2D (float): 2D расстояние между БС и UE (м).
+            UE_height (float): Высота пользовательского оборудования (м).
+
+        Returns:
+            float: Стандартное отклонение теневого затенения (дБ).
+
+        """
+        if channel_condition == "LOS":
+            d_BP = self._calculate_breakpoint_distance(UE_height)
+            if d_2D < d_BP:
+                return self.sigma_SF_LOS_1
+            else:
+                return self.sigma_SF_LOS_2
+
+        elif channel_condition == "NLOS":
+            return self.sigma_SF_NLOS
+
+    def _calculate_breakpoint_distance(self, UE_height: float) -> float:
+        """
+        Расчет дистанции излома (breakpoint distance).
+
+        Args:
+            UE_height (float): Высота пользовательского оборудования (м).
+
+        Returns:
+            float: Дистанция излома (м).
+
+        """
+        d_BP = (2 * np.pi * self.default_height * UE_height * self.bs.frequency_Hz) / 3.0e8
+        return d_BP
+
+    def _calculate_los_probability(self, d_2D):
+        """
+        Расчет вероятности прямой видимости (LOS) между UE и базовой станцией.
+
+        Args:
+            UE_height (float): Высота пользовательского оборудования (м).
+            d_2D (float): 2D расстояние между БС и UE (м).
+
+        Returns:
+            float: Вероятность LOS в диапазоне [0, 1]
+
+        """
+        if d_2D <= 10:
+            return 1.0
+
+        los_probability = np.exp(-(d_2D - 10) / 1000)
+        return los_probability
+
+    def _calculate_los_path_loss_time_based(
+        self,
+        UE_ID: int,
+        displacement: float,
+        channel_condition: str,
+        d_2D: float,
+        d_3D: float,
+        UE_height: float,
+    ) -> float:
+        """
+        Расчет затухания сигнала для LOS условий.
+
+        Args:
+            UE_ID (int): Уникальный идентификатор UE.
+            displacement (float): Смещение UE относительно предыдущего положения (м).
+            channel_condition (str): Состояние радиоканала (LOS/NLOS).
+            d_2D (float): 2D расстояние между БС и UE (м).
+            d_3D (float): 3D расстояние между БС и UE (м).
+            UE_height (float): Высота пользовательского оборудования (м).
+
+        Returns:
+            float: Затухание сигнала для LOS случая (дБ).
+
+        """
+        d_BP = self._calculate_breakpoint_distance(UE_height)
+
+        if 10 <= d_2D <= d_BP:
+            PL1 = (
+                20 * np.log10(40 * np.pi * d_3D * self.bs.frequency_GHz / 3.0)
+                + min(0.03 * self.h**1.72, 10) * np.log10(d_3D)
+                - min(0.044 * self.h**1.72, 14.77)
+                + 0.002 * np.log10(self.h) * d_3D
+            )
+
+            return PL1
+
+        elif d_BP < d_2D <= 10000:
+            PL1_at_dBP = (
+                20 * np.log10(40 * np.pi * d_BP * self.bs.frequency_GHz / 3.0)
+                + min(0.03 * self.h**1.72, 10) * np.log10(d_BP)
+                - min(0.044 * self.h**1.72, 14.77)
+                + 0.002 * np.log10(self.h) * d_BP
+            )
+            PL2 = PL1_at_dBP + 40 * np.log10(d_3D / d_BP)
+
+            return PL2
+
+        else:
+            return 10000.0
+
+    def _calculate_nlos_path_loss_time_based(
+        self,
+        UE_ID: int,
+        displacement: float,
+        channel_condition: str,
+        d_2D: float,
+        d_3D: float,
+        UE_height: float,
+    ) -> float:
+        """
+        Расчет затухания сигнала для NLOS условий.
+
+        Args:
+            UE_ID (int): Уникальный идентификатор UE.
+            displacement (float): Смещение UE относительно предыдущего положения (м).
+            channel_condition (str): Состояние радиоканала (LOS/NLOS).
+            d_2D (float): 2D расстояние между БС и UE (м).
+            d_3D (float): 3D расстояние между БС и UE (м).
+            UE_height (float): Высота пользовательского оборудования (м).
+
+        Returns:
+            float: Затухание сигнала для NLOS случая (дБ).
+
+        """
+        if 10 <= d_2D <= 5000:
+            PL_LOS = self._calculate_los_path_loss_time_based(
+                UE_ID, displacement, channel_condition, d_2D, d_3D, UE_height
+            )
+            PL_NLOS = (
+                161.04
+                - 7.1 * np.log10(self.W)
+                + 7.5 * np.log10(self.h)
+                - (24.37 - 3.7 * (self.h / self.default_height) ** 2)
+                * np.log10(self.default_height)
+                + (43.42 - 3.1 * np.log10(self.default_height)) * (np.log10(d_3D) - 3)
+                + 20 * np.log10(self.bs.frequency_GHz)
+                - (3.2 * (np.log10(11.75 * UE_height)) ** 2 - 4.97)
+            )
+
+            PL = max(PL_LOS, PL_NLOS)
+
+            return PL
+
+        else:
+            return 10000.0
+
+    def _calculate_los_path_loss_sc(
+        self, d_2D: float, d_3D: float, UE_height: float, current_position: np.ndarray
+    ) -> float:
+        """Расчет затухания сигнала для LOS условий (SC)."""
+        d_BP = self._calculate_breakpoint_distance(UE_height)
+
+        if 10 <= d_2D <= d_BP:
+            PL_base = (
+                20 * np.log10(40 * np.pi * d_3D * self.bs.frequency_GHz / 3.0)
+                + min(0.03 * self.h**1.72, 10) * np.log10(d_3D)
+                - min(0.044 * self.h**1.72, 14.77)
+                + 0.002 * np.log10(self.h) * d_3D
+            )
+
+            # Корреляционный shadow fading
+            shadow_fading = self._calculate_correlated_shadow_fading_sc(
+                current_position, self.sigma_SF_LOS_1, is_los=True
+            )
+
+            return PL_base + shadow_fading
+
+        elif d_BP < d_2D <= 10000:
+            PL1_at_dBP = (
+                20 * np.log10(40 * np.pi * d_BP * self.bs.frequency_GHz / 3.0)
+                + min(0.03 * self.h**1.72, 10) * np.log10(d_BP)
+                - min(0.044 * self.h**1.72, 14.77)
+                + 0.002 * np.log10(self.h) * d_BP
+            )
+            PL_base = PL1_at_dBP + 40 * np.log10(d_3D / d_BP)
+
+            # Корреляционный shadow fading
+            shadow_fading = self._calculate_correlated_shadow_fading_sc(
+                current_position, self.sigma_SF_LOS_2, is_los=True
+            )
+
+            return PL_base + shadow_fading
+        else:
+            return 10000.0
+
+    def _calculate_nlos_path_loss_sc(
+        self, d_2D: float, d_3D: float, UE_height: float, current_position: np.ndarray
+    ) -> float:
+        """Расчет затухания сигнала для NLOS условий (SC)."""
+        if 10 <= d_2D <= 5000:
+            # Базовый расчет без shadow fading
+            PL_LOS_base = self._calculate_los_path_loss_base(d_2D, d_3D, UE_height)
+
+            PL_NLOS_base = (
+                161.04
+                - 7.1 * np.log10(self.W)
+                + 7.5 * np.log10(self.h)
+                - (24.37 - 3.7 * (self.h / self.default_height) ** 2)
+                * np.log10(self.default_height)
+                + (43.42 - 3.1 * np.log10(self.default_height)) * (np.log10(d_3D) - 3)
+                + 20 * np.log10(self.bs.frequency_GHz)
+                - (3.2 * (np.log10(11.75 * UE_height)) ** 2 - 4.97)
+            )
+
+            PL_base = max(PL_LOS_base, PL_NLOS_base)
+
+            # Корреляционный shadow fading
+            shadow_fading = self._calculate_correlated_shadow_fading_sc(
+                current_position, self.sigma_SF_NLOS, is_los=False
+            )
+
+            return PL_base + shadow_fading
+        else:
+            return 10000.0
+
+    def _calculate_los_path_loss_base(self, d_2D: float, d_3D: float, UE_height: float) -> float:
+        """Базовый расчет LOS path loss без shadow fading."""
+        d_BP = self._calculate_breakpoint_distance(UE_height)
+
+        if 10 <= d_2D <= d_BP:
+            return (
+                20 * np.log10(40 * np.pi * d_3D * self.bs.frequency_GHz / 3.0)
+                + min(0.03 * self.h**1.72, 10) * np.log10(d_3D)
+                - min(0.044 * self.h**1.72, 14.77)
+                + 0.002 * np.log10(self.h) * d_3D
+            )
+        elif d_BP < d_2D <= 10000:
+            PL1_at_dBP = (
+                20 * np.log10(40 * np.pi * d_BP * self.bs.frequency_GHz / 3.0)
+                + min(0.03 * self.h**1.72, 10) * np.log10(d_BP)
+                - min(0.044 * self.h**1.72, 14.77)
+                + 0.002 * np.log10(self.h) * d_BP
+            )
+            return PL1_at_dBP + 40 * np.log10(d_3D / d_BP)
+        else:
+            return 10000.0
+
+
+class UMaModel_SC(ChannelModel):
+    """
+    Модель радиоканала для городской макросотовой местности (Urban Macro - UMa).
+    Реализует расчеты для сценариев макросотового покрытия в городских условиях.
+    """
+
+    def __init__(
+        self,
+        bs: BaseStation,
+        cond_update_period: float = 0.0,
+        o2i_model: str = "low",
+        spatial_consistency: bool = True,
+        UE_height=1.5,
+    ):
+        """
+        Инициализация модели UMa.
+
+        Args:
+            bs (BaseStation): Объект базовой станции.
+            cond_update_period (float, optional): Период обновления состояния
+                радиоканала (мс). По умолчанию 0.0.
+            o2i_model (str, optional): Модель проникновения в здание ('low' или 'high').
+                По умолчанию "low".
+
+        """
+
+        # TODO: Необходимо добавить freq_fad_nlos_model, freq_fad_los_model, ds_profile, los_arrival_angle
+        #   параметры в конструктор и поправить вызов из ChannelInterface
+
+        super().__init__(bs, cond_update_period, spatial_consistency)
+
+        self.bs.tx_power = self.bs.MACROCELL_TX_POWER[self.bs.bandwidth]
+        self.bs.height = 25.0
+        self.UE_height = UE_height
+
+        self.sigma_SF_LOS = 4.0
+        self.sigma_SF_NLOS = 6.0
+
+        # Параметры корреляции
+        if spatial_consistency:
+            self.sf_correlation_distance_los = 37.0
+            self.sf_correlation_distance_nlos = 50.0
+            self.los_correlation_length = 120.0
+        else:
+            self.correlation_dist_LOS = 37
+            self.correlation_dist_NLOS = 50
+
+        self.o2i_model = o2i_model
+
+    def _calculate_breakpoint_distance(self, UE_height: float, d_2D: float) -> float:
+        """
+        Расчет дистанции излома (breakpoint distance).
+
+        Args:
+            UE_height (float): Высота пользовательского оборудования (м).
+            d_2D (float): 2D расстояние между БС и UE (м).
+
+        Returns:
+            float: Дистанция излома (м).
+
+        """
+        if UE_height < 13:
+            C = 0
+
+        elif 13 <= UE_height <= 23:
+            if d_2D <= 18:
+                g = 0
+            else:
+                g = (5 / 4) * (d_2D / 100) ** 3 * np.exp(-d_2D / 150)
+
+            C = ((UE_height - 13) / 10) ** 1.5 * g
+
+        h_E_probability = 1 / (1 + C)
+
+        if np.random.random() <= h_E_probability:
+            h_E = 1
+
+        else:
+            h_max = int(np.floor(UE_height - 1.5))
+            h_Es = list(range(12, h_max + 1, 3))
+
+            if not h_Es:
+                h_Es = [12]
+
+            h_E = np.random.choice(h_Es)
+
+        bs_height_prime = self.bs.height - h_E
+        UE_height_prime = UE_height - h_E
+
+        d_BP = (4 * bs_height_prime * UE_height_prime * self.bs.frequency_Hz) / 3.0e8
+        return d_BP
+
+    def _calculate_los_probability(self, d_2D: float) -> float:
+        """
+        Расчет вероятности прямой видимости (LOS) между UE и базовой станцией.
+
+        Args:
+            UE_height (float): Высота пользовательского оборудования (м).
+            d_2D (float): 2D расстояние между БС и UE (м).
+
+        Returns:
+            float: Вероятность LOS в диапазоне [0, 1]
+
+        """
+        UE_height = self.UE_height
+        if d_2D <= 18:
+            return 1.0
+
+        if UE_height <= 13:
+            C_prime = 0
+        elif 13 <= UE_height <= 23:
+            C_prime = ((UE_height - 13) / 10) ** 1.5
+
+        los_probability = ((18 / d_2D) + np.exp(-d_2D / 63) * (1 - (18 / d_2D))) * (
+            1 + C_prime * (5 / 4) * (d_2D / 100) ** 3 * np.exp(-d_2D / 150)
+        )
+
+        return los_probability
+
+    def _calculate_los_path_loss_time_based(
+        self,
+        UE_ID: int,
+        displacement: float,
+        channel_condition: str,
+        d_2D: float,
+        d_3D: float,
+        UE_height: float,
+    ) -> float:
+        """
+        Расчет затухания сигнала для LOS условий.
+
+        Args:
+            UE_ID (int): Уникальный идентификатор UE.
+            displacement (float): Смещение UE относительно предыдущего положения (м).
+            channel_condition (str): Состояние радиоканала (LOS/NLOS).
+            d_2D (float): 2D расстояние между БС и UE (м).
+            d_3D (float): 3D расстояние между БС и UE (м).
+            UE_height (float): Высота пользовательского оборудования (м).
+
+        Returns:
+            float: Затухание сигнала для LOS случая (дБ).
+
+        """
+        d_BP = self._calculate_breakpoint_distance(UE_height, d_2D)
+
+        if 10 <= d_2D <= d_BP:
+            PL1 = 28 + 22 * np.log10(d_3D) + 20 * np.log10(self.bs.frequency_GHz)
+
+            return PL1
+
+        elif d_BP < d_2D <= 5000:
+            PL2 = (
+                28
+                + 40 * np.log10(d_3D)
+                + 20 * np.log10(self.bs.frequency_GHz)
+                - 9 * np.log10(d_BP**2 + (self.bs.height - UE_height) ** 2)
+            )
+
+            return PL2
+
+        else:
+            return 10000.0
+
+    def _calculate_nlos_path_loss_time_based(
+        self,
+        UE_ID: int,
+        displacement: float,
+        channel_condition: str,
+        d_2D: float,
+        d_3D: float,
+        UE_height: float,
+    ) -> float:
+        """
+        Расчет затухания сигнала для NLOS условий.
+
+        Args:
+            UE_ID (int): Уникальный идентификатор UE.
+            displacement (float): Смещение UE относительно предыдущего положения (м).
+            channel_condition (str): Состояние радиоканала (LOS/NLOS).
+            d_2D (float): 2D расстояние между БС и UE (м).
+            d_3D (float): 3D расстояние между БС и UE (м).
+            UE_height (float): Высота пользовательского оборудования (м).
+
+        Returns:
+            float: Затухание сигнала для NLOS случая (дБ).
+
+        """
+        if 10 <= d_2D <= 5000:
+            PL_LOS = self._calculate_los_path_loss_time_based(
+                UE_ID, displacement, channel_condition, d_2D, d_3D, UE_height
+            )
+            PL_NLOS = (
+                13.54
+                + 39.08 * np.log10(d_3D)
+                + 20 * np.log10(self.bs.frequency_GHz)
+                - 0.6 * (UE_height - 1.5)
+            )
+
+            PL = max(PL_LOS, PL_NLOS)
+
+            return PL
+
+        else:
+            return 10000.0
+
+    def _calculate_los_path_loss_sc(
+        self, d_2D: float, d_3D: float, UE_height: float, current_position: np.ndarray
+    ) -> float:
+        """SC LOS path loss для UMa."""
+        d_BP = self._calculate_breakpoint_distance(UE_height, d_2D)
+
+        if 10 <= d_2D <= d_BP:
+            PL_base = 28 + 22 * np.log10(d_3D) + 20 * np.log10(self.bs.frequency_GHz)
+            shadow_fading = self._calculate_correlated_shadow_fading_sc(
+                current_position, self.sigma_SF_LOS, is_los=True
+            )
+            return PL_base + shadow_fading
+
+        elif d_BP < d_2D <= 5000:
+            PL_base = (
+                28
+                + 40 * np.log10(d_3D)
+                + 20 * np.log10(self.bs.frequency_GHz)
+                - 9 * np.log10(d_BP**2 + (self.bs.height - UE_height) ** 2)
+            )
+            shadow_fading = self._calculate_correlated_shadow_fading_sc(
+                current_position, self.sigma_SF_LOS, is_los=True
+            )
+            return PL_base + shadow_fading
+        else:
+            return 10000.0
+
+    def _calculate_nlos_path_loss_sc(
+        self, d_2D: float, d_3D: float, UE_height: float, current_position: np.ndarray
+    ) -> float:
+        """SC NLOS path loss для UMa."""
+        if 10 <= d_2D <= 5000:
+            # Базовый LOS расчет без shadow fading
+            d_BP = self._calculate_breakpoint_distance(UE_height, d_2D)
+
+            if 10 <= d_2D <= d_BP:
+                PL_LOS_base = 28 + 22 * np.log10(d_3D) + 20 * np.log10(self.bs.frequency_GHz)
+            else:
+                PL_LOS_base = (
+                    28
+                    + 40 * np.log10(d_3D)
+                    + 20 * np.log10(self.bs.frequency_GHz)
+                    - 9 * np.log10(d_BP**2 + (self.bs.height - UE_height) ** 2)
+                )
+
+            PL_NLOS_base = (
+                13.54
+                + 39.08 * np.log10(d_3D)
+                + 20 * np.log10(self.bs.frequency_GHz)
+                - 0.6 * (UE_height - 1.5)
+            )
+
+            PL_base = max(PL_LOS_base, PL_NLOS_base)
+
+            shadow_fading = self._calculate_correlated_shadow_fading_sc(
+                current_position, self.sigma_SF_NLOS, is_los=False
+            )
+
+            return PL_base + shadow_fading
+        else:
+            return 10000.0
+
+
+class UMiModel_SC(ChannelModel):
+    """
+    Модель радиоканала для городской микросотовой местности (Urban Micro - UMi).
+    Реализует расчеты для сценариев микросотового покрытия в городских условиях.
+    """
+
+    def __init__(
+        self,
+        bs: BaseStation,
+        cond_update_period: float = 0.0,
+        o2i_model: str = "low",
+        spatial_consistency: bool = True,
+        UE_height=1.5,
+    ):
+        """
+        Инициализация модели UMi.
+
+        Args:
+            bs (BaseStation): Объект базовой станции.
+            cond_update_period (float, optional): Период обновления состояния
+                радиоканала (мс). По умолчанию 0.0.
+            o2i_model (str, optional): Модель проникновения в здание ('low' или 'high').
+                По умолчанию "low".
+
+        """
+
+        # TODO: Необходимо добавить freq_fad_nlos_model, freq_fad_los_model, ds_profile, los_arrival_angle
+        #   параметры в конструктор и поправить вызов из ChannelInterface
+
+        super().__init__(bs, cond_update_period, spatial_consistency)
+
+        self.bs.tx_power = self.bs.MICROCELL_TX_POWER[self.bs.bandwidth]
+        self.bs.height = 10.0
+        self.UE_height = UE_height
+
+        self.sigma_SF_LOS = 4.0
+        self.sigma_SF_NLOS = 7.82
+
+        if spatial_consistency:
+            self.sf_correlation_distance_los = 10.0
+            self.sf_correlation_distance_nlos = 13.0
+            self.los_correlation_length = 50.0
+        else:
+            self.correlation_dist_LOS = 10
+            self.correlation_dist_NLOS = 13
+
+        self.o2i_model = o2i_model
+
+    def _calculate_breakpoint_distance(self, UE_height: float) -> float:
+        """
+        Расчет дистанции излома (breakpoint distance).
+
+        Args:
+            UE_height (float): Высота пользовательского оборудования (м).
+
+        Returns:
+            float: Дистанция излома (м).
+
+        """
+        h_E = 1.0
+
+        bs_height_prime = self.bs.height - h_E
+        UE_height_prime = UE_height - h_E
+
+        d_BP = (4 * bs_height_prime * UE_height_prime * self.bs.frequency_Hz) / 3.0e8
+        return d_BP
+
+    def _calculate_los_probability(self, d_2D: float) -> float:
+        """
+        Расчет вероятности прямой видимости (LOS) между UE и базовой станцией.
+
+        Args:
+            UE_height (float): Высота пользовательского оборудования (м).
+            d_2D (float): 2D расстояние между БС и UE (м).
+
+        Returns:
+            float: Вероятность LOS в диапазоне [0, 1]
+
+        """
+        UE_height = self.UE_height
+        if d_2D <= 18:
+            return 1.0
+
+        los_probability = (18 / d_2D) + np.exp(-d_2D / 36) * (1 - (18 / d_2D))
+
+        return los_probability
+
+    def _calculate_los_path_loss_time_based(
+        self,
+        UE_ID: int,
+        displacement: float,
+        channel_condition: str,
+        d_2D: float,
+        d_3D: float,
+        UE_height: float,
+    ) -> float:
+        """
+        Расчет затухания сигнала для LOS условий.
+
+        Args:
+            UE_ID (int): Уникальный идентификатор UE.
+            displacement (float): Смещение UE относительно предыдущего положения (м).
+            channel_condition (str): Состояние радиоканала (LOS/NLOS).
+            d_2D (float): 2D расстояние между БС и UE (м).
+            d_3D (float): 3D расстояние между БС и UE (м).
+            UE_height (float): Высота пользовательского оборудования (м).
+
+        Returns:
+            float: Затухание сигнала для LOS случая (дБ).
+
+        """
+        d_BP = self._calculate_breakpoint_distance(UE_height)
+
+        if 10 <= d_2D <= d_BP:
+            PL1 = 32.4 + 21 * np.log10(d_3D) + 20 * np.log10(self.bs.frequency_GHz)
+
+            return PL1
+
+        elif d_BP < d_2D <= 5000:
+            PL2 = (
+                32.4
+                + 40 * np.log10(d_3D)
+                + 20 * np.log10(self.bs.frequency_GHz)
+                - 9.5 * np.log10(d_BP**2 + (self.bs.height - UE_height) ** 2)
+            )
+
+            return PL2
+
+        else:
+            return 10000.0
+
+    def _calculate_nlos_path_loss_time_based(
+        self,
+        UE_ID: int,
+        displacement: float,
+        channel_condition: str,
+        d_2D: float,
+        d_3D: float,
+        UE_height: float,
+    ) -> float:
+        """
+        Расчет затухания сигнала для NLOS условий.
+
+        Args:
+            UE_ID (int): Уникальный идентификатор UE.
+            displacement (float): Смещение UE относительно предыдущего положения (м).
+            channel_condition (str): Состояние радиоканала (LOS/NLOS).
+            d_2D (float): 2D расстояние между БС и UE (м).
+            d_3D (float): 3D расстояние между БС и UE (м).
+            UE_height (float): Высота пользовательского оборудования (м).
+
+        Returns:
+            float: Затухание сигнала для NLOS случая (дБ).
+
+        """
+        if 10 <= d_2D <= 5000:
+            PL_LOS = self._calculate_los_path_loss_time_based(
+                UE_ID, displacement, channel_condition, d_2D, d_3D, UE_height
+            )
+            PL_NLOS = (
+                35.3 * np.log10(d_3D)
+                + 22.4
+                + 21.3 * np.log10(self.bs.frequency_GHz)
+                - 0.3 * (UE_height - 1.5)
+            )
+
+            PL = max(PL_LOS, PL_NLOS)
+
+            return PL
+
+        else:
+            return 10000.0
+
+    def _calculate_los_path_loss_sc(
+        self, d_2D: float, d_3D: float, UE_height: float, current_position: np.ndarray
+    ) -> float:
+        """SC LOS path loss для UMi."""
+        d_BP = self._calculate_breakpoint_distance(UE_height)
+
+        if 10 <= d_2D <= d_BP:
+            PL_base = 32.4 + 21 * np.log10(d_3D) + 20 * np.log10(self.bs.frequency_GHz)
+            shadow_fading = self._calculate_correlated_shadow_fading_sc(
+                current_position, self.sigma_SF_LOS, is_los=True
+            )
+            return PL_base + shadow_fading
+
+        elif d_BP < d_2D <= 5000:
+            PL_base = (
+                32.4
+                + 40 * np.log10(d_3D)
+                + 20 * np.log10(self.bs.frequency_GHz)
+                - 9.5 * np.log10(d_BP**2 + (self.bs.height - UE_height) ** 2)
+            )
+            shadow_fading = self._calculate_correlated_shadow_fading_sc(
+                current_position, self.sigma_SF_LOS, is_los=True
+            )
+            return PL_base + shadow_fading
+        else:
+            return 10000.0
+
+    def _calculate_nlos_path_loss_sc(
+        self, d_2D: float, d_3D: float, UE_height: float, current_position: np.ndarray
+    ) -> float:
+        """SC NLOS path loss для UMi."""
+        if 10 <= d_2D <= 5000:
+            # Базовый LOS расчет без shadow fading
+            d_BP = self._calculate_breakpoint_distance(UE_height)
+
+            if 10 <= d_2D <= d_BP:
+                PL_LOS_base = 32.4 + 21 * np.log10(d_3D) + 20 * np.log10(self.bs.frequency_GHz)
+            else:
+                PL_LOS_base = (
+                    32.4
+                    + 40 * np.log10(d_3D)
+                    + 20 * np.log10(self.bs.frequency_GHz)
+                    - 9.5 * np.log10(d_BP**2 + (self.bs.height - UE_height) ** 2)
+                )
+
+            PL_NLOS_base = (
+                35.3 * np.log10(d_3D)
+                + 22.4
+                + 21.3 * np.log10(self.bs.frequency_GHz)
+                - 0.3 * (UE_height - 1.5)
+            )
+
+            PL_base = max(PL_LOS_base, PL_NLOS_base)
+
+            shadow_fading = self._calculate_correlated_shadow_fading_sc(
+                current_position, self.sigma_SF_NLOS, is_los=False
+            )
+
+            return PL_base + shadow_fading
+        else:
+            return 10000.0

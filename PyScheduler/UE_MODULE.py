@@ -69,13 +69,15 @@
 #------------------------------------------------------------------------------
 """
 from __future__ import annotations
+from collections import deque
+from typing import TYPE_CHECKING
+from typing import Dict, List, Optional, Tuple, Union
+
+import GLOBALS
 import numpy as np
 import random
-import GLOBALS
-from collections import deque
-from typing import Dict, List, Optional, Union, Tuple
-from TRAFFIC_MODEL import PoissonModel, OnOffModel, MMPPModel
-from typing import TYPE_CHECKING
+from TRAFFIC_MODEL import MMPPModel, OnOffModel, PoissonModel
+
 if TYPE_CHECKING:
     from SCHEDULER import SchedulerInterface
 
@@ -364,6 +366,7 @@ class UserEquipment:
         self.mcs_index = 0  # Индекс MCS (0-28)
 
         # Статистика
+        self.last_transmitted_bits = 0
         self.total_transmitted_bits = 0
         self.total_transmitted_packets = 0
         self.total_dropped_packets = 0
@@ -417,7 +420,7 @@ class UserEquipment:
 
         mobility = MobilityInterface.create(model=model, ue=self, **kwargs)
         self.mobility_model = mobility
-    
+
     # def SET_CH_MODEL(self, model) -> None:
     #     """
     #     Установить модель радиоканала для пользователя.
@@ -427,12 +430,12 @@ class UserEquipment:
 
     #     """
     #     from CHANNEL_MODEL import ChannelModel
-        
+
     #     if not isinstance(model, ChannelModel):
     #         raise TypeError(f"Некорректный тип модели канала: {type(model).__name__}")
-        
+
     #     self.channel_model = model
-    
+
     def SET_TRAFFIC_MODEL(self, model) -> None:
         """
         Установить модель генерации трафика для пользователя.
@@ -475,21 +478,46 @@ class UserEquipment:
                 self.dist_to_BS_2D, self.serving_bs.height - self.UE_height
             )
 
-    def UPD_CH_QUALITY(self) -> None:
+    def UPD_CH_QUALITY(self, channel_update_interval: int = 1) -> None:
         """
         Обновить качество канала связи согласно модели распространения сигнала.
 
         """
         from CHANNEL_MODEL import RMaModel, UMaModel, UMiModel
-        
+
         if not self.serving_bs:
             raise ValueError("Ошибка! UE не подключен к базовой станции! {}".format(self.UE_ID))
-        
+
         if not self.serving_bs.channel_model:
             raise ValueError("Ошибка! У базовой станции не инициализирована модель канала!")
-        
-        displacement = np.hypot(self.position[0] - self.coordinates[-2][0],
-                                self.position[1] - self.coordinates[-2][1])
+
+        if self.is_indoor:
+            self._calculate_distances_to_BS(
+                self.serving_bs.position, self.serving_bs.height
+            )
+        else:
+            self.dist_to_BS_2D = np.hypot(
+                self.position[0] - self.serving_bs.position[0],
+                self.position[1] - self.serving_bs.position[1],
+            )
+            self.dist_to_BS_2D_out = self.dist_to_BS_2D
+            self.dist_to_BS_3D = np.hypot(
+                self.dist_to_BS_2D,
+                self.serving_bs.height - self.UE_height
+            )
+
+        # displacement = np.hypot(
+        #     self.position[0] - self._last_ch_position[0],
+        #     self.position[1] - self._last_ch_position[1]
+        # )
+        # self._last_ch_position = self.position
+
+        STATIC_UE_VELOCITY = 0.2
+        effective_velocity = max(self.velocity, STATIC_UE_VELOCITY)
+        displacement = effective_velocity * (channel_update_interval / 1000.0)
+        #TODO: TDL некорректно работает при displacement = 0
+        # этот метод нужно хорошо протестировать и проверить
+        # изучить residual movement в 3GPP. Пока решение временное
         
         if isinstance(self.serving_bs.channel_model, RMaModel):
             if self.UE_height == 0.0:
@@ -497,7 +525,7 @@ class UserEquipment:
                     self.UE_height = np.random.uniform(1, 10)
                 else:
                     self.UE_height = 1.0
-        
+
         if isinstance(self.serving_bs.channel_model, (UMaModel, UMiModel)):
             if self.UE_height == 0.0:
                 if self.is_indoor == True:
@@ -506,27 +534,31 @@ class UserEquipment:
                     self.UE_height = 3 * (n_fl - 1) + 1.5
                 else:
                     self.UE_height = 1.5
-        
+
         SINR_on_RB = self.serving_bs.channel_model.calculate_SINR(
-            self.UE_ID, displacement, self.dist_to_BS_2D, self.dist_to_BS_2D_in, 
-            self.dist_to_BS_3D, self.UE_height, self.ue_class
+            self.UE_ID,
+            displacement,
+            self.dist_to_BS_2D,
+            self.dist_to_BS_2D_in,
+            self.dist_to_BS_3D,
+            self.UE_height,
+            self.ue_class,
         )
-        
+
         # Wideband SINR и CQI
         self.SINR = np.mean(SINR_on_RB)
         self.cqi = self.SINR_TO_CQI(self.SINR)
-        
-        subband_size = GLOBALS.SUBBAND_SIZE[self.serving_bs.bandwidth]
-        
-        # Subband CQI
-        self.cqi_subband = []
-        for i in range(0, len(SINR_on_RB), subband_size):
-            sinr_subband = np.mean(SINR_on_RB[i:i+subband_size])
-            self.cqi_subband.append(self.SINR_TO_CQI(sinr_subband))
-        
+        if self.serving_bs.enable_tdl:
+            subband_size = GLOBALS.SUBBAND_SIZE[self.serving_bs.bandwidth]
+            # Subband CQI
+            self.cqi_subband = []
+            for i in range(0, len(SINR_on_RB), subband_size):
+                sinr_subband = np.mean(SINR_on_RB[i : i + subband_size])
+                self.cqi_subband.append(self.SINR_TO_CQI(sinr_subband))
+
         self.SINR_values.append(self.SINR)
         self.CQI_values.append(self.cqi)
-        
+
     def GEN_TRFFC(self, current_time: int, update_interval: int) -> None:
         """
         Сгенерировать пакеты трафика согласно модели и добавить их в буфер.
@@ -571,7 +603,7 @@ class UserEquipment:
         print(f"Скорость поступления: {bitrate:.2f} бит/с")
         print(f"Статус буфера: {status}")
 
-    def UPD_THROUGHPUT(self, bits_transmitted: int, time_interval_ms: int):
+    def UPD_THROUGHPUT_BPS(self, bits_transmitted: int, time_interval_ms: int):
         """
         Обновить статистику пропускной способности.
 
@@ -585,10 +617,20 @@ class UserEquipment:
             (bits_transmitted * 1000) / time_interval_ms if time_interval_ms > 0 else 0
         )
 
+        # EWMA обновление average_throughput для Proportional Fair
+        alpha = 0.002  # временный хардкод, вывести в управление.
+        average_throughput_past = self.average_throughput
+        self.average_throughput = (
+            1 - alpha
+        ) * average_throughput_past + alpha * self.current_dl_throughput
+
+        # Текущее переданное количество бит
+        self.last_transmitted_bits = bits_transmitted
+
         # Обновление общей статистики
         self.total_transmitted_bits += bits_transmitted
 
-    def UPD_DL_THROUGHPUT(self, bits_dl_transmitted: int, time_interval_ms: int):
+    def UPD_DL_THROUGHPUT_BPS(self, bits_dl_transmitted: int, time_interval_ms: int):
         """
         Обновить статистику пропускной способности в DL.
 
@@ -602,8 +644,20 @@ class UserEquipment:
             (bits_dl_transmitted * 1000) / time_interval_ms if time_interval_ms > 0 else 0
         )
 
+        # EWMA обновление average_throughput для Proportional Fair
+        alpha = 0.002  # временный хардкод, вывести в управление.
+        average_throughput_past = self.average_throughput
+        self.average_throughput = (
+            1 - alpha
+        ) * average_throughput_past + alpha * self.current_dl_throughput
+
+        # Текущее переданное количество бит
+        self.last_transmitted_bits = bits_dl_transmitted
+
         # Обновление общей статистики
         self.total_dl_transmitted_bits += bits_dl_transmitted
+
+        #TODO: Сделать ручку для регулирования порога EWMA (alpha=) в симуляции
 
     def UPD_BUFFER(self, current_time: int):
         """Обновление задержки пакетов в буфере"""
@@ -688,7 +742,7 @@ class UserEquipment:
         # 4. Вероятностная модель ошибки принятия TB
         tb_error = random.random() < bler
         return not tb_error
-        
+
     def _calculate_distances_to_BS(self) -> None:
         """
         Вычисляет расстояние от пользователя до базовой станции с учетом
@@ -700,7 +754,7 @@ class UserEquipment:
 
         ue_x, ue_y = self.position
         bs_x, bs_y = self.serving_bs.position
-        
+
         if (x_min <= bs_x <= x_max) and (y_min <= bs_y <= y_max):
             distance = np.hypot(bs_x - ue_x, bs_y - ue_y)
             self.dist_to_BS_2D = distance
@@ -743,10 +797,7 @@ class UserEquipment:
         self.dist_to_BS_2D = d_total
         self.dist_to_BS_2D_in = d_in
         self.dist_to_BS_2D_out = d_out
-        self.dist_to_BS_3D = np.hypot(
-            self.dist_to_BS_2D, 
-            self.serving_bs.height - self.UE_height
-        )
+        self.dist_to_BS_3D = np.hypot(self.dist_to_BS_2D, self.serving_bs.height - self.UE_height)
 
     def _set_scenario_parameters(self):
         """
@@ -843,8 +894,12 @@ class UECollection:
 
         """
         return list(self.users.values())
-    
-    def UPDATE_ALL_USERS(self, current_time: int, update_interval: int):
+
+    def UPDATE_ALL_USERS(self, current_time: int,
+                         update_interval: int,
+                         mobility_update_interval: int = None,
+                         channel_update_interval: int = None,
+                         ):
         """
         Обновить состояние всех пользователей в коллекции.
 
@@ -853,21 +908,30 @@ class UECollection:
             update_interval (int): Интервал обновления состояния UE (мс).
 
         """
+        # Если отдельные интервалы не заданы — старое поведение
+        mob_interval = mobility_update_interval or update_interval
+        ch_interval = channel_update_interval or update_interval
+
         for ue in self.users.values():
             # Обновление позиции
-            ue.UPD_POSITION(update_interval)
-            
+            if current_time % mob_interval == 0:
+                ue.UPD_POSITION(mob_interval)
+
             # Обновление качества канала
-            ue.UPD_CH_QUALITY()
-            
+            if current_time % ch_interval == 0:
+                ue.UPD_CH_QUALITY(ch_interval)
+
             # Генерация DL трафика, если задана модель
-            if ue.traffic_model is not None: 
+            if ue.traffic_model is not None:
                 ue.serving_bs.GEN_TRFFC(
-                    current_time=current_time, 
+                    current_time=current_time,
                     update_interval=update_interval,
-                    ue_id=ue.UE_ID
+                    ue_id=ue.UE_ID,
                 )
-    
+
+    #TODO: Привязать и вывести ручки для управления временным интервалом
+    # обновления каналов
+
     def GET_ACTIVE_USERS(self) -> List[UserEquipment]:
         """
         Получить список активных пользователей (с данными в буфере).
@@ -892,6 +956,7 @@ class UECollection:
                 {
                     "UE_ID": ue.UE_ID,
                     "cqi": ue.cqi,
+                    "sbb_cqi": ue.cqi_subband,
                     "ue": ue,
                 }
             )
@@ -901,10 +966,10 @@ class UECollection:
     def ADD_RANDOM_USERS(
         self,
         num_ue: int,
-        x_min: float = -1000,
-        x_max: float = 1000,
-        y_min: float = -1000,
-        y_max: float = 1000,
+        x_min: float = None,
+        x_max: float = None,
+        y_min: float = None,
+        y_max: float = None,
         ue_class: str = "random",
     ):
         """
@@ -953,15 +1018,34 @@ class UECollection:
         задан как None, то модель применится ко всем UE в коллекции.
 
         Args:
-            model (MobilityModel): Модель передвижения.
             ue_ids (List[int], optional): Список ID пользователей, к которым
             необходимо применить модель. По умолчанию None.
+            model (str): Название модели движения. Доступные модели:
+                RandomWalk
+                    - pause_time (float, optional): Время паузы между блужданиями.
+                    - velocity_min (float): Минимальная скорость.
+                    - velocity_max (float): Максимальная скорость.
+                RandomWaypoint
+                    - pause_time (float, optional): Время паузы между движениями.
+                    - velocity_min (float): Минимальная скорость.
+                    - velocity_max (float): Максимальная скорость.
+                RandomDirection
+                    - pause_time (float, optional): Время паузы между движениями.
+                GaussMarkov
+                    - alpha (float, optional): Параметр памяти модели.
+                    - boundary_threshold (float, optional): Порог приближения к границе.
+                DiagonalWalk
+                    - pause_time (int): Время паузы.
+                    - bs (BaseStation): Экземпляр базовой станции.
+
+        Пример:
+            SET_MOBILITY_MODEL('RandomWalk', pause_time=2.0, velocity_min=1.0)
 
         """
         for ue in self.users.values():
             if ue_ids is None or ue.UE_ID in ue_ids:
                 ue.SET_MOBILITY_MODEL(model, **kwargs)
-               
+
     def SET_TRAFFIC_MODEL(self, model, ue_ids: List[int] = None):
         """
         Установить модель генерации трафика для пользователей в коллекции. Если
@@ -974,8 +1058,8 @@ class UECollection:
 
         """
         for ue in self.users.values():
-            if ue_ids is None or ue.UE_ID in ue_ids:
-                ue.SET_TRAFFIC_MODEL(model)
+            # if ue_ids is None or ue.UE_ID in ue_ids:
+            ue.SET_TRAFFIC_MODEL(model)
 
     def REG_USERS_TO_BS(self, bs):
         """
@@ -1029,3 +1113,6 @@ def test_buffer_fifo():
 
     # 7. Очистка буфера
     buffer.DESTROY_BUFFER()
+
+    #TODO: Тесты выше, они вообще работают? Проверить и перенести либо в модуль
+    # тестов либо в папку с тестами

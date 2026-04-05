@@ -1,0 +1,6 @@
+tti;sch_eligible_ue_count;sch_active_ue_count;dl_rb_allocated_count;dl_rb_per_ue_avg;dl_bits_per_rb_avg;dl_capacity_bits_sum_tti;dl_transmitted_bits_sum_tti;dl_throughput_sum_kbps;dl_cqi_wb_avg_idx;dl_sinr_avg;buffer_size_sum_bytes;sch_total_time_us;pdcch_cce_total_count;pdcch_cce_allocated_count;sch_priority_min;sch_priority_max;sch_priority_std
+0;1;1;18;18,0;436,0;8856;7848;7848,0;12,33;21,97;0;180,79;25;1;1;1;0,0
+1;3;3;50;16,67;381,86;19653;19093;19093,0;12,33;21,98;2663;202,77;25;6;1;3;0,82
+2;3;3;50;16,67;378,14;20235;18907;18907,0;12,33;21,95;3110;153,65;25;6;1;3;0,82
+3;2;2;50;25,0;340,68;17034;17034;17034,0;12,33;22,05;985;141,79;25;5;1;2;0,5
+4;2;2;42;21,0;321,33;13680;13496;13496,0;12,33;22,07;1327;126,79;25;5;1;2;0,5

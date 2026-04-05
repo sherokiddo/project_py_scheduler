@@ -437,7 +437,7 @@ def test_scheduler_grid():
     lte_grid = RES_GRID_LTE(bandwidth=10, num_frames=2)  # 1 фрейм = 10 TTI
     visualizer = LTEGridVisualizer(lte_grid)
     bs = BaseStation(x=0, y=0, height=25.0, bandwidth=10, ch_model_type='UMi')
-    scheduler = SchedulerInterface.create('RoundRobin', lte_grid, bs, 
+    scheduler = SchedulerInterface.create('RoundRobin', lte_grid, bs,
                                           max_dl_ue_tti=5,
                                           pcfich=2,
                                           max_dl_cce_allowance=None,
@@ -457,7 +457,7 @@ def test_scheduler_grid():
 
     # Настройка моделей
     for ue in [ue1, ue2, ue3, ue4, ue5]:
-        ue.SET_MOBILITY_MODEL(RandomWalkModel(x_min=0, x_max=1000, y_min=0, y_max=1000))
+        ue.SET_MOBILITY_MODEL(RandomWalkModel(ue=ue, x_min=0, x_max=1000, y_min=0, y_max=1000))
         ue.SET_TRAFFIC_MODEL(PoissonModel(packet_rate=5000))
         bs.REG_UE(ue)
         bs.ue_buffers[ue.UE_ID].ADD_PACKET(
@@ -485,7 +485,7 @@ def test_scheduler_grid():
     # Шаг 3: Основной цикл симуляции 
     for current_time in range(update_interval, sim_duration + 1, update_interval):  # 0-9 TTI (полный фрейм)
         for ue in [ue1, ue2, ue3, ue4, ue5]:
-            ue.UPD_POSITION(update_interval, bs.position, bs.height)
+            ue.UPD_POSITION(update_interval)
             ue.UPD_CH_QUALITY()
     
         # Генерация трафика
