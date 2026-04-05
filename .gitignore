@@ -11,3 +11,5 @@ PyScheduler/output.txt
 .spyproject/**
 *.log
 logs/
+venv/
+.venv/**
