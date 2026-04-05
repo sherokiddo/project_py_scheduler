@@ -956,6 +956,21 @@ class SimulationManager:
             "harq_enabled": [],
         }
 
+    @staticmethod
+    def _normalize_stats_level(value: str, field_name: str) -> str:
+        if not isinstance(value, str):
+            raise TypeError(f"{field_name} must be a string, got {type(value).__name__}")
+
+        normalized = value.strip().lower()
+        normalized = {"detailed": "advanced"}.get(normalized, normalized)
+        valid_levels = {"none", "basic", "advanced", "full"}
+
+        if normalized not in valid_levels:
+            valid = ", ".join(sorted(valid_levels | {"detailed"}))
+            raise ValueError(f"Invalid {field_name}: {value}. Supported levels: {valid}")
+
+        return normalized
+
     def set_sim_duration(self, sim_duration: int) -> None:
         """
         Установить длительности всей симуляции.
@@ -1128,8 +1143,11 @@ class SimulationManager:
         Example:
             manager.set_stats_manager(enabled=True, collect_interval=5, amc_level="detailed")
         """
+        level_fields = {"scheduler_level", "amc_level", "pdcch_level"}
         for key, value in kwargs.items():
             if hasattr(self.stats_config, key):
+                if key in level_fields:
+                    value = self._normalize_stats_level(value, key)
                 setattr(self.stats_config, key, value)
             else:
                 available = ", ".join(self.stats_config.__dataclass_fields__.keys())
@@ -1233,6 +1251,18 @@ class SimulationManager:
 
             self.stats_manager = None
             if self.stats_config.enabled:
+                scheduler_level = self._normalize_stats_level(
+                    self.stats_config.scheduler_level, "scheduler_level"
+                )
+                amc_level = self._normalize_stats_level(self.stats_config.amc_level, "amc_level")
+                pdcch_level = self._normalize_stats_level(
+                    self.stats_config.pdcch_level, "pdcch_level"
+                )
+
+                self.stats_config.scheduler_level = scheduler_level
+                self.stats_config.amc_level = amc_level
+                self.stats_config.pdcch_level = pdcch_level
+
                 level_map = {
                     "none": MetricLevel.NONE,
                     "basic": MetricLevel.BASIC,
@@ -1243,9 +1273,9 @@ class SimulationManager:
                 stats_config = StatisticsConfig(
                     collect_interval=self.stats_config.collect_interval,
                     levels=LevelsConfig(
-                        scheduler=level_map[self.stats_config.scheduler_level],
-                        amc=level_map[self.stats_config.amc_level],
-                        pdcch=level_map[self.stats_config.pdcch_level],
+                        scheduler=level_map[scheduler_level],
+                        amc=level_map[amc_level],
+                        pdcch=level_map[pdcch_level],
                     ),
                     export_format=self.stats_config.export_format,
                     export_detailed_format=self.stats_config.export_detailed_format,
@@ -1554,7 +1584,10 @@ class SimulationManager:
         Логирование подробной legacy-статистики симуляции в CSV-файл.
         """
         allocation = sched_result.get("allocation", {})
-        pdcch_allocation = sched_result.get("pdcch_stats", {}).get("allocations", {})
+        pdcch_stats = sched_result.get("pdcch_stats", {})
+        pdcch_allocation = pdcch_stats.get(
+            "pdcch_ue_cce_allocations", pdcch_stats.get("allocations", {})
+        )
         filename = "stats.csv"
 
         if not hasattr(self, "_stats_file_initialized"):

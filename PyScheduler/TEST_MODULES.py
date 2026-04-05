@@ -1,7 +1,7 @@
 import math
 
 import numpy as np
- 
+
 import GLOBALS
 from BS_MODULE import BaseStation
 from CHANNEL_MODEL import UMaModel
@@ -82,10 +82,25 @@ def print_users_stats(ue_collection: UECollection, tti: int, bs: BaseStation, sc
     for ue in ue_collection.GET_ALL_USERS():
         ue_id = ue.UE_ID
         num_rbs = len(allocation.get(ue_id, []))
+        previous_position = ue.coordinates[-2] if len(ue.coordinates) > 1 else ue.position
+        if len(ue.coordinates) == 1:
+            ue.coordinates.append(previous_position)
 
         displacement = np.hypot(
-            ue.position[0] - ue.coordinates[-2][0], ue.position[1] - ue.coordinates[-2][1]
+            ue.position[0] - previous_position[0], ue.position[1] - previous_position[1]
         )
+
+        buffer_size = 0
+        if hasattr(bs, "buffer_manager") and hasattr(bs.buffer_manager, "buffers"):
+            buffer_size = getattr(bs.buffer_manager.buffers.get(ue_id), "current_size", 0)
+        elif hasattr(bs, "ue_buffers") and ue_id in bs.ue_buffers:
+            buffer_size = bs.ue_buffers[ue_id].sizes.get(ue_id, 0)
+
+        if not hasattr(bs, "buffer_manager"):
+            bs.buffer_manager = type("_BufferManagerProxy", (), {"buffers": {}})()
+        if ue_id not in bs.buffer_manager.buffers:
+            bs.buffer_manager.buffers[ue_id] = type("_BufferProxy", (), {})()
+        bs.buffer_manager.buffers[ue_id].current_size = buffer_size
 
         print(f"UE {ue_id}:")
         print(f"\tRBs выделено        : {num_rbs}")
@@ -336,5 +351,5 @@ def sim_with_manager():
 
 if __name__ == "__main__":
     # sim_with_ue_collection()
-    # sim_compare_harq()
+    #sim_compare_harq()
     sim_with_manager()
