@@ -21,6 +21,7 @@
 #------------------------------------------------------------------------------
 """
 import csv
+import json
 import sys
 import numpy as np
 import warnings
@@ -308,8 +309,8 @@ class StatsManager:
 
         self.history.append(snapshot)
 
-        if self.config.levels.scheduler >= MetricLevel.FULL or \
-           self.config.levels.amc >= MetricLevel.FULL:
+        if self.config.levels.scheduler >= MetricLevel.ADVANCED or \
+           self.config.levels.amc >= MetricLevel.ADVANCED:
             detailed = self._collect_detailed_metrics(
                 tti=tti,
                 pdcch_stats=pdcch_stats,
@@ -741,6 +742,25 @@ class StatsManager:
         print(f"[StatsManager] Exported {len(self.detailed_history)} TTI snapshots "
               f"to {filename} (per-UE format, locale={locale})")
 
+    def export_json(self, filename: str = None) -> None:
+        """
+        Экспортировать историю snapshots в JSON.
+
+        Формат: [{tti: ..., sch_eligible_ue_count: ..., dl_throughput_sum_kbps: ...}, ...]
+        """
+        if not self.history:
+            print("StatsManager: No data to export (history is empty)")
+            return
+
+        if filename is None:
+            filename = f"{self.config.file_prefix}.json"
+
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(list(self.history), f, indent=2, ensure_ascii=False)
+
+        print(f"StatsManager: Exported {len(self.history)} snapshots to {filename} (JSON format)")
+
+
     def export_detailed_json(self, filename: str = None) -> None:
         """
         Экспортировать детальную статистику в JSON.
@@ -1120,21 +1140,17 @@ class SimulationManager:
                 # Планирование ресурсов
                 sched_result = scheduler.schedule(tti, users)
 
-                # Вывод статистики в CSV файл
+                # Сбор статистики (только collect, без экспорта!)
                 if self.stats_manager and tti % self.stats_manager.config.collect_interval == 0:
                     self.stats_manager.collect(tti)
 
-            if self.stats_manager:
-                # Экспорт в CSV
-                output_filename = f"{self.stats_config.file_prefix}.csv"
-                self.stats_manager.export_csv(output_filename, locale="ru")
+                    # Периодический вывод Jain's Fairness Index (каждый collect_interval)
+                    ue_avg_throughputs = {}
+                    for ue in self.ue_collection.GET_ALL_USERS():
+                        ue_avg_throughputs[ue.UE_ID] = ue.average_throughput
+                    longterm_fairness_metrics = self.stats_manager._calculate_fairness(ue_throughputs=ue_avg_throughputs)
+                    print(f"[SIMULATION] Jain's Fairness Index: {longterm_fairness_metrics['dl_fairness_jain_index']:.4f}")
 
-                # Отладочный момент для глобального JI (Fairness)
-                ue_avg_throughputs = {}
-                for ue in self.ue_collection.GET_ALL_USERS():
-                    ue_avg_throughputs[ue.UE_ID] = ue.average_throughput
-                longterm_fairness_metrics = self.stats_manager._calculate_fairness(ue_throughputs=ue_avg_throughputs)
-                print(f"[SIMULATION] Jain's Fairness Index: {longterm_fairness_metrics['dl_fairness_jain_index']:.4f}")
 
 
                 # Вывод summary (если verbose включен)
@@ -1146,6 +1162,35 @@ class SimulationManager:
                     elif self.stats_config.export_detailed_format == "json":
                         detailed_filename = f"{self.stats_config.file_prefix}_detailed.json"
                         self.stats_manager.export_detailed_json(detailed_filename)
+
+            # ============================================================
+            # ЭКСПОРТ СТАТИСТИКИ (ОДИН РАЗ ПОСЛЕ ЗАВЕРШЕНИЯ СИМУЛЯЦИИ)
+            # ============================================================
+            if self.stats_manager and self.stats_manager.history:
+                fmt = self.stats_config.export_format.lower()
+                output_filename = f"{self.stats_config.file_prefix}.{fmt}"
+
+                print(f"\n[SIMULATION] Simulation complete. Exporting statistics...")
+
+                # Экспорт основной статистики
+                if fmt == "json":
+                    self.stats_manager.export_json(output_filename)
+                elif fmt == "csv":
+                    self.stats_manager.export_csv(output_filename, locale="ru")
+                else:
+                    print(f"[SIMULATION] ⚠️ Unknown format '{fmt}', fallback to CSV")
+                    self.stats_manager.export_csv(f"{self.stats_config.file_prefix}.csv", locale="ru")
+
+                # Экспорт детальной статистики (если ADVANCED или FULL level)
+                if self.stats_manager.detailed_history:
+                    if self.stats_config.export_detailed_format == "csv":
+                        detailed_filename = f"{self.stats_config.file_prefix}_detailed.csv"
+                        self.stats_manager.export_detailed_csv(detailed_filename, locale="ru")
+                    elif self.stats_config.export_detailed_format == "json":
+                        detailed_filename = f"{self.stats_config.file_prefix}_detailed.json"
+                        self.stats_manager.export_detailed_json(detailed_filename)
+
+                print(f"[SIMULATION] Export complete. Files saved with prefix: {self.stats_config.file_prefix}")
 
         finally:
             # Возвращение консольного вывода
