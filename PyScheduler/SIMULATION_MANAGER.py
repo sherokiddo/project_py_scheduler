@@ -884,6 +884,13 @@ class SchedulerConfig:
         max_dl_cce_allowance (Optional[int]): Максимальное число CCE для PDCCH.
         window_size (int): Размер скользящего окна.
         enable_window (bool): Включение скользящего окна.
+        dqn_model_path (Optional[str]): Путь к файлу весов DQN-модели.
+        dqn_max_n_ue (Optional[int]): Максимальное число UE, ожидаемое моделью.
+        dqn_wb_cqi_report_period_tti (int): Период репортинга WB CQI для нормировки observation.
+        dqn_episode_len_tti (Optional[int]): Длина эпизода, используемая для нормировки current_tti.
+        dqn_strict_observation (bool): Требовать точного env-matching observation.
+        dqn_deterministic (bool): Использовать детерминированный inference.
+        dqn_policy_runner (Optional[Any]): Инъекция готового policy runner для тестов и отладки.
 
     """
 
@@ -893,6 +900,13 @@ class SchedulerConfig:
     max_dl_cce_allowance: Optional[int] = None
     window_size: int = 100
     enable_window: bool = True
+    dqn_model_path: Optional[str] = None
+    dqn_max_n_ue: Optional[int] = None
+    dqn_wb_cqi_report_period_tti: int = 5
+    dqn_episode_len_tti: Optional[int] = None
+    dqn_strict_observation: bool = False
+    dqn_deterministic: bool = True
+    dqn_policy_runner: Optional[Any] = None
 
 
 @dataclass
@@ -1237,17 +1251,37 @@ class SimulationManager:
                 )
 
             # Создание планировщика
+            scheduler_kwargs = {
+                "max_dl_ue_tti": self.sched_config.max_dl_ue_tti,
+                "pcfich": self.sched_config.pcfich,
+                "max_dl_cce_allowance": self.sched_config.max_dl_cce_allowance,
+                "verbose_pdcch": self.sim_config.verbose,
+                "window_size": self.sched_config.window_size,
+                "enable_window": self.sched_config.enable_window,
+                "verbose": self.sim_config.verbose,
+            }
+            if self.sched_config.algorithm == "DqnScheduler":
+                scheduler_kwargs.update(
+                    {
+                        "dqn_model_path": self.sched_config.dqn_model_path,
+                        "dqn_max_n_ue": self.sched_config.dqn_max_n_ue,
+                        "dqn_wb_cqi_report_period_tti": self.sched_config.dqn_wb_cqi_report_period_tti,
+                        "dqn_episode_len_tti": (
+                            self.sched_config.dqn_episode_len_tti
+                            if self.sched_config.dqn_episode_len_tti is not None
+                            else self.sim_config.sim_duration
+                        ),
+                        "dqn_strict_observation": self.sched_config.dqn_strict_observation,
+                        "dqn_deterministic": self.sched_config.dqn_deterministic,
+                        "dqn_policy_runner": self.sched_config.dqn_policy_runner,
+                    }
+                )
+
             self.scheduler = SchedulerInterface.create(
                 algorithm=self.sched_config.algorithm,
                 lte_grid=lte_grid,
                 bs=self.base_station,
-                max_dl_ue_tti=self.sched_config.max_dl_ue_tti,
-                pcfich=self.sched_config.pcfich,
-                max_dl_cce_allowance=self.sched_config.max_dl_cce_allowance,
-                verbose_pdcch=self.sim_config.verbose,
-                window_size=self.sched_config.window_size,
-                enable_window=self.sched_config.enable_window,
-                verbose=self.sim_config.verbose,
+                **scheduler_kwargs,
             )
 
             # Инициализация буферов пользователей

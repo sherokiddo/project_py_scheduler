@@ -250,6 +250,9 @@ class SchedulerInterface:
             ValueError: Если алгоритм неизвестен
         """
         # Реестр планировщиков (избегаем циклических зависимостей)
+        if algorithm == 'DqnScheduler':
+            from drl.dqn_scheduler import DqnScheduler
+
         schedulers = {
             'BestCQI':          BestCQIScheduler,
             'ProportionalFair': ProportionalFairScheduler,
@@ -257,6 +260,7 @@ class SchedulerInterface:
             'FD_BCQI':          FDxBestCQIScheduler,
             'FD_FGS':           FDxFairGreedyScheduler,
             'FD_PF':            FDxProportionalFairScheduler,
+            'DqnScheduler':     DqnScheduler if algorithm == 'DqnScheduler' else None,
             }
 
         if algorithm not in schedulers:
@@ -283,6 +287,7 @@ class SchedulerInterface:
                 'FD_BestCQI',
                 'FD_FGS',
                 'FD_FF',
+                'DqnScheduler',
                 ]
 
     def __init__(self, lte_grid, bs,
