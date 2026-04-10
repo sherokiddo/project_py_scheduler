@@ -26,7 +26,7 @@ import sys
 import warnings
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any, Dict, List, Optional
 
@@ -884,13 +884,8 @@ class SchedulerConfig:
         max_dl_cce_allowance (Optional[int]): Максимальное число CCE для PDCCH.
         window_size (int): Размер скользящего окна.
         enable_window (bool): Включение скользящего окна.
-        dqn_model_path (Optional[str]): Путь к файлу весов DQN-модели.
-        dqn_max_n_ue (Optional[int]): Максимальное число UE, ожидаемое моделью.
-        dqn_wb_cqi_report_period_tti (int): Период репортинга WB CQI для нормировки observation.
-        dqn_episode_len_tti (Optional[int]): Длина эпизода, используемая для нормировки current_tti.
-        dqn_strict_observation (bool): Требовать точного env-matching observation.
-        dqn_deterministic (bool): Использовать детерминированный inference.
-        dqn_policy_runner (Optional[Any]): Инъекция готового policy runner для тестов и отладки.
+        algorithm_kwargs (Dict[str, Any]): Алгоритм-специфичные параметры, которые
+            не должны раздувать унифицированный интерфейс менеджера.
 
     """
 
@@ -900,13 +895,7 @@ class SchedulerConfig:
     max_dl_cce_allowance: Optional[int] = None
     window_size: int = 100
     enable_window: bool = True
-    dqn_model_path: Optional[str] = None
-    dqn_max_n_ue: Optional[int] = None
-    dqn_wb_cqi_report_period_tti: int = 5
-    dqn_episode_len_tti: Optional[int] = None
-    dqn_strict_observation: bool = False
-    dqn_deterministic: bool = True
-    dqn_policy_runner: Optional[Any] = None
+    algorithm_kwargs: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -1104,7 +1093,8 @@ class SimulationManager:
 
         Args:
             algorithm (str): Название алгоритма планирования.
-            **kwargs: Параметры планировщика (max_dl_ue_tti, verbose, etc.)
+            **kwargs: Общие параметры планировщика и, опционально,
+                `algorithm_kwargs={...}` для алгоритм-специфичных настроек.
 
         Raises:
             TypeError: Если 'algorithm' не является строкой.
@@ -1117,9 +1107,22 @@ class SimulationManager:
                 f"Получено: {type(algorithm).__name__}"
             )
 
+        algorithm_kwargs = kwargs.pop("algorithm_kwargs", {})
+        if not isinstance(algorithm_kwargs, dict):
+            raise TypeError(
+                "Параметр 'algorithm_kwargs' должен быть словарем с алгоритм-специфичными настройками."
+            )
+
+        common_fields = {
+            field_name
+            for field_name in self.sched_config.__dataclass_fields__.keys()
+            if field_name not in {"algorithm", "algorithm_kwargs"}
+        }
+
         self.sched_config.algorithm = algorithm
+        self.sched_config.algorithm_kwargs = dict(algorithm_kwargs)
         for key, value in kwargs.items():
-            if hasattr(self.sched_config, key):
+            if key in common_fields:
                 setattr(self.sched_config, key, value)
             else:
                 raise ValueError(
@@ -1259,23 +1262,11 @@ class SimulationManager:
                 "window_size": self.sched_config.window_size,
                 "enable_window": self.sched_config.enable_window,
                 "verbose": self.sim_config.verbose,
+                "simulation_context": {
+                    "sim_duration_tti": self.sim_config.sim_duration,
+                },
             }
-            if self.sched_config.algorithm == "DqnScheduler":
-                scheduler_kwargs.update(
-                    {
-                        "dqn_model_path": self.sched_config.dqn_model_path,
-                        "dqn_max_n_ue": self.sched_config.dqn_max_n_ue,
-                        "dqn_wb_cqi_report_period_tti": self.sched_config.dqn_wb_cqi_report_period_tti,
-                        "dqn_episode_len_tti": (
-                            self.sched_config.dqn_episode_len_tti
-                            if self.sched_config.dqn_episode_len_tti is not None
-                            else self.sim_config.sim_duration
-                        ),
-                        "dqn_strict_observation": self.sched_config.dqn_strict_observation,
-                        "dqn_deterministic": self.sched_config.dqn_deterministic,
-                        "dqn_policy_runner": self.sched_config.dqn_policy_runner,
-                    }
-                )
+            scheduler_kwargs.update(self.sched_config.algorithm_kwargs)
 
             self.scheduler = SchedulerInterface.create(
                 algorithm=self.sched_config.algorithm,

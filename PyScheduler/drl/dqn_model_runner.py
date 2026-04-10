@@ -40,7 +40,7 @@ class DQNModelRunner:
         """
 
         if self._agent is None:
-            from drl.dqn_agent import LTEDQNAgent
+            from drl.agents.lte_dqn_agent import LTEDQNAgent
 
             self._agent = LTEDQNAgent.load(
                 path=str(self.model_path),

@@ -44,6 +44,12 @@ class DqnScheduler(FDxFairGreedyScheduler):
 
         super().__init__(lte_grid, bs, **kwargs)
 
+        resolved_episode_len_tti = dqn_episode_len_tti
+        if resolved_episode_len_tti is None:
+            resolved_episode_len_tti = self.simulation_context.get(
+                "sim_duration_tti"
+            )
+
         self.policy_runner = self._build_policy_runner(
             model_path=dqn_model_path,
             provided_runner=dqn_policy_runner,
@@ -55,7 +61,7 @@ class DqnScheduler(FDxFairGreedyScheduler):
         )
         self.observation_adapter = DRLPlaygroundObservationAdapter(
             max_n_ue=resolved_max_n_ue,
-            episode_len_tti=dqn_episode_len_tti,
+            episode_len_tti=resolved_episode_len_tti,
             wb_cqi_report_period_tti=dqn_wb_cqi_report_period_tti,
             strict_mode=bool(dqn_strict_observation),
             ensure_nonempty_action_mask=False,
@@ -66,7 +72,7 @@ class DqnScheduler(FDxFairGreedyScheduler):
         self.dqn_wb_cqi_report_period_tti = int(
             max(dqn_wb_cqi_report_period_tti, 1)
         )
-        self.dqn_episode_len_tti = dqn_episode_len_tti
+        self.dqn_episode_len_tti = resolved_episode_len_tti
         self.dqn_strict_observation = bool(dqn_strict_observation)
         self.dqn_deterministic = bool(dqn_deterministic)
 

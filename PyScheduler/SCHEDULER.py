@@ -109,7 +109,7 @@ import GLOBALS
 import time
 from dataclasses import dataclass
 from BS_MODULE import BaseStation
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 @dataclass(slots=True)
 class SchedulingGrant:
@@ -250,9 +250,6 @@ class SchedulerInterface:
             ValueError: Если алгоритм неизвестен
         """
         # Реестр планировщиков (избегаем циклических зависимостей)
-        if algorithm == 'DqnScheduler':
-            from drl.dqn_scheduler import DqnScheduler
-
         schedulers = {
             'BestCQI':          BestCQIScheduler,
             'ProportionalFair': ProportionalFairScheduler,
@@ -260,8 +257,12 @@ class SchedulerInterface:
             'FD_BCQI':          FDxBestCQIScheduler,
             'FD_FGS':           FDxFairGreedyScheduler,
             'FD_PF':            FDxProportionalFairScheduler,
-            'DqnScheduler':     DqnScheduler if algorithm == 'DqnScheduler' else None,
             }
+
+        if algorithm == 'DqnScheduler':
+            from drl.dqn_scheduler import DqnScheduler
+
+            schedulers['DqnScheduler'] = DqnScheduler
 
         if algorithm not in schedulers:
             valid = ', '.join(schedulers.keys())
@@ -297,7 +298,8 @@ class SchedulerInterface:
                  verbose_pdcch=False,
                  window_size=100,
                  enable_window=True,
-                 verbose = False):
+                 verbose = False,
+                 simulation_context: Optional[Dict[str, Any]] = None):
 
         self.lte_grid = lte_grid
         self.lte_grid.SET_BS(bs)
@@ -311,6 +313,7 @@ class SchedulerInterface:
         self.enable_window = enable_window
         self.active_ue_window = []
         self.window_size = window_size
+        self.simulation_context = dict(simulation_context or {})
 
         self._last_eligible_ue_count = 0
         self._last_allocated_rb_count = 0

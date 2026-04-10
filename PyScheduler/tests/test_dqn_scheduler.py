@@ -161,24 +161,50 @@ def test_dqn_scheduler_allocates_per_rbg_and_falls_back_on_invalid_action():
     assert runner.calls[2]["obs"][context_start + 2] == pytest.approx(2 / 3)
 
 
+def test_dqn_scheduler_uses_simulation_context_for_episode_length():
+    scheduler = DqnScheduler(
+        lte_grid=FakeGrid(),
+        bs=FakeBaseStation(),
+        dqn_policy_runner=FakeRunner(actions=[0], max_n_ue=4),
+        dqn_max_n_ue=4,
+        dqn_wb_cqi_report_period_tti=5,
+        simulation_context={"sim_duration_tti": 321},
+    )
+
+    assert scheduler.dqn_episode_len_tti == 321
+    assert scheduler.observation_adapter.episode_len_tti == 321
+
+
 def test_simulation_manager_accepts_dqn_scheduler_config():
     manager = SimulationManager()
     fake_runner = FakeRunner(actions=[0], max_n_ue=4)
 
     manager.set_scheduler(
         algorithm="DqnScheduler",
-        dqn_policy_runner=fake_runner,
-        dqn_max_n_ue=4,
-        dqn_wb_cqi_report_period_tti=5,
-        dqn_episode_len_tti=100,
-        dqn_strict_observation=True,
-        dqn_deterministic=True,
+        algorithm_kwargs={
+            "dqn_policy_runner": fake_runner,
+            "dqn_max_n_ue": 4,
+            "dqn_wb_cqi_report_period_tti": 5,
+            "dqn_episode_len_tti": 100,
+            "dqn_strict_observation": True,
+            "dqn_deterministic": True,
+        },
     )
 
     assert manager.sched_config.algorithm == "DqnScheduler"
-    assert manager.sched_config.dqn_policy_runner is fake_runner
-    assert manager.sched_config.dqn_max_n_ue == 4
-    assert manager.sched_config.dqn_wb_cqi_report_period_tti == 5
-    assert manager.sched_config.dqn_episode_len_tti == 100
-    assert manager.sched_config.dqn_strict_observation is True
-    assert manager.sched_config.dqn_deterministic is True
+    assert manager.sched_config.algorithm_kwargs["dqn_policy_runner"] is fake_runner
+    assert manager.sched_config.algorithm_kwargs["dqn_max_n_ue"] == 4
+    assert manager.sched_config.algorithm_kwargs["dqn_wb_cqi_report_period_tti"] == 5
+    assert manager.sched_config.algorithm_kwargs["dqn_episode_len_tti"] == 100
+    assert manager.sched_config.algorithm_kwargs["dqn_strict_observation"] is True
+    assert manager.sched_config.algorithm_kwargs["dqn_deterministic"] is True
+
+
+def test_simulation_manager_rejects_unknown_scheduler_common_parameter():
+    manager = SimulationManager()
+
+    with pytest.raises(ValueError, match="Недопустимый параметр"):
+        manager.set_scheduler(
+            algorithm="DqnScheduler",
+            dqn_max_n_ue=4,
+        )
