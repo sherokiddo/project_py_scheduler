@@ -32,6 +32,11 @@ from typing import Any, Dict, List, Optional
 
 import GLOBALS
 import numpy as np
+from drl.simulation_bridge import (
+    DRLSchedulerStepContext,
+    DRLSimulationBridge,
+    DRLSimulationRuntime,
+)
 from BS_MODULE import BaseStation
 from RES_GRID import RES_GRID_LTE
 from SCHEDULER import SchedulerInterface
@@ -939,12 +944,14 @@ class SimulationManager:
         self.ue_collection = None
         self.base_station = None
         self.stats_manager = None
+        self.drl_bridge = None
 
         self._to_file = False
         self._log_file = None
         self._original_stdout = None
         self._original_stderr = None
         self.scheduler = None
+        self.lte_grid = None
 
         self.traffic_gen = None
 
@@ -1107,6 +1114,42 @@ class SimulationManager:
                     f"{', '.join(self.sched_config.__dataclass_fields__.keys())}"
                 )
 
+    def set_drl_bridge(self, bridge: Optional[DRLSimulationBridge]) -> None:
+        """
+        Подключить DRL-мост к жизненному циклу симуляции.
+
+        Мост не заменяет оркестрацию `SimulationManager`, а получает
+        контролируемые точки подключения вокруг scheduler-step и runtime
+        симуляции.
+        """
+
+        if bridge is not None and not isinstance(bridge, DRLSimulationBridge):
+            raise TypeError(
+                "DRL bridge должен наследоваться от DRLSimulationBridge "
+                f"или быть None. Получено: {type(bridge).__name__}"
+            )
+
+        self.drl_bridge = bridge
+
+    def _call_drl_bridge_hook(self, hook_name: str, *args, **kwargs) -> None:
+        """
+        Безопасно вызвать lifecycle-hook DRL-моста.
+        """
+
+        if self.drl_bridge is None:
+            return
+
+        hook = getattr(self.drl_bridge, hook_name, None)
+        if hook is None:
+            return
+
+        try:
+            hook(*args, **kwargs)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Ошибка в DRL bridge hook '{hook_name}': {exc}"
+            ) from exc
+
     def set_stats_manager(self, **kwargs) -> None:
         """
         Настроить StatsManager.
@@ -1186,6 +1229,7 @@ class SimulationManager:
 
             # Создание ресурсной сетки
             lte_grid = RES_GRID_LTE(bandwidth=self.base_station.bandwidth, num_frames=num_frames)
+            self.lte_grid = lte_grid
             if self.sim_config.verbose and lte_grid:
                 print(
                     f"[SIMULATION] The resource grid has been initialized. "
@@ -1207,6 +1251,17 @@ class SimulationManager:
             )
 
             # Инициализация буферов пользователей
+            if self.drl_bridge is not None:
+                runtime = DRLSimulationRuntime(
+                    simulation_manager=self,
+                    base_station=self.base_station,
+                    ue_collection=self.ue_collection,
+                    lte_grid=self.lte_grid,
+                    scheduler=self.scheduler,
+                )
+                self.drl_bridge.bind_runtime(runtime)
+                self._call_drl_bridge_hook("on_simulation_start", runtime)
+
             for ue in self.ue_collection.GET_ALL_USERS():
                 # Режим Simple Buffer
                 if self.sim_config.use_legacy_traffic:
@@ -1353,6 +1408,7 @@ class SimulationManager:
                             self.stats_manager.export_detailed_json(detailed_filename)
 
             finally:
+                self._call_drl_bridge_hook("on_simulation_end")
                 # Возвращение консольного вывода
                 if pbar is not None:
                     pbar.close()
@@ -1532,6 +1588,31 @@ class SimulationManager:
 
         # 3. Планировщик
         users = self.ue_collection.GET_USERS_FOR_SCHEDULER()
+        step_context = None
+
+        if self.drl_bridge is not None:
+            step_context = DRLSchedulerStepContext(
+                current_time=current_time,
+                users=users,
+                metadata={
+                    "scheduler_algorithm": self.sched_config.algorithm,
+                    "traffic_mode": (
+                        "legacy_simple_buffer"
+                        if self.sim_config.use_legacy_traffic
+                        else "layered_buffer"
+                    ),
+                    "stats_enabled": self.stats_config.enabled,
+                },
+            )
+            self._call_drl_bridge_hook("before_scheduler_step", step_context)
+
         sched_result = self.scheduler.schedule(current_time, users)
+
+        if step_context is not None:
+            self._call_drl_bridge_hook(
+                "after_scheduler_step",
+                step_context,
+                sched_result,
+            )
 
         return sched_result
