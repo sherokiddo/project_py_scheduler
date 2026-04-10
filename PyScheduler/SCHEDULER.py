@@ -323,6 +323,7 @@ class SchedulerInterface:
         self._last_users = None
         self._last_priority_list = []
         self._last_prioritized_users = []
+        self._last_windowed_users = []
 
         self._last_sch_time_us = 0.0
         self._last_priority_calc_time_us = 0.0
@@ -377,6 +378,7 @@ class SchedulerInterface:
 
         # ЭТАП 2.5: Window filtering
         windowed_ues = self.filter_by_window(eligible_ues)
+        self._last_windowed_users = list(windowed_ues)
         if not windowed_ues:
             return self._empty_result()
 
@@ -488,6 +490,7 @@ class SchedulerInterface:
             'sch_priority_calc_time_us': round(self._last_priority_calc_time_us, 2),
             'sch_priority_sort_time_us': round(self._last_priority_sort_time_us, 2),
             'sch_priority_list_size': self._last_priority_list_size,
+            'sch_window_ue_count': len(self._last_windowed_users),
             'sch_pdcch_blocked_count': self._last_pdcch_blocked_count,
             'sch_avg_priority_value': round(self._last_avg_priority_value, 4),
             "ue_buffer_sizes": ue_buffer_sizes,
@@ -1032,6 +1035,7 @@ class SchedulerInterface:
         self._update_stats(self._last_tti, 0, 0, 0)
         self._last_allocation = {}
         self._last_users = []
+        self._last_windowed_users = []
 
         return {
             'allocation': {},

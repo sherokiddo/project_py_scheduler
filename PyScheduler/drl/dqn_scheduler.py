@@ -4,7 +4,7 @@ Inference-only DQN scheduler для PyScheduler.
 
 from typing import Any, Dict, List, Optional
 
-from SCHEDULER import FDxFairGreedyScheduler
+from SCHEDULER import SchedulerInterface
 from drl.dqn_model_runner import DQNModelRunner
 from drl.playground_adapter import DRLPlaygroundObservationAdapter, MODE_CURRENT_STEP
 from drl.simulation_bridge import (
@@ -16,11 +16,12 @@ from drl.simulation_bridge import (
 )
 
 
-class DqnScheduler(FDxFairGreedyScheduler):
+class DqnScheduler(SchedulerInterface):
     """
     DQN-backed scheduler с per-RBG inference внутри одного TTI.
 
-    Базовый pipeline PyScheduler сохраняется:
+    Планировщик наследуется напрямую от SchedulerInterface и использует
+    только общий контракт PyScheduler:
     - CQI refresh
     - eligibility
     - active window
@@ -80,6 +81,71 @@ class DqnScheduler(FDxFairGreedyScheduler):
         self._last_dqn_selected_ue_ids: List[int] = []
         self._last_dqn_raw_actions: List[int] = []
         self._last_dqn_step_count = 0
+        self._priority_rotation_offset = 0
+
+    def _calculate_priorities(
+        self,
+        windowed_ues: List[Dict],
+        tti: int,
+    ) -> List[Dict]:
+        """
+        Сформировать стабильный порядок UE для этапов PDCCH и DQN inference.
+
+        DQN принимает решение уже внутри `_allocate_pdsch()`, но до этого общий
+        pipeline должен:
+        - отсортировать UE;
+        - ограничить top-N при необходимости;
+        - выдать PDCCH наиболее релевантным кандидатам.
+
+        Поэтому здесь используется простая циклическая ротация, чтобы не было
+        скрытой зависимости от FD/RR scheduler-ов и чтобы первый UE в списке
+        менялся от TTI к TTI.
+        """
+
+        num_ues = len(windowed_ues)
+        if num_ues == 0:
+            return windowed_ues
+
+        if self.max_dl_ue_tti and self.max_dl_ue_tti < num_ues:
+            ues_to_plan = self.max_dl_ue_tti
+        else:
+            ues_to_plan = num_ues
+
+        start_idx = self._priority_rotation_offset % num_ues
+        rotated_ues = windowed_ues[start_idx:] + windowed_ues[:start_idx]
+
+        for idx, user in enumerate(rotated_ues):
+            user["priority"] = ues_to_plan - idx
+
+        if self.verbose:
+            top_ue = rotated_ues[0]["UE_ID"]
+            print(
+                f"[SCHEDULER.DqnScheduler TTI {tti}] Priority order: "
+                f"rotated start UE {top_ue}, offset={self._priority_rotation_offset}"
+            )
+
+        return rotated_ues
+
+    def _apply_pdsch_estimation(
+        self,
+        priority_list: List[Dict],
+        tti: int,
+    ) -> List[Dict]:
+        """
+        Не применять greedy PDSCH-estimation.
+
+        DQN распределяет ресурсы по одному RBG и сам управляет фактическим
+        распределением внутри `_allocate_pdsch()`. Предварительное отсечение UE
+        по wideband-оценке здесь не нужно и может скрыто искажать action space.
+        """
+
+        if self.verbose:
+            print(
+                f"[SCHEDULER.DqnScheduler TTI {tti}] "
+                f"PDSCH estimation: SKIPPED (per-RBG policy loop)"
+            )
+
+        return priority_list
 
     def _allocate_pdsch(
         self,
@@ -178,7 +244,9 @@ class DqnScheduler(FDxFairGreedyScheduler):
                 last_served_idx = last_served_idx
 
         if last_served_idx >= 0 and eligible_ue_ids:
-            self.rr_ue_offset = (last_served_idx + 1) % len(eligible_ue_ids)
+            self._priority_rotation_offset = (last_served_idx + 1) % len(
+                eligible_ue_ids
+            )
 
         self._last_dqn_invalid_action_count = invalid_action_count
         self._last_dqn_selected_ue_ids = selected_ue_ids

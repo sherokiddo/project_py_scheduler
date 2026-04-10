@@ -217,6 +217,7 @@ class StatsManager:
             "dl_capacity_bits_sum_tti": amc_stats.get("dl_capacity_bits_sum_tti", 0),
             "dl_transmitted_bits_sum_tti": amc_stats.get("dl_transmitted_bits_sum_tti", 0),
             "dl_throughput_sum_kbps": amc_stats.get("dl_throughput_sum_kbps", 0.0),
+            "dl_throughput_sum_kbps_instant": amc_stats.get("dl_throughput_sum_kbps", 0.0),
             "dl_cqi_wb_avg_idx": amc_stats.get("dl_cqi_wb_avg_idx", 0.0),
             "dl_sinr_avg": amc_stats.get("dl_sinr_avg", 0.0),
             # Buffer метрики
@@ -243,6 +244,7 @@ class StatsManager:
                     "sch_priority_sort_time_us": sched_stats.get("sch_priority_sort_time_us", 0.0),
                     "dl_prb_utilization_pct": sched_stats.get("dl_prb_utilization_pct", 0.0),
                     "sch_priority_list_size": sched_stats.get("sch_priority_list_size", 0),
+                    "sch_window_ue_count": sched_stats.get("sch_window_ue_count", 0),
                     "sch_pdcch_blocked_count": sched_stats.get("sch_pdcch_blocked_count", 0),
                     "sch_avg_priority_value": sched_stats.get("sch_avg_priority_value", 0.0),
                     "sch_eligible_to_active_ratio": self._calculate_ratio(
@@ -336,6 +338,19 @@ class StatsManager:
             # Fairness
             fairness_metrics = self._calculate_fairness(ue_throughputs)
             snapshot.update(fairness_metrics)
+            snapshot["dl_fairness_jain_index_active_tti"] = self._calculate_jain_index(
+                {ue_id: tp for ue_id, tp in ue_throughputs.items() if tp > 0}
+            )
+            snapshot["dl_fairness_jain_index_active_window_long"] = self._calculate_jain_index(
+                self._extract_average_throughputs(
+                    getattr(self.scheduler, "_last_windowed_users", [])
+                )
+            )
+            snapshot["dl_fairness_jain_index_all_ue_long"] = self._calculate_jain_index(
+                self._extract_average_throughputs(
+                    getattr(self.scheduler, "_last_users", [])
+                )
+            )
 
         self.history.append(snapshot)
 
@@ -674,6 +689,42 @@ class StatsManager:
             'dl_throughput_variance':   round(variance, 2),
             'dl_throughput_std':        round(std, 2)
         }
+
+    def _calculate_jain_index(self, ue_throughputs: dict) -> Optional[float]:
+        """
+        Рассчитать только индекс Jain для заданного набора throughput.
+
+        Используется для явного разведения instant- и long-term fairness без
+        изменения старого контракта `_calculate_fairness()`.
+        """
+
+        if not ue_throughputs or len(ue_throughputs) < 2:
+            return 1.0
+
+        throughputs = list(ue_throughputs.values())
+        sum_throughput = sum(throughputs)
+        sum_squared = sum(x**2 for x in throughputs)
+
+        if sum_throughput == 0 or sum_squared == 0:
+            return None
+
+        return round((sum_throughput**2) / (len(throughputs) * sum_squared), 4)
+
+    @staticmethod
+    def _extract_average_throughputs(users: List[Dict]) -> Dict[int, float]:
+        """
+        Собрать `average_throughput` для набора UE из scheduler runtime.
+        """
+
+        avg_throughputs: Dict[int, float] = {}
+        for user in users or []:
+            ue_id = user.get("UE_ID")
+            ue = user.get("ue")
+            if ue_id is None or ue is None:
+                continue
+            avg_throughputs[int(ue_id)] = float(getattr(ue, "average_throughput", 0.0) or 0.0)
+
+        return avg_throughputs
 
     def _calculate_std(self, values: list) -> float:
         """
@@ -1359,6 +1410,9 @@ class SimulationManager:
                     leave=True,
                     )
 
+                jfi_active_window_cached = None
+                jfi_all_long_cached = None
+
                 # Основной цикл симуляции
                 for tti in range(self.sim_config.sim_duration):
                     if self.sim_config.verbose:
@@ -1373,14 +1427,18 @@ class SimulationManager:
                         self.stats_manager.collect(tti)
 
                     if self.stats_manager and (tti % JFI_INTERVAL_TTI == 0):
-                        ue_avg_throughputs = {
-                            ue.UE_ID: ue.average_throughput
-                            for ue in self.ue_collection.GET_ALL_USERS()
-                        }
-                        longterm_fairness_metrics = self.stats_manager._calculate_fairness(
-                            ue_throughputs=ue_avg_throughputs
+                        active_window_throughputs = self.stats_manager._extract_average_throughputs(
+                            getattr(self.scheduler, "_last_windowed_users", [])
                         )
-                        jfi_cached = longterm_fairness_metrics.get("dl_fairness_jain_index", None)
+                        all_ue_throughputs = self.stats_manager._extract_average_throughputs(
+                            getattr(self.scheduler, "_last_users", [])
+                        )
+                        jfi_active_window_cached = self.stats_manager._calculate_jain_index(
+                            active_window_throughputs
+                        )
+                        jfi_all_long_cached = self.stats_manager._calculate_jain_index(
+                            all_ue_throughputs
+                        )
 
                     if (tti % STATS_REFRESH_TTI == 0) and self.scheduler:
                         s = self.scheduler.get_stats()
@@ -1389,19 +1447,27 @@ class SimulationManager:
                         tput = a.get('dl_throughput_sum_kbps', 0)
                         prb = s.get("dl_prb_utilization_pct", 0.0)
                         ue_cnt = s.get("sch_active_ue_count", 0)
+                        win_cnt = s.get("sch_window_ue_count", 0)
                         us = s.get("sch_total_time_us", 0.0)
-                        jfi_str = f"{jfi_cached:.4f}" if jfi_cached is not None else "N/A"
+                        jfi_active_str = (
+                            f"{jfi_active_window_cached:.4f}"
+                            if jfi_active_window_cached is not None
+                            else "N/A"
+                        )
+                        jfi_all_str = (
+                            f"{jfi_all_long_cached:.4f}"
+                            if jfi_all_long_cached is not None
+                            else "N/A"
+                        )
 
                         sbar.set_description_str(
-                            f"TTI={tti} | UE={ue_cnt} | "
+                            f"TTI={tti} | UE={ue_cnt}/{win_cnt} | "
                             f"Tput={tput:.0f} kbps | PRB={prb:.1f}% | "
-                            f"JFI(long)={jfi_str} | sch_total_time_us={us:.1f}"
+                            f"JFI(active)={jfi_active_str} | "
+                            f"JFI(all)={jfi_all_str} | "
+                            f"sch_total_time_us={us:.1f}"
                         )
                         sbar.refresh()
-
-                    # Вывод статистики в CSV файл
-                    if self.stats_manager and tti % self.stats_manager.config.collect_interval == 0:
-                        self.stats_manager.collect(tti)
 
                 if self.stats_manager:
                     # Экспорт в CSV
