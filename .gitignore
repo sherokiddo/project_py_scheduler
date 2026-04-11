@@ -1,5 +1,9 @@
 __pycache__
 PyScheduler/__pycache__
+.pytest_cache/
+pytest-cache-files-*/
+runs/
+PyScheduler/drl/runs/
 PyScheduler/metrics_results.json
 PyScheduler/scheduler_efficiency.json
 PyScheduler/emp_stats.csv
@@ -8,6 +12,9 @@ PyScheduler/emp_stats.json
 PyScheduler/emp_stats_detailed.json
 PyScheduler/stats.csv
 PyScheduler/output.txt
+emp_stats.csv
+emp_stats_detailed.csv
+output.txt
 .spyproject/**
 *.log
 logs/

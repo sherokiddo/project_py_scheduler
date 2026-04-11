@@ -2,8 +2,15 @@
 Сценарий обучения LTE DQN на перенесенной playground-среде.
 """
 
+if __package__ in (None, ""):
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+
 import csv
 import os
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -11,6 +18,7 @@ import torch
 from drl.agents.lte_dqn_agent import LTEDQNAgent, MaskedReplayBuffer
 from drl.envs.lte_padded_env import PaddedLTESchedulerEnv
 from drl.envs.lte_scheduler_env import LTESchedulerEnv
+from drl.paths import PLAYGROUND_DQN_RUN_DIR
 
 
 MAX_N_UE = 40
@@ -175,7 +183,7 @@ def evaluate_scenarios(
     return rows
 
 
-def save_metrics_csv(path: str, rows: list[dict[str, float]]) -> None:
+def save_metrics_csv(path: str | Path, rows: list[dict[str, float]]) -> None:
     if not rows:
         return
 
@@ -187,7 +195,8 @@ def save_metrics_csv(path: str, rows: list[dict[str, float]]) -> None:
 
 
 def main():
-    os.makedirs("runs/lte_dqn", exist_ok=True)
+    run_dir = PLAYGROUND_DQN_RUN_DIR
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -307,16 +316,16 @@ def main():
             env = train_env_pool[current_scenario_key]
             obs, info = env.reset(seed=int(rng.integers(0, 1_000_000)))
 
-    weights_path = "runs/lte_dqn/lte_dqn_shared_q.pt"
+    weights_path = run_dir / "lte_dqn_shared_q.pt"
     agent.save(weights_path)
     print(f"Weights saved: {weights_path}")
 
-    metrics_path = "runs/lte_dqn/train_metrics.csv"
+    metrics_path = run_dir / "train_metrics.csv"
     save_metrics_csv(metrics_path, episode_metrics)
     print(f"Metrics saved: {metrics_path}")
 
     eval_rows = evaluate_scenarios(agent, eval_env_pool)
-    eval_metrics_path = "runs/lte_dqn/eval_metrics.csv"
+    eval_metrics_path = run_dir / "eval_metrics.csv"
     save_metrics_csv(eval_metrics_path, eval_rows)
     print(f"Eval metrics saved: {eval_metrics_path}")
 

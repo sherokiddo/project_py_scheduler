@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from SCHEDULER import SchedulerInterface
 from drl.dqn_model_runner import DQNModelRunner
+from drl.pdsch_allocation_session import PDSCHAllocationSession
 from drl.playground_adapter import DRLPlaygroundObservationAdapter, MODE_CURRENT_STEP
 from drl.simulation_bridge import (
     DRLPlaygroundCompatibilityReport,
@@ -167,41 +168,36 @@ class DqnScheduler(SchedulerInterface):
             self._reset_dqn_step_trace()
             return allocation
 
-        eligible_ue_ids = [int(user["UE_ID"]) for user in eligible_ues]
-        pdcch_ue_ids = {int(user["UE_ID"]) for user in ues_with_pdcch}
-        remaining_buffer_bits = {
-            int(user["UE_ID"]): int(user.get("bs_buffer_size", 0) * 8)
-            for user in eligible_ues
-        }
-        alloc_rbg_counts = {ue_id: 0 for ue_id in eligible_ue_ids}
-        invalid_action_count = 0
-        selected_ue_ids: List[int] = []
-        raw_actions: List[int] = []
-        last_served_idx = -1
+        session = PDSCHAllocationSession(
+            tti=tti,
+            eligible_ues=eligible_ues,
+            ues_with_pdcch=ues_with_pdcch,
+            lte_grid=self.lte_grid,
+            get_reported_wb_cqi=self._get_wb_cqi,
+            get_cqi_for_rbg=self._get_cqi_for_rbg,
+            bits_per_rb_fn=self.amc.GET_BITS_PER_RB,
+            build_step_snapshot_fn=lambda **kwargs: self._build_current_step_snapshot(
+                tti=tti,
+                eligible_ues=eligible_ues,
+                eligible_ue_ids=kwargs["eligible_ue_ids"],
+                remaining_buffer_bits=kwargs["remaining_buffer_bits"],
+                alloc_rbg_counts=kwargs["alloc_rbg_counts"],
+                action_mask=kwargs["action_mask"],
+                current_rbg_index=kwargs["current_rbg_index"],
+                total_rbg=kwargs["total_rbg"],
+            ),
+        )
 
-        for rbg_idx in range(total_rbg):
-            action_mask = self._build_action_mask(
-                eligible_ue_ids=eligible_ue_ids,
-                pdcch_ue_ids=pdcch_ue_ids,
-                remaining_buffer_bits=remaining_buffer_bits,
-            )
+        while not session.is_done():
+            action_mask = session.get_action_mask()
             if not any(action_mask):
                 break
 
-            snapshot = self._build_current_step_snapshot(
-                tti=tti,
-                eligible_ues=eligible_ues,
-                eligible_ue_ids=eligible_ue_ids,
-                remaining_buffer_bits=remaining_buffer_bits,
-                alloc_rbg_counts=alloc_rbg_counts,
-                action_mask=action_mask,
-                current_rbg_index=rbg_idx,
-                total_rbg=total_rbg,
-            )
+            snapshot = session.build_step_snapshot(action_mask)
             adapted = self.observation_adapter.build(
                 snapshot=snapshot,
                 mode=MODE_CURRENT_STEP,
-                ue_ids=eligible_ue_ids,
+                ue_ids=session.eligible_ue_ids,
             )
 
             raw_action = int(
@@ -211,47 +207,28 @@ class DqnScheduler(SchedulerInterface):
                     deterministic=self.dqn_deterministic,
                 )
             )
-            raw_actions.append(raw_action)
             chosen_ue_id, invalid_action = self._resolve_model_action(
                 raw_action=raw_action,
                 adapted_action_mask=adapted.action_mask,
                 ue_ids_in_order=adapted.ue_ids_in_order,
             )
-            invalid_action_count += int(invalid_action)
+            session.record_raw_action(raw_action, invalid_action)
+            session.apply_selected_ue(chosen_ue_id)
 
-            cqi = self._get_cqi_for_rbg(chosen_ue_id, rbg_idx)
-            if cqi <= 0:
-                continue
-
-            if not self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, chosen_ue_id):
-                continue
-
-            rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
-            allocation[chosen_ue_id].extend(rb_indices)
-
-            bits_per_rb = self.amc.GET_BITS_PER_RB(cqi)
-            rbg_capacity_bits = len(rb_indices) * bits_per_rb
-            remaining_buffer_bits[chosen_ue_id] = max(
-                0,
-                remaining_buffer_bits[chosen_ue_id] - rbg_capacity_bits,
-            )
-            alloc_rbg_counts[chosen_ue_id] += 1
-            selected_ue_ids.append(chosen_ue_id)
-
-            try:
-                last_served_idx = eligible_ue_ids.index(chosen_ue_id)
-            except ValueError:
-                last_served_idx = last_served_idx
-
-        if last_served_idx >= 0 and eligible_ue_ids:
+        if (
+            session.last_allocated_ue_id is not None
+            and session.last_allocated_ue_id in session.eligible_ue_ids
+        ):
+            last_served_idx = session.eligible_ue_ids.index(session.last_allocated_ue_id)
             self._priority_rotation_offset = (last_served_idx + 1) % len(
-                eligible_ue_ids
+                session.eligible_ue_ids
             )
 
-        self._last_dqn_invalid_action_count = invalid_action_count
-        self._last_dqn_selected_ue_ids = selected_ue_ids
-        self._last_dqn_raw_actions = raw_actions
-        self._last_dqn_step_count = len(raw_actions)
+        self._last_dqn_invalid_action_count = session.invalid_action_count
+        self._last_dqn_selected_ue_ids = list(session.selected_ue_ids)
+        self._last_dqn_raw_actions = list(session.raw_actions)
+        self._last_dqn_step_count = len(session.raw_actions)
+        allocation = session.allocation
 
         if self.verbose:
             allocated_ues = sum(1 for rbs in allocation.values() if len(rbs) > 0)
@@ -259,7 +236,7 @@ class DqnScheduler(SchedulerInterface):
             print(
                 f"[SCHEDULER.DqnScheduler TTI {tti}] "
                 f"PDSCH: {allocated_ues} UE, {total_rb} RB total, "
-                f"invalid_actions={invalid_action_count}"
+                f"invalid_actions={session.invalid_action_count}"
             )
 
         return allocation
@@ -407,28 +384,6 @@ class DqnScheduler(SchedulerInterface):
             compatibility=compatibility,
             scheduler_result=None,
         )
-
-    def _build_action_mask(
-        self,
-        *,
-        eligible_ue_ids: List[int],
-        pdcch_ue_ids: set[int],
-        remaining_buffer_bits: Dict[int, int],
-    ) -> List[int]:
-        """
-        Сформировать mask действий для текущего RBG.
-        """
-
-        mask: List[int] = []
-        for ue_id in eligible_ue_ids:
-            reported_cqi = self._get_wb_cqi(ue_id)
-            is_valid = (
-                ue_id in pdcch_ue_ids
-                and remaining_buffer_bits.get(ue_id, 0) > 0
-                and 1 <= reported_cqi <= 15
-            )
-            mask.append(int(is_valid))
-        return mask
 
     def _resolve_model_action(
         self,

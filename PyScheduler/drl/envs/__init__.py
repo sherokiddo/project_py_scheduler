@@ -1,7 +1,10 @@
-"""
-Пакет сред DRL для PyScheduler.
+﻿"""
+Пакет обучающих сред DRL для PyScheduler.
 
-Импорт сред выполняется явно через модули:
-- `drl.envs.lte_scheduler_env`
-- `drl.envs.lte_padded_env`
+Здесь сосуществуют два класса сред:
+- `pyscheduler_lte_env.py` — основная simulation-backed env на реальном runtime;
+- `lte_scheduler_env.py` и `lte_padded_env.py` — legacy standalone playground-path.
+
+Импорт конкретных сред выполняется явно из соответствующих модулей, чтобы
+не требовать `gymnasium` при простом импорте пакета.
 """

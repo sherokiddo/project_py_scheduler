@@ -1252,6 +1252,115 @@ class SimulationManager:
         self.sim_config.verbose = True
         self._to_file = to_file
 
+    def initialize_runtime(self) -> None:
+        """
+        Подготовить runtime-объекты симуляции перед запуском основного цикла.
+
+        Метод не меняет оркестрацию `SimulationManager`, а лишь выносит
+        обязательную инициализацию в отдельную точку входа, которую можно
+        переиспользовать из DRL-окружения и покрывать тестами отдельно.
+        """
+        # Проверка обязательных параметров симуляции
+        self._check_required_parameters()
+
+        # Расчёт числа кадров для ресурсной сетки
+        num_frames = int(np.ceil(self.sim_config.sim_duration / 10))
+        if self.sim_config.verbose:
+            print(f"[SIMULATION] Calculated number of frames for resource grid: {num_frames}")
+
+        # Создание ресурсной сетки
+        self.lte_grid = RES_GRID_LTE(
+            bandwidth=self.base_station.bandwidth,
+            num_frames=num_frames,
+        )
+        if self.sim_config.verbose and self.lte_grid:
+            print(
+                f"[SIMULATION] The resource grid has been initialized. "
+                f"Bandwidth={self.lte_grid.bandwidth} MHz. RBs={self.lte_grid.rb_per_slot}"
+            )
+
+        # Создание планировщика
+        scheduler_kwargs = {
+            "max_dl_ue_tti": self.sched_config.max_dl_ue_tti,
+            "pcfich": self.sched_config.pcfich,
+            "max_dl_cce_allowance": self.sched_config.max_dl_cce_allowance,
+            "verbose_pdcch": self.sim_config.verbose,
+            "window_size": self.sched_config.window_size,
+            "enable_window": self.sched_config.enable_window,
+            "verbose": self.sim_config.verbose,
+            "simulation_context": {
+                "sim_duration_tti": self.sim_config.sim_duration,
+            },
+        }
+        scheduler_kwargs.update(self.sched_config.algorithm_kwargs)
+
+        self.scheduler = SchedulerInterface.create(
+            algorithm=self.sched_config.algorithm,
+            lte_grid=self.lte_grid,
+            bs=self.base_station,
+            **scheduler_kwargs,
+        )
+
+        if self.drl_bridge is not None:
+            runtime = DRLSimulationRuntime(
+                simulation_manager=self,
+                base_station=self.base_station,
+                ue_collection=self.ue_collection,
+                lte_grid=self.lte_grid,
+                scheduler=self.scheduler,
+            )
+            self.drl_bridge.bind_runtime(runtime)
+            self._call_drl_bridge_hook("on_simulation_start", runtime)
+
+        # Инициализация буферов пользователей
+        for ue in self.ue_collection.GET_ALL_USERS():
+            if self.sim_config.use_legacy_traffic:
+                if not self.base_station.buffer_manager.ue_has_buffer(ue.UE_ID):
+                    self.base_station.buffer_manager.create_ue_buffer(
+                        ue.UE_ID,
+                        self.base_station.per_ue_max,
+                    )
+            else:
+                bearers_info = self.traffic_gen.get_bearers_info(ue.UE_ID)
+                self.base_station.buffer_manager.create_ue_buffer(
+                    ue.UE_ID,
+                    self.base_station.per_ue_max,
+                    bearers_info,
+                )
+
+        # Инициализация менеджера статистики
+        self.stats_manager = None
+        if self.stats_config.enabled:
+            level_map = {
+                "none": MetricLevel.NONE,
+                "basic": MetricLevel.BASIC,
+                "advanced": MetricLevel.ADVANCED,
+                "full": MetricLevel.FULL,
+            }
+
+            stats_config = StatisticsConfig(
+                collect_interval=self.stats_config.collect_interval,
+                levels=LevelsConfig(
+                    scheduler=level_map[self.stats_config.scheduler_level],
+                    amc=level_map[self.stats_config.amc_level],
+                    pdcch=level_map[self.stats_config.pdcch_level],
+                ),
+                export_format=self.stats_config.export_format,
+                export_detailed_format=self.stats_config.export_detailed_format,
+                file_prefix=self.stats_config.file_prefix,
+                history_max_len=self.stats_config.history_max_len,
+            )
+
+            self.stats_manager = StatsManager(self.scheduler, stats_config)
+
+            if self.sim_config.verbose:
+                print(
+                    f"[SIMULATION] StatsManager enabled "
+                    f"(interval={self.stats_config.collect_interval} TTI, "
+                    f"scheduler={self.stats_config.scheduler_level}, "
+                    f"amc={self.stats_config.amc_level})"
+                )
+
     def start_simulation(self) -> None:
         """
         Запуск основной симуляции.
@@ -1275,8 +1384,8 @@ class SimulationManager:
 
         progress_stream = getattr(sys, "__stderr__", sys.stderr)
 
-        pbar        = None
-        jfi_cached  = None
+        pbar = None
+        sbar = None
 
         # Перевод консольного вывода в текстовый файл
         if self._to_file:
@@ -1287,228 +1396,133 @@ class SimulationManager:
             sys.stderr = self._log_file
             self._return_stdout = True
 
-            # Проверка обязательных параметров симуляции
-            self._check_required_parameters()
+        try:
+            self.initialize_runtime()
 
-            # Расчёт числа кадров для ресурсной сетки
-            num_frames = int(np.ceil(self.sim_config.sim_duration / 10))
-            if self.sim_config.verbose:
-                print(f"[SIMULATION] Calculated number of frames for resource grid: {num_frames}")
-
-            # Создание ресурсной сетки
-            lte_grid = RES_GRID_LTE(bandwidth=self.base_station.bandwidth, num_frames=num_frames)
-            self.lte_grid = lte_grid
-            if self.sim_config.verbose and lte_grid:
-                print(
-                    f"[SIMULATION] The resource grid has been initialized. "
-                    f"Bandwidth={lte_grid.bandwidth} MHz. RBs={lte_grid.rb_per_slot}"
-                )
-
-            # Создание планировщика
-            scheduler_kwargs = {
-                "max_dl_ue_tti": self.sched_config.max_dl_ue_tti,
-                "pcfich": self.sched_config.pcfich,
-                "max_dl_cce_allowance": self.sched_config.max_dl_cce_allowance,
-                "verbose_pdcch": self.sim_config.verbose,
-                "window_size": self.sched_config.window_size,
-                "enable_window": self.sched_config.enable_window,
-                "verbose": self.sim_config.verbose,
-                "simulation_context": {
-                    "sim_duration_tti": self.sim_config.sim_duration,
-                },
-            }
-            scheduler_kwargs.update(self.sched_config.algorithm_kwargs)
-
-            self.scheduler = SchedulerInterface.create(
-                algorithm=self.sched_config.algorithm,
-                lte_grid=lte_grid,
-                bs=self.base_station,
-                **scheduler_kwargs,
+            pbar = tqdm(
+                total=self.sim_config.sim_duration,
+                desc="Simulation Progress",
+                unit="TTI",
+                dynamic_ncols=True,
+                colour='cyan',
+                bar_format=(
+                    "{desc}: {percentage:3.0f}%|{bar}| "
+                    "{n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
+                ),
+                file=progress_stream,
+                position=0,
+                leave=True,
             )
 
-            # Инициализация буферов пользователей
-            if self.drl_bridge is not None:
-                runtime = DRLSimulationRuntime(
-                    simulation_manager=self,
-                    base_station=self.base_station,
-                    ue_collection=self.ue_collection,
-                    lte_grid=self.lte_grid,
-                    scheduler=self.scheduler,
-                )
-                self.drl_bridge.bind_runtime(runtime)
-                self._call_drl_bridge_hook("on_simulation_start", runtime)
+            sbar = tqdm(
+                total=0,
+                desc="Stats",
+                bar_format="{desc}",
+                dynamic_ncols=True,
+                file=progress_stream,
+                position=1,
+                leave=True,
+            )
 
-            for ue in self.ue_collection.GET_ALL_USERS():
-                # Режим Simple Buffer
-                if self.sim_config.use_legacy_traffic:
-                    if not self.base_station.buffer_manager.ue_has_buffer(ue.UE_ID):
-                        self.base_station.buffer_manager.create_ue_buffer(
-                            ue.UE_ID, self.base_station.per_ue_max
-                        )
-                # Режим Layered Buffer
-                else:
-                    bearers_info = self.traffic_gen.get_bearers_info(ue.UE_ID)
-                    self.base_station.buffer_manager.create_ue_buffer(
-                        ue.UE_ID, self.base_station.per_ue_max, bearers_info
-                    )
+            jfi_active_window_cached = None
+            jfi_all_long_cached = None
 
-            # Инициализация менеджера статистики
-            if self.stats_config.enabled:
-                level_map = {
-                    "none": MetricLevel.NONE,
-                    "basic": MetricLevel.BASIC,
-                    "advanced": MetricLevel.ADVANCED,
-                    "full": MetricLevel.FULL,
-                }
-
-                # Создание конфига для StatsManager
-                stats_config = StatisticsConfig(
-                    collect_interval=self.stats_config.collect_interval,
-                    levels=LevelsConfig(
-                        scheduler=level_map[self.stats_config.scheduler_level],
-                        amc=level_map[self.stats_config.amc_level],
-                        pdcch=level_map[self.stats_config.pdcch_level],
-                    ),
-                    export_format=self.stats_config.export_format,
-                    file_prefix=self.stats_config.file_prefix,
-                    history_max_len=self.stats_config.history_max_len,
-                )
-
-                self.stats_manager = StatsManager(self.scheduler, stats_config)
-
+            # Основной цикл симуляции
+            for tti in range(self.sim_config.sim_duration):
                 if self.sim_config.verbose:
-                    print(
-                        f"[SIMULATION] StatsManager enabled "
-                        f"(interval={self.stats_config.collect_interval} TTI, "
-                        f"scheduler={self.stats_config.scheduler_level}, "
-                        f"amc={self.stats_config.amc_level})"
+                    print(f"\n[SIMULATION] Start TTI {tti}...")
+
+                GLOBALS.CURRENT_TIME = tti
+
+                _ = self.run_tti(current_time=tti)
+
+                pbar.update(1)
+                if self.stats_manager and (tti % self.stats_manager.config.collect_interval == 0):
+                    self.stats_manager.collect(tti)
+
+                if self.stats_manager and (tti % JFI_INTERVAL_TTI == 0):
+                    active_window_throughputs = self.stats_manager._extract_average_throughputs(
+                        getattr(self.scheduler, "_last_windowed_users", [])
+                    )
+                    all_ue_throughputs = self.stats_manager._extract_average_throughputs(
+                        getattr(self.scheduler, "_last_users", [])
+                    )
+                    jfi_active_window_cached = self.stats_manager._calculate_jain_index(
+                        active_window_throughputs
+                    )
+                    jfi_all_long_cached = self.stats_manager._calculate_jain_index(
+                        all_ue_throughputs
                     )
 
-            try:
-                pbar = tqdm(
-                    total=self.sim_config.sim_duration,
-                    desc="Simulation Progress",
-                    unit="TTI",
-                    dynamic_ncols=True,
-                    colour='cyan',
-                    bar_format=(
-                        "{desc}: {percentage:3.0f}%|{bar}| "
-                        "{n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
-                    ),
-                    file=progress_stream,
-                    position = 0,
-                    leave = True,
+                if (tti % STATS_REFRESH_TTI == 0) and self.scheduler:
+                    s = self.scheduler.get_stats()
+                    a = self.scheduler.amc.get_stats()
+
+                    tput = a.get('dl_throughput_sum_kbps', 0)
+                    prb = s.get("dl_prb_utilization_pct", 0.0)
+                    ue_cnt = s.get("sch_active_ue_count", 0)
+                    win_cnt = s.get("sch_window_ue_count", 0)
+                    us = s.get("sch_total_time_us", 0.0)
+                    jfi_active_str = (
+                        f"{jfi_active_window_cached:.4f}"
+                        if jfi_active_window_cached is not None
+                        else "N/A"
+                    )
+                    jfi_all_str = (
+                        f"{jfi_all_long_cached:.4f}"
+                        if jfi_all_long_cached is not None
+                        else "N/A"
+                    )
+
+                    sbar.set_description_str(
+                        f"TTI={tti} | UE={ue_cnt}/{win_cnt} | "
+                        f"Tput={tput:.0f} kbps | PRB={prb:.1f}% | "
+                        f"JFI(active)={jfi_active_str} | "
+                        f"JFI(all)={jfi_all_str} | "
+                        f"sch_total_time_us={us:.1f}"
+                    )
+                    sbar.refresh()
+
+            if self.stats_manager:
+                # Экспорт в CSV
+                output_filename = f"{self.stats_config.file_prefix}.csv"
+                self.stats_manager.export_csv(output_filename, locale="ru")
+
+                # Отладочный момент для глобального JI (Fairness)
+                ue_avg_throughputs = {}
+                for ue in self.ue_collection.GET_ALL_USERS():
+                    ue_avg_throughputs[ue.UE_ID] = ue.average_throughput
+
+                longterm_fairness_metrics = self.stats_manager._calculate_fairness(
+                    ue_throughputs=ue_avg_throughputs
                 )
+                jfi = longterm_fairness_metrics["dl_fairness_jain_index"]
+                jfi_str = f"{jfi:.4f}" if jfi is not None else "N/A (no throughput data)"
+                print(f"[SIMULATION] Jain's Fairness Index: {jfi_str}")
 
-                sbar = tqdm(
-                    total=0,
-                    desc="Stats",
-                    bar_format="{desc}",
-                    dynamic_ncols=True,
-                    file=progress_stream,
-                    position=1,
-                    leave=True,
-                    )
+                # Вывод summary (если verbose включен)
+                if (
+                    self.stats_config.scheduler_level == "full"
+                    or self.stats_config.amc_level == "full"
+                ):
+                    if self.stats_config.export_detailed_format == "csv":
+                        detailed_filename = f"{self.stats_config.file_prefix}_detailed.csv"
+                        self.stats_manager.export_detailed_csv(detailed_filename, locale="ru")
+                    elif self.stats_config.export_detailed_format == "json":
+                        detailed_filename = f"{self.stats_config.file_prefix}_detailed.json"
+                        self.stats_manager.export_detailed_json(detailed_filename)
 
-                jfi_active_window_cached = None
-                jfi_all_long_cached = None
-
-                # Основной цикл симуляции
-                for tti in range(self.sim_config.sim_duration):
-                    if self.sim_config.verbose:
-                        print(f"\n[SIMULATION] Start TTI {tti}...")
-
-                    GLOBALS.CURRENT_TIME = tti
-
-                    _ = self.run_tti(current_time=tti)
-
-                    pbar.update(1)
-                    if self.stats_manager and (tti % self.stats_manager.config.collect_interval == 0):
-                        self.stats_manager.collect(tti)
-
-                    if self.stats_manager and (tti % JFI_INTERVAL_TTI == 0):
-                        active_window_throughputs = self.stats_manager._extract_average_throughputs(
-                            getattr(self.scheduler, "_last_windowed_users", [])
-                        )
-                        all_ue_throughputs = self.stats_manager._extract_average_throughputs(
-                            getattr(self.scheduler, "_last_users", [])
-                        )
-                        jfi_active_window_cached = self.stats_manager._calculate_jain_index(
-                            active_window_throughputs
-                        )
-                        jfi_all_long_cached = self.stats_manager._calculate_jain_index(
-                            all_ue_throughputs
-                        )
-
-                    if (tti % STATS_REFRESH_TTI == 0) and self.scheduler:
-                        s = self.scheduler.get_stats()
-                        a = self.scheduler.amc.get_stats()
-
-                        tput = a.get('dl_throughput_sum_kbps', 0)
-                        prb = s.get("dl_prb_utilization_pct", 0.0)
-                        ue_cnt = s.get("sch_active_ue_count", 0)
-                        win_cnt = s.get("sch_window_ue_count", 0)
-                        us = s.get("sch_total_time_us", 0.0)
-                        jfi_active_str = (
-                            f"{jfi_active_window_cached:.4f}"
-                            if jfi_active_window_cached is not None
-                            else "N/A"
-                        )
-                        jfi_all_str = (
-                            f"{jfi_all_long_cached:.4f}"
-                            if jfi_all_long_cached is not None
-                            else "N/A"
-                        )
-
-                        sbar.set_description_str(
-                            f"TTI={tti} | UE={ue_cnt}/{win_cnt} | "
-                            f"Tput={tput:.0f} kbps | PRB={prb:.1f}% | "
-                            f"JFI(active)={jfi_active_str} | "
-                            f"JFI(all)={jfi_all_str} | "
-                            f"sch_total_time_us={us:.1f}"
-                        )
-                        sbar.refresh()
-
-                if self.stats_manager:
-                    # Экспорт в CSV
-                    output_filename = f"{self.stats_config.file_prefix}.csv"
-                    self.stats_manager.export_csv(output_filename, locale="ru")
-
-                    # Отладочный момент для глобального JI (Fairness)
-                    ue_avg_throughputs = {}
-                    for ue in self.ue_collection.GET_ALL_USERS():
-                        ue_avg_throughputs[ue.UE_ID] = ue.average_throughput
-
-                    longterm_fairness_metrics = self.stats_manager._calculate_fairness(
-                        ue_throughputs=ue_avg_throughputs
-                    )
-                    jfi = longterm_fairness_metrics["dl_fairness_jain_index"]
-                    jfi_str = f"{jfi:.4f}" if jfi is not None else "N/A (no throughput data)"
-                    print(f"[SIMULATION] Jain's Fairness Index: {jfi_str}")
-
-                    # Вывод summary (если verbose включен)
-                    if (
-                        self.stats_config.scheduler_level == "full"
-                        or self.stats_config.amc_level == "full"
-                    ):
-                        if self.stats_config.export_detailed_format == "csv":
-                            detailed_filename = f"{self.stats_config.file_prefix}_detailed.csv"
-                            self.stats_manager.export_detailed_csv(detailed_filename, locale="ru")
-                        elif self.stats_config.export_detailed_format == "json":
-                            detailed_filename = f"{self.stats_config.file_prefix}_detailed.json"
-                            self.stats_manager.export_detailed_json(detailed_filename)
-
-            finally:
-                self._call_drl_bridge_hook("on_simulation_end")
-                # Возвращение консольного вывода
-                if pbar is not None:
-                    pbar.close()
-                if sbar is not None:
-                    sbar.close()
-                if self._to_file:
-                    sys.stdout = self._original_stdout
-                    sys.stderr = self._original_stderr
-                    self._log_file.close()
+        finally:
+            self._call_drl_bridge_hook("on_simulation_end")
+            # Возвращение консольного вывода
+            if pbar is not None:
+                pbar.close()
+            if sbar is not None:
+                sbar.close()
+            if self._to_file:
+                sys.stdout = self._original_stdout
+                sys.stderr = self._original_stderr
+                self._log_file.close()
 
     def _check_required_parameters(self) -> None:
         """
@@ -1635,9 +1649,13 @@ class SimulationManager:
                 self.traffic_gen.set_model(ue_id=ue_id, model_type=model_type, qci=qci, **model_params)
 
 
-    def run_tti(self, current_time: int):
+    def prepare_tti_scheduler_input(self, current_time: int) -> List[Dict[str, Any]]:
         """
-        Выполнение одного TTI с поддержкой обоих режимов генерации трафика.
+        Подготовить входные данные scheduler для одного TTI.
+
+        Метод выполняет общую оркестрацию до вызова `scheduler.schedule(...)`:
+        обновляет UE, буферы и трафик, после чего возвращает список users
+        в том формате, который ожидает планировщик.
         """
         # Обновление физики и позиций UE
         if current_time % self.sim_config.update_interval == 0:
@@ -1677,8 +1695,20 @@ class SimulationManager:
                 for pkt in packets:
                     self.base_station.buffer_manager.add_packet(ue_id, pkt)
 
-        # 3. Планировщик
-        users = self.ue_collection.GET_USERS_FOR_SCHEDULER()
+        return self.ue_collection.GET_USERS_FOR_SCHEDULER()
+
+    def execute_scheduler_step(
+        self,
+        current_time: int,
+        users: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Выполнить вызов scheduler для уже подготовленного состояния TTI.
+
+        Включает bridge-hooks вокруг `scheduler.schedule(...)`, но не
+        занимается обновлением UE/трафика. Это позволяет переиспользовать
+        общий lifecycle как из `run_tti()`, так и из будущих DRL-сценариев.
+        """
         step_context = None
 
         if self.drl_bridge is not None:
@@ -1707,3 +1737,10 @@ class SimulationManager:
             )
 
         return sched_result
+
+    def run_tti(self, current_time: int):
+        """
+        Выполнение одного TTI с поддержкой обоих режимов генерации трафика.
+        """
+        users = self.prepare_tti_scheduler_input(current_time)
+        return self.execute_scheduler_step(current_time, users)

@@ -8,9 +8,10 @@ import numpy as np
 from drl.agents.lte_dqn_agent import LTEDQNAgent
 from drl.envs.lte_padded_env import PaddedLTESchedulerEnv
 from drl.envs.lte_scheduler_env import LTESchedulerEnv
+from drl.paths import PLAYGROUND_DQN_MODEL_PATH
 
 
-MODEL_PATH = "runs/lte_dqn/lte_dqn_shared_q.pt"
+MODEL_PATH = PLAYGROUND_DQN_MODEL_PATH
 MAX_N_UE = 40
 EVAL_N_UE = 3
 

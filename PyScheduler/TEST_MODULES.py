@@ -1,11 +1,14 @@
 import GLOBALS
 import matplotlib.pyplot as plt
 import numpy as np
+
+from pathlib import Path
 from BS_MODULE import BaseStation
 from MOBILITY_MODEL import MapBorders
 from SIMULATION_MANAGER import SimulationManager
 from TRAFFIC_MODEL import PoissonModel
 from UE_MODULE import UECollection
+from drl.paths import PYSCHEDULER_DQN_MODEL_PATH
 
 
 def visualize_users_mobility(
@@ -174,15 +177,29 @@ def sim_with_manager():
     # Установка коллекции пользователей
     sim.set_ue_collection(ue_collection)
 
+    #Путь до DRL-Scheduler
+    dqn_model_path = PYSCHEDULER_DQN_MODEL_PATH
+    if not dqn_model_path.exists():
+        raise FileNotFoundError(
+            f"DQN weights not found: {dqn_model_path}. "
+            "Укажите корректный путь к .pt файлу."
+        )
+
     # Установка планировщика. Можно передвать параметры, которые
     # поддерживает SchedulerInterface.
     sim.set_scheduler(
-        algorithm="RoundRobin",
+        algorithm="DqnScheduler",
         max_dl_ue_tti=None,
         pcfich=2,
         enable_window=False,
         window_size=4,
         max_dl_cce_allowance=None,
+        algorithm_kwargs={
+            "dqn_model_path": str(dqn_model_path),
+            "dqn_max_n_ue": 40,
+            "dqn_wb_cqi_report_period_tti": 5,
+            "dqn_deterministic": True,
+        },
     )
 
     # Настраиваем модели для каждого UE
@@ -347,5 +364,5 @@ def sim_with_manager_qos():
 
 
 if __name__ == "__main__":
-    # sim_with_manager()
-    sim_with_manager_qos()
+    sim_with_manager()
+    #sim_with_manager_qos()
