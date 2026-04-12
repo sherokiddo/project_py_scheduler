@@ -49,6 +49,24 @@ class DQNModelRunner:
         return self._agent
 
     @property
+    def inference_device(self) -> str:
+        """
+        Вернуть устройство, на котором будет выполняться инференс модели.
+
+        Если агент уже загружен, берем фактическое устройство агента.
+        Иначе возвращаем запрошенное устройство runner-а.
+        """
+
+        agent_device = getattr(self._agent, "device", None)
+        if agent_device is not None:
+            return str(agent_device)
+
+        if self.device is None:
+            return "auto"
+
+        return str(self.device)
+
+    @property
     def max_n_ue(self) -> Optional[int]:
         """
         Число UE, на которое рассчитана модель.

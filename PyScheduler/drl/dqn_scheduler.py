@@ -42,7 +42,11 @@ class DqnScheduler(SchedulerInterface):
         dqn_episode_len_tti = kwargs.pop("dqn_episode_len_tti", None)
         dqn_strict_observation = kwargs.pop("dqn_strict_observation", False)
         dqn_deterministic = kwargs.pop("dqn_deterministic", True)
+        dqn_inference_device = kwargs.pop("dqn_inference_device", "cpu")
         dqn_policy_runner = kwargs.pop("dqn_policy_runner", None)
+        resolved_inference_device = self._normalize_inference_device(
+            dqn_inference_device
+        )
 
         super().__init__(lte_grid, bs, **kwargs)
 
@@ -56,6 +60,7 @@ class DqnScheduler(SchedulerInterface):
             model_path=dqn_model_path,
             provided_runner=dqn_policy_runner,
             deterministic=dqn_deterministic,
+            device=resolved_inference_device,
         )
         resolved_max_n_ue = self._resolve_max_n_ue(
             configured_max_n_ue=dqn_max_n_ue,
@@ -77,6 +82,10 @@ class DqnScheduler(SchedulerInterface):
         self.dqn_episode_len_tti = resolved_episode_len_tti
         self.dqn_strict_observation = bool(dqn_strict_observation)
         self.dqn_deterministic = bool(dqn_deterministic)
+        self.dqn_inference_device = self._describe_policy_device(
+            policy_runner=self.policy_runner,
+            fallback_device=resolved_inference_device,
+        )
 
         self._last_dqn_invalid_action_count = 0
         self._last_dqn_selected_ue_ids: List[int] = []
@@ -259,6 +268,7 @@ class DqnScheduler(SchedulerInterface):
                 "dqn_selected_ue_ids": list(self._last_dqn_selected_ue_ids),
                 "dqn_raw_actions": list(self._last_dqn_raw_actions),
                 "dqn_model_path": self.dqn_model_path,
+                "dqn_inference_device": self.dqn_inference_device,
             }
         )
         return stats
@@ -478,6 +488,7 @@ class DqnScheduler(SchedulerInterface):
         model_path: Optional[str],
         provided_runner: Optional[Any],
         deterministic: bool,
+        device: Optional[Any],
     ) -> Any:
         """
         Построить объект runner для DQN policy.
@@ -494,7 +505,50 @@ class DqnScheduler(SchedulerInterface):
         return DQNModelRunner(
             model_path=str(model_path),
             deterministic=deterministic,
+            device=device,
         )
+
+    @staticmethod
+    def _normalize_inference_device(device: Optional[Any]) -> Optional[Any]:
+        """
+        Нормализовать конфигурацию устройства для инференса.
+
+        По умолчанию рантайм-инференс DQN внутри симулятора выполняется на CPU,
+        так как policy вызывается много раз на очень маленьких batch-ах.
+        Для экспериментов можно явно передать `cuda` или `auto`.
+        """
+
+        if device is None:
+            return "cpu"
+
+        if isinstance(device, str):
+            normalized = device.strip().lower()
+            if normalized in {"", "default"}:
+                return "cpu"
+            if normalized == "auto":
+                return None
+            return normalized
+
+        return device
+
+    @staticmethod
+    def _describe_policy_device(
+        *,
+        policy_runner: Any,
+        fallback_device: Optional[Any],
+    ) -> str:
+        """
+        Вернуть строковое описание устройства инференса для диагностики.
+        """
+
+        runner_device = getattr(policy_runner, "inference_device", None)
+        if runner_device is not None:
+            return str(runner_device)
+
+        if fallback_device is None:
+            return "auto"
+
+        return str(fallback_device)
 
     @staticmethod
     def _resolve_max_n_ue(

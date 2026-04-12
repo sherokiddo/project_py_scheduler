@@ -2,6 +2,7 @@ import os
 import sys
 from dataclasses import replace
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -16,6 +17,7 @@ pytest.importorskip("torch")
 import SIMULATION_MANAGER as simulation_manager_module
 
 from drl.agents.lte_dqn_agent import LTEDQNAgent, MaskedReplayBuffer
+from drl.paths import PYSCHEDULER_DQN_RUN_DIR
 from drl.runtime_scenario_factory import SCENARIO_CONFIGS, create_inference_manager
 from drl.scripts.train_lte_dqn_pyscheduler import make_env
 
@@ -40,7 +42,7 @@ class DummyTqdm:
 
 def _build_smoke_checkpoint(weights_path: Path) -> None:
     scenario = replace(
-        SCENARIO_CONFIGS["train_3ue_10mhz_wb5"],
+        SCENARIO_CONFIGS["anchor_5ue_10mhz_wb5_umi_fb"],
         sim_duration_tti=6,
     )
     env = make_env(scenario, max_n_ue=8, seed=123)
@@ -79,27 +81,35 @@ def _build_smoke_checkpoint(weights_path: Path) -> None:
     env.close()
 
 
-def test_runtime_dqn_train_to_inference_end_to_end(monkeypatch, tmp_path):
-    weights_path = tmp_path / "smoke_lte_dqn.pt"
+def test_runtime_dqn_train_to_inference_end_to_end(monkeypatch):
+    weights_path = PYSCHEDULER_DQN_RUN_DIR / f"smoke_lte_dqn_{uuid4().hex}.pt"
+    weights_path.parent.mkdir(parents=True, exist_ok=True)
     _build_smoke_checkpoint(weights_path)
 
-    monkeypatch.setattr(simulation_manager_module, "tqdm", DummyTqdm)
+    try:
+        monkeypatch.setattr(simulation_manager_module, "tqdm", DummyTqdm)
 
-    inference_scenario = replace(
-        SCENARIO_CONFIGS["train_3ue_10mhz_wb5"],
-        sim_duration_tti=4,
-    )
-    manager = create_inference_manager(
-        inference_scenario,
-        model_path=weights_path,
-        max_n_ue=8,
-        seed=123,
-        deterministic=True,
-    )
+        inference_scenario = replace(
+            SCENARIO_CONFIGS["anchor_5ue_10mhz_wb5_umi_fb"],
+            sim_duration_tti=4,
+        )
+        manager = create_inference_manager(
+            inference_scenario,
+            model_path=weights_path,
+            max_n_ue=8,
+            seed=123,
+            deterministic=True,
+        )
 
-    manager.start_simulation()
+        manager.start_simulation()
 
-    assert manager.scheduler.__class__.__name__ == "DqnScheduler"
-    stats = manager.scheduler.get_stats()
-    assert stats["dqn_step_count"] > 0
-    assert Path(stats["dqn_model_path"]) == weights_path
+        assert manager.scheduler.__class__.__name__ == "DqnScheduler"
+        stats = manager.scheduler.get_stats()
+        assert stats["dqn_step_count"] > 0
+        assert Path(stats["dqn_model_path"]) == weights_path
+        assert stats["dqn_inference_device"] == "cpu"
+    finally:
+        try:
+            weights_path.unlink(missing_ok=True)
+        except PermissionError:
+            pass

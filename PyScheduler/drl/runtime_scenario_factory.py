@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -42,12 +42,16 @@ class RuntimeTrainingScenario:
     wb_cqi_report_period_tti: int
     traffic_model_type: str = "Poisson"
     traffic_packet_rate: int = 5000
+    traffic_params: Dict[str, Any] = field(default_factory=dict)
     update_interval_tti: int = 1
-    mobility_update_interval_tti: int = 500
+    mobility_update_interval_tti: int = 50
     channel_update_interval_tti: int = 10
-    map_radius_m: float = 1000.0
+    map_radius_m: float = 500.0
     ue_class: str = "random"
     mobility_model: str = "RandomWaypoint"
+    mobility_params: Dict[str, Any] = field(
+        default_factory=lambda: {"pause_time": 0.0}
+    )
     max_dl_ue_tti: Optional[int] = None
     pcfich: int = 2
     max_dl_cce_allowance: Optional[int] = None
@@ -58,84 +62,177 @@ class RuntimeTrainingScenario:
 
 
 SCENARIO_CONFIGS: Dict[str, RuntimeTrainingScenario] = {
-    "train_3ue_10mhz_wb5": RuntimeTrainingScenario(
-        name="train_3ue_10mhz_wb5",
-        n_ue=3,
+    "anchor_5ue_10mhz_wb5_umi_fb": RuntimeTrainingScenario(
+        name="anchor_5ue_10mhz_wb5_umi_fb",
+        n_ue=5,
         bandwidth_mhz=10,
-        sim_duration_tti=200,
+        sim_duration_tti=2000,
         wb_cqi_report_period_tti=5,
+        traffic_model_type="Poisson",
+        traffic_packet_rate=5000,
+        ch_model_type="UMi",
+        enable_tdl=False,
     ),
-    "mid_8ue_10mhz_wb5": RuntimeTrainingScenario(
-        name="mid_8ue_10mhz_wb5",
+    "anchor_5ue_10mhz_wb5_umi_onoff": RuntimeTrainingScenario(
+        name="anchor_5ue_10mhz_wb5_umi_onoff",
+        n_ue=5,
+        bandwidth_mhz=10,
+        sim_duration_tti=2000,
+        wb_cqi_report_period_tti=5,
+        traffic_model_type="OnOff",
+        traffic_packet_rate=5000,
+        traffic_params={
+            "duration_on": 0.08,
+            "duration_off": 0.04,
+        },
+        ch_model_type="UMi",
+        enable_tdl=False,
+    ),
+    "anchor_5ue_10mhz_wb5_uma_fb": RuntimeTrainingScenario(
+        name="anchor_5ue_10mhz_wb5_uma_fb",
+        n_ue=5,
+        bandwidth_mhz=10,
+        sim_duration_tti=2000,
+        wb_cqi_report_period_tti=5,
+        traffic_model_type="Poisson",
+        traffic_packet_rate=5000,
+        ch_model_type="UMa",
+        enable_tdl=False,
+    ),
+    "mid_8ue_10mhz_wb5_umi_fb": RuntimeTrainingScenario(
+        name="mid_8ue_10mhz_wb5_umi_fb",
         n_ue=8,
         bandwidth_mhz=10,
-        sim_duration_tti=200,
+        sim_duration_tti=1500,
         wb_cqi_report_period_tti=5,
+        traffic_model_type="Poisson",
+        traffic_packet_rate=5000,
+        ch_model_type="UMi",
+        enable_tdl=False,
     ),
-    "mid_16ue_10mhz_wb5": RuntimeTrainingScenario(
-        name="mid_16ue_10mhz_wb5",
+    "mid_16ue_10mhz_wb5_umi_fb": RuntimeTrainingScenario(
+        name="mid_16ue_10mhz_wb5_umi_fb",
         n_ue=16,
         bandwidth_mhz=10,
-        sim_duration_tti=200,
+        sim_duration_tti=1200,
         wb_cqi_report_period_tti=5,
+        traffic_model_type="Poisson",
+        traffic_packet_rate=5000,
+        ch_model_type="UMi",
+        enable_tdl=False,
     ),
-    "target_40ue_10mhz_wb5": RuntimeTrainingScenario(
-        name="target_40ue_10mhz_wb5",
+    "target_40ue_10mhz_wb5_umi_fb": RuntimeTrainingScenario(
+        name="target_40ue_10mhz_wb5_umi_fb",
         n_ue=40,
         bandwidth_mhz=10,
-        sim_duration_tti=200,
+        sim_duration_tti=1000,
         wb_cqi_report_period_tti=5,
+        traffic_model_type="Poisson",
+        traffic_packet_rate=5000,
+        ch_model_type="UMi",
+        enable_tdl=False,
     ),
-    "bw_16ue_5mhz_wb5": RuntimeTrainingScenario(
-        name="bw_16ue_5mhz_wb5",
+    "bw_16ue_5mhz_wb5_umi_fb": RuntimeTrainingScenario(
+        name="bw_16ue_5mhz_wb5_umi_fb",
         n_ue=16,
         bandwidth_mhz=5,
-        sim_duration_tti=200,
+        sim_duration_tti=1200,
         wb_cqi_report_period_tti=5,
+        traffic_model_type="Poisson",
+        traffic_packet_rate=5000,
+        ch_model_type="UMi",
+        enable_tdl=False,
     ),
-    "bw_16ue_20mhz_wb5": RuntimeTrainingScenario(
-        name="bw_16ue_20mhz_wb5",
+    "bw_16ue_20mhz_wb5_umi_fb": RuntimeTrainingScenario(
+        name="bw_16ue_20mhz_wb5_umi_fb",
         n_ue=16,
         bandwidth_mhz=20,
-        sim_duration_tti=200,
+        sim_duration_tti=1200,
         wb_cqi_report_period_tti=5,
+        traffic_model_type="Poisson",
+        traffic_packet_rate=5000,
+        ch_model_type="UMi",
+        enable_tdl=False,
     ),
-    "cqi_16ue_10mhz_wb1": RuntimeTrainingScenario(
-        name="cqi_16ue_10mhz_wb1",
+    "cqi_16ue_10mhz_wb1_umi_fb": RuntimeTrainingScenario(
+        name="cqi_16ue_10mhz_wb1_umi_fb",
         n_ue=16,
         bandwidth_mhz=10,
-        sim_duration_tti=200,
+        sim_duration_tti=1200,
         wb_cqi_report_period_tti=1,
+        traffic_model_type="Poisson",
+        traffic_packet_rate=5000,
+        ch_model_type="UMi",
+        enable_tdl=False,
     ),
-    "cqi_16ue_10mhz_wb10": RuntimeTrainingScenario(
-        name="cqi_16ue_10mhz_wb10",
+    "cqi_16ue_10mhz_wb10_umi_fb": RuntimeTrainingScenario(
+        name="cqi_16ue_10mhz_wb10_umi_fb",
         n_ue=16,
         bandwidth_mhz=10,
-        sim_duration_tti=200,
+        sim_duration_tti=1200,
         wb_cqi_report_period_tti=10,
+        traffic_model_type="Poisson",
+        traffic_packet_rate=5000,
+        ch_model_type="UMi",
+        enable_tdl=False,
     ),
 }
 
 CURRICULUM_STAGES = (
-    (0.00, ("train_3ue_10mhz_wb5",)),
-    (0.20, ("train_3ue_10mhz_wb5", "mid_8ue_10mhz_wb5")),
-    (0.45, ("train_3ue_10mhz_wb5", "mid_8ue_10mhz_wb5", "mid_16ue_10mhz_wb5")),
+    (0.00, ("anchor_5ue_10mhz_wb5_umi_fb",)),
     (
-        0.70,
+        0.15,
         (
-            "train_3ue_10mhz_wb5",
-            "mid_8ue_10mhz_wb5",
-            "mid_16ue_10mhz_wb5",
-            "target_40ue_10mhz_wb5",
-            "bw_16ue_5mhz_wb5",
-            "bw_16ue_20mhz_wb5",
-            "cqi_16ue_10mhz_wb1",
-            "cqi_16ue_10mhz_wb10",
+            "anchor_5ue_10mhz_wb5_umi_fb",
+            "anchor_5ue_10mhz_wb5_umi_onoff",
+        ),
+    ),
+    (
+        0.35,
+        (
+            "anchor_5ue_10mhz_wb5_umi_fb",
+            "anchor_5ue_10mhz_wb5_umi_onoff",
+            "mid_8ue_10mhz_wb5_umi_fb",
+        ),
+    ),
+    (
+        0.55,
+        (
+            "anchor_5ue_10mhz_wb5_umi_fb",
+            "anchor_5ue_10mhz_wb5_umi_onoff",
+            "mid_8ue_10mhz_wb5_umi_fb",
+            "mid_16ue_10mhz_wb5_umi_fb",
+        ),
+    ),
+    (
+        0.75,
+        (
+            "anchor_5ue_10mhz_wb5_umi_fb",
+            "anchor_5ue_10mhz_wb5_umi_onoff",
+            "anchor_5ue_10mhz_wb5_uma_fb",
+            "mid_8ue_10mhz_wb5_umi_fb",
+            "mid_16ue_10mhz_wb5_umi_fb",
+            "target_40ue_10mhz_wb5_umi_fb",
+            "bw_16ue_5mhz_wb5_umi_fb",
+            "bw_16ue_20mhz_wb5_umi_fb",
+            "cqi_16ue_10mhz_wb1_umi_fb",
+            "cqi_16ue_10mhz_wb10_umi_fb",
         ),
     ),
 )
 
-EVAL_SCENARIO_KEYS = tuple(SCENARIO_CONFIGS.keys())
+EVAL_SCENARIO_KEYS = (
+    "anchor_5ue_10mhz_wb5_umi_fb",
+    "anchor_5ue_10mhz_wb5_umi_onoff",
+    "anchor_5ue_10mhz_wb5_uma_fb",
+    "mid_8ue_10mhz_wb5_umi_fb",
+    "mid_16ue_10mhz_wb5_umi_fb",
+    "target_40ue_10mhz_wb5_umi_fb",
+    "bw_16ue_5mhz_wb5_umi_fb",
+    "bw_16ue_20mhz_wb5_umi_fb",
+    "cqi_16ue_10mhz_wb1_umi_fb",
+    "cqi_16ue_10mhz_wb10_umi_fb",
+)
 
 
 class NoOpDqnPolicyRunner:
@@ -190,6 +287,30 @@ def _apply_scenario_options(
     return replace(scenario, **overrides)
 
 
+def _build_traffic_kwargs(scenario: RuntimeTrainingScenario) -> Dict[str, Any]:
+    """
+    Собрать параметры traffic model для `setup_ue_traffic()`.
+
+    `traffic_packet_rate` остается общим полем сценария для Poisson/OnOff,
+    а модель-специфичные параметры передаются через `traffic_params`.
+    """
+
+    traffic_kwargs = dict(scenario.traffic_params)
+
+    if scenario.traffic_model_type in {"Poisson", "OnOff"}:
+        traffic_kwargs.setdefault("packet_rate", int(scenario.traffic_packet_rate))
+
+    return traffic_kwargs
+
+
+def _build_mobility_kwargs(scenario: RuntimeTrainingScenario) -> Dict[str, Any]:
+    """
+    Собрать параметры mobility model для `SET_MOBILITY_MODEL()`.
+    """
+
+    return dict(scenario.mobility_params)
+
+
 def create_training_manager(
     scenario: RuntimeTrainingScenario,
     *,
@@ -226,7 +347,10 @@ def create_training_manager(
         y_max=y_max,
         ue_class=scenario.ue_class,
     )
-    ue_collection.SET_MOBILITY_MODEL(scenario.mobility_model)
+    ue_collection.SET_MOBILITY_MODEL(
+        scenario.mobility_model,
+        **_build_mobility_kwargs(scenario),
+    )
     ue_collection.REG_USERS_TO_BS(bs)
 
     sim = SimulationManager()
@@ -249,11 +373,12 @@ def create_training_manager(
         },
     )
 
+    traffic_kwargs = _build_traffic_kwargs(scenario)
     for ue in ue_collection.GET_ALL_USERS():
         sim.setup_ue_traffic(
             ue_id=ue.UE_ID,
             model_type=scenario.traffic_model_type,
-            packet_rate=int(scenario.traffic_packet_rate),
+            **traffic_kwargs,
         )
 
     sim.set_sim_duration(int(scenario.sim_duration_tti))
@@ -271,6 +396,7 @@ def create_inference_manager(
     max_n_ue: int,
     seed: Optional[int] = None,
     deterministic: bool = True,
+    inference_device: str = "cpu",
     options: Optional[Dict] = None,
 ) -> SimulationManager:
     """
@@ -293,6 +419,7 @@ def create_inference_manager(
     algorithm_kwargs.pop("dqn_policy_runner", None)
     algorithm_kwargs["dqn_model_path"] = str(resolved_model_path)
     algorithm_kwargs["dqn_deterministic"] = bool(deterministic)
+    algorithm_kwargs["dqn_inference_device"] = str(inference_device)
 
     sim.set_scheduler(
         algorithm="DqnScheduler",

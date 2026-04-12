@@ -58,10 +58,9 @@ def visualize_users_sinr(ue_collection: UECollection, sim_duration: float, updat
     Args:
         ue_collection (UECollection): Объект коллекции пользователей.
         sim_duration (float): Время симуляции (мс).
-        update_interval (float): Интервал обновления симуляции (мс).
+        update_interval (float): Интервал обновления канала/SINR (мс).
     """
-    # Создаём диапазон по всем TTI (каждый миллисекунд)
-    tti_range = np.arange(0, sim_duration)
+    sinr_update_interval = max(int(update_interval), 1)
 
     plt.figure(figsize=(12, 6))
     plt.title("График SINR во времени для всех пользователей")
@@ -71,14 +70,20 @@ def visualize_users_sinr(ue_collection: UECollection, sim_duration: float, updat
     for ue in ue_collection.GET_ALL_USERS():
         sinr_values = ue.SINR_values
 
-        # Выравнивание длин (на случай несовпадения)
-        min_len = min(len(tti_range), len(sinr_values))
+        # SINR логируется только при обновлении канала, поэтому ось времени
+        # должна учитывать реальный channel_update_interval, а не каждый TTI.
+        tti_range = np.arange(
+            0,
+            len(sinr_values) * sinr_update_interval,
+            sinr_update_interval,
+        )
 
-        plt.plot(tti_range[:min_len], sinr_values[:min_len], label=f"UE{ue.UE_ID}", alpha=0.7)
+        plt.plot(tti_range, sinr_values, label=f"UE{ue.UE_ID}", alpha=0.7)
 
     plt.legend(loc="best")
     plt.grid(True, alpha=0.3)
     plt.ylim(-20, 65)
+    plt.xlim(0, max(int(sim_duration) - 1, 0))
     plt.tight_layout()
     plt.show()
 
@@ -137,7 +142,7 @@ def sim_with_manager():
     x_min, x_max, y_min, y_max = MapBorders().get_borders()
 
     # Создание и настройка базовой станции
-    bs1 = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMa", enable_tdl=True)
+    bs1 = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMi", enable_tdl=False)
 
     # Создание коллекции пользовательских устройств
     ue_collection = UECollection()
@@ -199,6 +204,7 @@ def sim_with_manager():
             "dqn_max_n_ue": 40,
             "dqn_wb_cqi_report_period_tti": 5,
             "dqn_deterministic": True,
+            "dqn_inference_device": "cpu",
         },
     )
 
@@ -244,7 +250,9 @@ def sim_with_manager():
         y_max=y_max)
     # Визуализация SINR пользователей во времени
     visualize_users_sinr(
-        ue_collection=ue_collection, sim_duration=sim.sim_config.sim_duration, update_interval=10
+        ue_collection=ue_collection,
+        sim_duration=sim.sim_config.sim_duration,
+        update_interval=sim.sim_config.channel_update_interval,
     )
 
 

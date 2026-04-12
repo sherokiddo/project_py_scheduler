@@ -14,13 +14,13 @@ from drl.scripts.train_lte_dqn_pyscheduler import SCENARIO_CONFIGS, make_env
 
 
 def test_runtime_train_script_builds_pyscheduler_env():
-    scenario = SCENARIO_CONFIGS["train_3ue_10mhz_wb5"]
+    scenario = SCENARIO_CONFIGS["anchor_5ue_10mhz_wb5_umi_fb"]
     env = make_env(scenario, max_n_ue=8, seed=123)
 
     obs, info = env.reset(seed=123)
 
     assert obs.shape == env.observation_space.shape
-    assert info["actual_n_ue"] == 3
+    assert 1 <= info["actual_n_ue"] <= scenario.n_ue
     assert info["max_n_ue"] == 8
     assert env.ue_feature_dim > 0
     assert env.context_dim > 0

@@ -12,7 +12,7 @@ from drl.runtime_scenario_factory import (
 
 
 def test_create_training_manager_builds_runtime_configuration():
-    scenario = SCENARIO_CONFIGS["train_3ue_10mhz_wb5"]
+    scenario = SCENARIO_CONFIGS["anchor_5ue_10mhz_wb5_umi_fb"]
 
     manager = create_training_manager(
         scenario,
@@ -22,17 +22,21 @@ def test_create_training_manager_builds_runtime_configuration():
 
     assert manager.sched_config.algorithm == "DqnScheduler"
     assert manager.sched_config.algorithm_kwargs["dqn_max_n_ue"] == 8
-    assert manager.sched_config.algorithm_kwargs["dqn_episode_len_tti"] == 200
+    assert manager.sched_config.algorithm_kwargs["dqn_episode_len_tti"] == 2000
     assert manager.sched_config.algorithm_kwargs["dqn_wb_cqi_report_period_tti"] == 5
     assert manager.base_station.bandwidth == 10
-    assert len(manager.ue_collection.GET_ALL_USERS()) == 3
-    assert manager.sim_config.sim_duration == 200
+    assert manager.base_station.ch_model_type == "UMi"
+    assert manager.base_station.enable_tdl is False
+    assert len(manager.ue_collection.GET_ALL_USERS()) == 5
+    assert manager.sim_config.sim_duration == 2000
+    assert manager.sim_config.mobility_update_interval == 50
     assert manager.sim_config.channel_update_interval == 10
+    assert manager.ue_collection.GET_ALL_USERS()[0].mobility_model.pause_time == 0.0
     assert manager.stats_config.enabled is False
 
 
 def test_build_simulation_manager_factory_applies_runtime_overrides():
-    scenario = SCENARIO_CONFIGS["train_3ue_10mhz_wb5"]
+    scenario = SCENARIO_CONFIGS["anchor_5ue_10mhz_wb5_umi_fb"]
     factory = build_simulation_manager_factory(
         scenario,
         max_n_ue=8,
@@ -53,3 +57,18 @@ def test_build_simulation_manager_factory_applies_runtime_overrides():
     assert manager.sched_config.algorithm_kwargs["dqn_wb_cqi_report_period_tti"] == 10
     assert len(manager.traffic_gen.models) == 5
     assert manager.traffic_gen.models[1].packet_rate == 7000
+
+
+def test_create_training_manager_supports_onoff_runtime_scenario():
+    scenario = SCENARIO_CONFIGS["anchor_5ue_10mhz_wb5_umi_onoff"]
+    manager = create_training_manager(
+        scenario,
+        max_n_ue=8,
+        seed=123,
+    )
+
+    model = manager.traffic_gen.models[1]
+    assert model.get_model_name() == "OnOff"
+    assert model.packet_rate == 5000
+    assert model.duration_on == 0.08
+    assert model.duration_off == 0.04

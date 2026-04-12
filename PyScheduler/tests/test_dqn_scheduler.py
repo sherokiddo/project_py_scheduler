@@ -175,6 +175,18 @@ def test_dqn_scheduler_uses_simulation_context_for_episode_length():
     assert scheduler.observation_adapter.episode_len_tti == 321
 
 
+def test_dqn_scheduler_builds_model_runner_on_cpu_by_default():
+    runner = DqnScheduler._build_policy_runner(
+        model_path="weights.pt",
+        provided_runner=None,
+        deterministic=True,
+        device=DqnScheduler._normalize_inference_device(None),
+    )
+
+    assert runner.device == "cpu"
+    assert runner.inference_device == "cpu"
+
+
 def test_simulation_manager_accepts_dqn_scheduler_config():
     manager = SimulationManager()
     fake_runner = FakeRunner(actions=[0], max_n_ue=4)
@@ -188,6 +200,7 @@ def test_simulation_manager_accepts_dqn_scheduler_config():
             "dqn_episode_len_tti": 100,
             "dqn_strict_observation": True,
             "dqn_deterministic": True,
+            "dqn_inference_device": "cpu",
         },
     )
 
@@ -198,6 +211,7 @@ def test_simulation_manager_accepts_dqn_scheduler_config():
     assert manager.sched_config.algorithm_kwargs["dqn_episode_len_tti"] == 100
     assert manager.sched_config.algorithm_kwargs["dqn_strict_observation"] is True
     assert manager.sched_config.algorithm_kwargs["dqn_deterministic"] is True
+    assert manager.sched_config.algorithm_kwargs["dqn_inference_device"] == "cpu"
 
 
 def test_simulation_manager_rejects_unknown_scheduler_common_parameter():
