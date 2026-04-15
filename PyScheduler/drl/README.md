@@ -26,7 +26,7 @@
 
 В этой папке должны жить все агенты:
 - `lte_dqn_agent.py` — основной LTE DQN агент;
-- `ppo_agent.py` — PPO агент.
+- `agents/lte_ppo_agent.py` — LTE-специфичный PPO агент с action-mask и shared UE encoder.
 
 Файл `dqn_agent.py` в корне пакета был legacy-дубликатом и больше не нужен.
 
