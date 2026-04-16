@@ -8,7 +8,7 @@ from MOBILITY_MODEL import MapBorders
 from SIMULATION_MANAGER import SimulationManager
 from TRAFFIC_MODEL import PoissonModel
 from UE_MODULE import UECollection
-from drl.paths import PYSCHEDULER_DQN_MODEL_PATH
+from drl.paths import PYSCHEDULER_DQN_MODEL_PATH, PYSCHEDULER_PPO_MODEL_PATH
 
 
 def visualize_users_mobility(
@@ -127,7 +127,35 @@ def print_users_stats(ue_collection: UECollection, tti: int, bs: BaseStation, sc
         print(f"\tСмещение            : {displacement} m")
         print("-" * 40)
 
-def sim_with_manager():
+def _resolve_runtime_scheduler_config(scheduler_algorithm: str) -> tuple[Path, dict]:
+    """
+    Вернуть путь к весам и конфигурацию runtime-планировщика DRL.
+    """
+    if scheduler_algorithm == "DqnScheduler":
+        return PYSCHEDULER_DQN_MODEL_PATH, {
+            "dqn_model_path": str(PYSCHEDULER_DQN_MODEL_PATH),
+            "dqn_max_n_ue": 40,
+            "dqn_wb_cqi_report_period_tti": 5,
+            "dqn_deterministic": True,
+            "dqn_inference_device": "cpu",
+        }
+
+    if scheduler_algorithm == "PpoScheduler":
+        return PYSCHEDULER_PPO_MODEL_PATH, {
+            "ppo_model_path": str(PYSCHEDULER_PPO_MODEL_PATH),
+            "ppo_max_n_ue": 40,
+            "ppo_wb_cqi_report_period_tti": 5,
+            "ppo_deterministic": True,
+            "ppo_inference_device": "cpu",
+        }
+
+    raise ValueError(
+        f"Unsupported scheduler algorithm: {scheduler_algorithm}. "
+        "Expected 'DqnScheduler' or 'PpoScheduler'."
+    )
+
+
+def sim_with_manager(scheduler_algorithm: str = "DqnScheduler"):
     """
     Тестовый стенд для проверки работоспособности моделей канала
 
@@ -183,29 +211,25 @@ def sim_with_manager():
     sim.set_ue_collection(ue_collection)
 
     #Путь до DRL-Scheduler
-    dqn_model_path = PYSCHEDULER_DQN_MODEL_PATH
-    if not dqn_model_path.exists():
+    model_path, algorithm_kwargs = _resolve_runtime_scheduler_config(
+        scheduler_algorithm
+    )
+    if not model_path.exists():
         raise FileNotFoundError(
-            f"DQN weights not found: {dqn_model_path}. "
+            f"Weights not found for {scheduler_algorithm}: {model_path}. "
             "Укажите корректный путь к .pt файлу."
         )
 
     # Установка планировщика. Можно передвать параметры, которые
     # поддерживает SchedulerInterface.
     sim.set_scheduler(
-        algorithm="DqnScheduler",
+        algorithm=scheduler_algorithm,
         max_dl_ue_tti=None,
         pcfich=2,
         enable_window=False,
         window_size=4,
         max_dl_cce_allowance=None,
-        algorithm_kwargs={
-            "dqn_model_path": str(dqn_model_path),
-            "dqn_max_n_ue": 40,
-            "dqn_wb_cqi_report_period_tti": 5,
-            "dqn_deterministic": True,
-            "dqn_inference_device": "cpu",
-        },
+        algorithm_kwargs=algorithm_kwargs,
     )
 
     # Настраиваем модели для каждого UE
@@ -373,4 +397,5 @@ def sim_with_manager_qos():
 
 if __name__ == "__main__":
     sim_with_manager()
+    # sim_with_manager(scheduler_algorithm="PpoScheduler")
     #sim_with_manager_qos()

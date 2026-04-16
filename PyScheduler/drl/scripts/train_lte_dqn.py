@@ -15,23 +15,23 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from drl.agents.lte_dqn_agent import LTEDQNAgent, MaskedReplayBuffer
-from drl.envs.lte_padded_env import PaddedLTESchedulerEnv
+from drl.agents.lte_dqn_agent   import LTEDQNAgent, MaskedReplayBuffer
+from drl.envs.lte_padded_env    import PaddedLTESchedulerEnv
 from drl.envs.lte_scheduler_env import LTESchedulerEnv
-from drl.paths import PLAYGROUND_DQN_RUN_DIR
+from drl.paths                  import PLAYGROUND_DQN_RUN_DIR
 
 
 MAX_N_UE = 40
 
 SCENARIO_CONFIGS = {
-    "train_3ue_10mhz_wb5": {"n_ue": 3, "n_rb_dl": 50, "wb_cqi_report_period_tti": 5},
-    "mid_8ue_10mhz_wb5": {"n_ue": 8, "n_rb_dl": 50, "wb_cqi_report_period_tti": 5},
-    "mid_16ue_10mhz_wb5": {"n_ue": 16, "n_rb_dl": 50, "wb_cqi_report_period_tti": 5},
-    "target_40ue_10mhz_wb5": {"n_ue": 40, "n_rb_dl": 50, "wb_cqi_report_period_tti": 5},
-    "bw_16ue_5mhz_wb5": {"n_ue": 16, "n_rb_dl": 25, "wb_cqi_report_period_tti": 5},
-    "bw_16ue_20mhz_wb5": {"n_ue": 16, "n_rb_dl": 100, "wb_cqi_report_period_tti": 5},
-    "cqi_16ue_10mhz_wb1": {"n_ue": 16, "n_rb_dl": 50, "wb_cqi_report_period_tti": 1},
-    "cqi_16ue_10mhz_wb10": {"n_ue": 16, "n_rb_dl": 50, "wb_cqi_report_period_tti": 10},
+    "train_3ue_10mhz_wb5":      {"n_ue": 3,  "n_rb_dl": 50, "wb_cqi_report_period_tti": 5},
+    "mid_8ue_10mhz_wb5":        {"n_ue": 8,  "n_rb_dl": 50, "wb_cqi_report_period_tti": 5},
+    "mid_16ue_10mhz_wb5":       {"n_ue": 16, "n_rb_dl": 50, "wb_cqi_report_period_tti": 5},
+    "target_40ue_10mhz_wb5":    {"n_ue": 40, "n_rb_dl": 50, "wb_cqi_report_period_tti": 5},
+    "bw_16ue_5mhz_wb5":         {"n_ue": 16, "n_rb_dl": 25, "wb_cqi_report_period_tti": 5},
+    "bw_16ue_20mhz_wb5":        {"n_ue": 16, "n_rb_dl": 100, "wb_cqi_report_period_tti": 5},
+    "cqi_16ue_10mhz_wb1":       {"n_ue": 16, "n_rb_dl": 50, "wb_cqi_report_period_tti": 1},
+    "cqi_16ue_10mhz_wb10":      {"n_ue": 16, "n_rb_dl": 50, "wb_cqi_report_period_tti": 10},
 }
 
 CURRICULUM_STAGES = (
@@ -210,8 +210,8 @@ def main():
     )
     all_scenario_keys = tuple(dict.fromkeys(train_scenario_keys + EVAL_SCENARIO_KEYS))
 
-    train_env_pool = build_env_pool(all_scenario_keys, max_n_ue=MAX_N_UE, seed_base=0)
-    eval_env_pool = build_env_pool(EVAL_SCENARIO_KEYS, max_n_ue=MAX_N_UE, seed_base=10_000)
+    train_env_pool  = build_env_pool(all_scenario_keys, max_n_ue=MAX_N_UE, seed_base=0)
+    eval_env_pool   = build_env_pool(EVAL_SCENARIO_KEYS, max_n_ue=MAX_N_UE, seed_base=10_000)
 
     bootstrap_key = CURRICULUM_STAGES[0][1][0]
     bootstrap_env = train_env_pool[bootstrap_key]
@@ -230,11 +230,11 @@ def main():
     )
     replay_buffer = MaskedReplayBuffer(capacity=100_000)
 
-    total_env_steps = 200_000
-    learning_starts = 5_000
-    batch_size = 128
-    gradient_steps = 1
-    target_update_freq = 2_000
+    total_env_steps     = 200_000
+    learning_starts     = 5_000
+    batch_size          = 128
+    gradient_steps      = 1
+    target_update_freq  = 2_000
 
     rng = np.random.default_rng(12345)
     global_step = 0

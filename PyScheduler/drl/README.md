@@ -7,13 +7,20 @@
 - baseline scheduler-ы продолжают жить в общем pipeline;
 - вся DRL-специфика вынесена в отдельный слой `PyScheduler/drl`.
 
+Отдельно важно:
+- `SCHEDULER.py` остается точкой фабричного входа;
+- общий DRL runtime-pipeline не вшивается в `SCHEDULER.py`, а живет в `PyScheduler/drl/drl_scheduler.py`;
+- это позволяет подключать новые DRL-алгоритмы без раздувания core-модуля планировщиков.
+
 ## Структура
 
 Корень пакета:
 - `simulation_bridge.py` — мост между runtime симулятора и DRL-слоем;
 - `playground_adapter.py` — сборка observation/action-mask в формате `drl_playground`;
-- `dqn_scheduler.py` — inference-only scheduler `DqnScheduler` для запуска модели внутри реальной симуляции;
-- `dqn_model_runner.py` — рантайм-обертка для загрузки и вызова DQN-модели.
+- `drl_scheduler.py` — общий базовый runtime-layer `DrlScheduler` для DRL-планировщиков;
+- `dqn_scheduler.py` — DQN-специализация поверх `DrlScheduler`;
+- `ppo_scheduler.py` — PPO-специализация поверх `DrlScheduler`;
+- `model_runners.py` — общий OOP-модуль с runtime-runner'ами для torch-агентов.
 
 Подпакеты:
 - `agents/` — агенты DRL;
@@ -64,10 +71,12 @@ Standalone env из `envs/`:
 
 В `scripts/` теперь есть два разных train-path:
 - `train_lte_dqn_pyscheduler.py` — основной путь обучения на реальном runtime через `PySchedulerLteEnv`;
+- `train_lte_ppo_scheduler.py` — PPO-обучение на том же runtime-env c последующей загрузкой весов в `PpoScheduler`;
 - `train_lte_dqn.py` — legacy playground-path на standalone env.
 
 Идея простая:
 - production-близкое обучение делаем через `train_lte_dqn_pyscheduler.py`;
+- PPO исследуем через `train_lte_ppo_scheduler.py` и можем прогонять его через тот же runtime pipeline;
 - быстрый baseline и отладку — через `train_lte_dqn.py`.
 
 Текущий runtime-baseline для обучения собран вокруг реального сценария из `TEST_MODULES.py`:
@@ -107,6 +116,22 @@ manager.set_scheduler(
 
 Это позволяет позже добавлять `PpoScheduler` и другие DRL-алгоритмы без раздувания интерфейса `SimulationManager`.
 
+Аналогично для PPO:
+
+```python
+manager.set_scheduler(
+    algorithm="PpoScheduler",
+    max_dl_ue_tti=16,
+    algorithm_kwargs={
+        "ppo_model_path": "PyScheduler/drl/runs/lte_ppo/lte_ppo_policy.pt",
+        "ppo_max_n_ue": 40,
+        "ppo_wb_cqi_report_period_tti": 5,
+        "ppo_deterministic": True,
+        "ppo_inference_device": "cpu",
+    },
+)
+```
+
 Параметр `dqn_inference_device` нужен именно для runtime-инференса внутри симулятора:
 - по умолчанию `DqnScheduler` использует `cpu`;
 - это сделано специально, потому что policy вызывается много раз за один TTI на очень маленьких observation;
@@ -133,6 +158,18 @@ manager.set_scheduler(
 python PyScheduler/drl/scripts/train_lte_dqn_pyscheduler.py --run-dir PyScheduler/drl/runs/lte_dqn --total-env-steps 1000000 --learning-starts 25000 --target-update-freq 10000 --seed 42 --bootstrap-scenario anchor_5ue_10mhz_wb5_umi_fb
 ```
 
+PPO-path на той же env:
+
+```bash
+python PyScheduler/drl/scripts/train_lte_ppo_scheduler.py --run-dir PyScheduler/drl/runs/lte_ppo --total-env-steps 750000 --rollout-steps 4096 --seed 42 --bootstrap-scenario anchor_5ue_10mhz_wb5_umi_fb
+```
+
+Для smoke-запуска удобнее сразу ограничить eval и оставить его на CPU:
+
+```bash
+python PyScheduler/drl/scripts/train_lte_ppo_scheduler.py --run-dir PyScheduler/drl/runs/lte_ppo_smoke --total-env-steps 40000 --rollout-steps 2048 --eval-device cpu --eval-scenario-limit 3 --seed 42 --bootstrap-scenario anchor_5ue_10mhz_wb5_umi_fb
+```
+
 Скрипт печатает по эпизодам:
 - train-сценарий;
 - число UE, bandwidth и период CQI;
@@ -155,7 +192,14 @@ python PyScheduler/drl/scripts/train_lte_dqn.py
 
 Артефакты по умолчанию:
 - runtime train-script пишет в `PyScheduler/drl/runs/lte_dqn/`;
+- runtime PPO train-script пишет в `PyScheduler/drl/runs/lte_ppo/`;
 - playground train-script пишет в `PyScheduler/drl/runs/lte_dqn_playground/`.
+
+Для `train_lte_ppo_scheduler.py` eval теперь:
+- по умолчанию идет на `cpu`, даже если train шел на `cuda`;
+- печатает явный прогресс по сценариям;
+- может быть ограничен флагом `--eval-scenario-limit`;
+- может быть полностью отключен через `--eval-scenario-limit 0`.
 
 Это сделано специально, чтобы:
 - не засорять корень репозитория служебными файлами обучения;
@@ -177,6 +221,12 @@ python PyScheduler/drl/scripts/train_lte_dqn.py
 python -m pytest PyScheduler/tests/test_dqn_end_to_end_optional.py -q
 ```
 
+PPO runtime smoke:
+
+```bash
+python -m pytest PyScheduler/tests/test_ppo_end_to_end_optional.py -q
+```
+
 Для ручного инференса через существующий сценарий:
 - обучите или положите checkpoint в `PyScheduler/drl/runs/lte_dqn/lte_dqn_shared_q.pt`;
 - запустите `python PyScheduler/TEST_MODULES.py`.
@@ -184,3 +234,7 @@ python -m pytest PyScheduler/tests/test_dqn_end_to_end_optional.py -q
 `TEST_MODULES.py` теперь по умолчанию смотрит именно в локальную папку `PyScheduler/drl/runs/lte_dqn/`.
 Также в нем явно выставлен `dqn_inference_device="cpu"`, чтобы не уехать на GPU и не ухудшить scheduler latency.
 Сам benchmark в `TEST_MODULES.py` теперь выровнен под runtime-train baseline: `UMi` и `enable_tdl=False`.
+
+Для PPO на том же сценарии:
+- положите checkpoint в `PyScheduler/drl/runs/lte_ppo/lte_ppo_policy.pt`;
+- вызовите `sim_with_manager(scheduler_algorithm="PpoScheduler")` в `PyScheduler/TEST_MODULES.py`.

@@ -1,5 +1,6 @@
 import os
 import sys
+from pathlib import Path
 
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -7,6 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from drl.runtime_scenario_factory import (
     SCENARIO_CONFIGS,
     build_simulation_manager_factory,
+    create_ppo_inference_manager,
     create_training_manager,
 )
 
@@ -72,3 +74,24 @@ def test_create_training_manager_supports_onoff_runtime_scenario():
     assert model.packet_rate == 5000
     assert model.duration_on == 0.08
     assert model.duration_off == 0.04
+
+
+def test_create_ppo_inference_manager_builds_runtime_configuration():
+    scenario = SCENARIO_CONFIGS["anchor_5ue_10mhz_wb5_umi_fb"]
+    weights_path = Path(__file__).resolve()
+
+    manager = create_ppo_inference_manager(
+        scenario,
+        model_path=weights_path,
+        max_n_ue=8,
+        seed=123,
+        deterministic=True,
+        inference_device="cpu",
+    )
+
+    assert manager.sched_config.algorithm == "PpoScheduler"
+    assert manager.sched_config.algorithm_kwargs["ppo_model_path"] == str(weights_path)
+    assert manager.sched_config.algorithm_kwargs["ppo_max_n_ue"] == 8
+    assert manager.sched_config.algorithm_kwargs["ppo_wb_cqi_report_period_tti"] == 5
+    assert manager.sched_config.algorithm_kwargs["ppo_deterministic"] is True
+    assert manager.sched_config.algorithm_kwargs["ppo_inference_device"] == "cpu"

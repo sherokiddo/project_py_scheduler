@@ -264,6 +264,11 @@ class SchedulerInterface:
 
             schedulers['DqnScheduler'] = DqnScheduler
 
+        if algorithm == 'PpoScheduler':
+            from drl.ppo_scheduler import PpoScheduler
+
+            schedulers['PpoScheduler'] = PpoScheduler
+
         if algorithm not in schedulers:
             valid = ', '.join(schedulers.keys())
             raise ValueError(
@@ -289,6 +294,7 @@ class SchedulerInterface:
                 'FD_FGS',
                 'FD_FF',
                 'DqnScheduler',
+                'PpoScheduler',
                 ]
 
     def __init__(self, lte_grid, bs,

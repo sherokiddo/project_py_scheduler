@@ -433,6 +433,54 @@ def create_inference_manager(
     return sim
 
 
+def create_ppo_inference_manager(
+    scenario: RuntimeTrainingScenario,
+    *,
+    model_path: str | Path,
+    max_n_ue: int,
+    seed: Optional[int] = None,
+    deterministic: bool = True,
+    inference_device: str = "cpu",
+    options: Optional[Dict] = None,
+) -> SimulationManager:
+    """
+    Собрать `SimulationManager` для инференса обученной PPO-модели внутри PyScheduler.
+    """
+
+    resolved_scenario = _apply_scenario_options(scenario, options)
+    resolved_model_path = Path(model_path)
+
+    if not resolved_model_path.exists():
+        raise FileNotFoundError(f"PPO weights not found: {resolved_model_path}")
+
+    sim = create_training_manager(
+        resolved_scenario,
+        max_n_ue=max_n_ue,
+        seed=seed,
+    )
+
+    algorithm_kwargs = dict(sim.sched_config.algorithm_kwargs or {})
+    algorithm_kwargs.pop("dqn_policy_runner", None)
+    algorithm_kwargs["ppo_model_path"] = str(resolved_model_path)
+    algorithm_kwargs["ppo_max_n_ue"] = int(max_n_ue)
+    algorithm_kwargs["ppo_wb_cqi_report_period_tti"] = int(
+        resolved_scenario.wb_cqi_report_period_tti
+    )
+    algorithm_kwargs["ppo_deterministic"] = bool(deterministic)
+    algorithm_kwargs["ppo_inference_device"] = str(inference_device)
+
+    sim.set_scheduler(
+        algorithm="PpoScheduler",
+        max_dl_ue_tti=resolved_scenario.max_dl_ue_tti,
+        pcfich=int(resolved_scenario.pcfich),
+        enable_window=bool(resolved_scenario.enable_window),
+        window_size=int(resolved_scenario.window_size),
+        max_dl_cce_allowance=resolved_scenario.max_dl_cce_allowance,
+        algorithm_kwargs=algorithm_kwargs,
+    )
+    return sim
+
+
 def build_simulation_manager_factory(
     scenario: RuntimeTrainingScenario,
     *,
