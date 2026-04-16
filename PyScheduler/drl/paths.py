@@ -9,7 +9,7 @@ DRL_DIR = Path(__file__).resolve().parent
 DRL_RUNS_DIR = DRL_DIR / "runs"
 
 PYSCHEDULER_DQN_RUN_DIR = DRL_RUNS_DIR / "lte_dqn"
-PYSCHEDULER_PPO_RUN_DIR = DRL_RUNS_DIR / "lte_ppo"
+PYSCHEDULER_PPO_RUN_DIR = DRL_RUNS_DIR / "lte_ppo_tune_06_reference"
 PLAYGROUND_DQN_RUN_DIR = DRL_RUNS_DIR / "lte_dqn_playground"
 
 PYSCHEDULER_DQN_MODEL_PATH = PYSCHEDULER_DQN_RUN_DIR / "lte_dqn_shared_q.pt"

@@ -396,6 +396,6 @@ def sim_with_manager_qos():
 
 
 if __name__ == "__main__":
-    sim_with_manager()
-    # sim_with_manager(scheduler_algorithm="PpoScheduler")
+    # sim_with_manager()
+    sim_with_manager(scheduler_algorithm="PpoScheduler")
     #sim_with_manager_qos()
