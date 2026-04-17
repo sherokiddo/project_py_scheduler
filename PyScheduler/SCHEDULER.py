@@ -110,6 +110,7 @@ import time
 from dataclasses import dataclass
 from BS_MODULE import BaseStation
 from typing import Dict, List, Optional
+from HARQ_MANAGER import HARQIface
 
 @dataclass(slots=True)
 class SchedulingGrant:
@@ -641,9 +642,30 @@ class SchedulerInterface:
                 user['bs_buffer_size'] = buffer_size
                 eligible.append(user)
 
-            # TODO: Проверка HARQ процессов
-            # if harq_manager.all_processes_busy(ue_id):  # Все процессы заняты
-            #   continue  # В режиме ретрансляции HARQ не планируем
+            # CHECK 4: Проверка HARQ процессов
+            harq_status = self.check_HarqProcess(user['UE_ID'], HARQIface)
+
+            # RETRANSMISSION имеет высший приоритет
+            if harq_status["state"] == "WAIT_RETX":
+                user['mark_ue_retx'] = True
+                user['harq_pid'] = harq_status["process_id"]
+
+            # Есть свободный процесс -> новый TX
+            elif harq_status["state"] == "IDLE":
+                user['mark_ue_retx'] = False
+                user['harq_pid'] = harq_status["process_id"]
+
+            # Все процессы заняты ожиданием ACK
+            elif harq_status["state"] == "WAIT_ACK":
+                continue
+
+            # Ошибка процесса / превышен max_retx
+            elif harq_status["state"] == "FAILED":
+                continue
+
+            # NEW_TX (если где-то заранее зарезервирован)
+            elif harq_status["state"] == "NEW_TX":
+                continue
 
             # TODO: Проверка DRX state
             # if user['ue'].drx_state == 'SLEEP':  # UE в режиме сна

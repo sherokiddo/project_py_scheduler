@@ -5,8 +5,11 @@ from typing import Dict, List, Optional
 
 
 class Stats_process(Enum):
-    IDLE = "IDLE"
-    WAIT_RETX = "WAIT_RETX"
+    IDLE = "IDLE"              # свободен
+    NEW_TX = "NEW_TX"          # новая передача запланирована
+    WAIT_ACK = "WAIT_ACK"      # ждём ACK/NACK
+    WAIT_RETX = "WAIT_RETX"    # требуется ретрансляция
+    FAILED = "FAILED"          # превышен max_retx
 
 
 @dataclass
