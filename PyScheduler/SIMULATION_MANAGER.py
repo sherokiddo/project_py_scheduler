@@ -1301,6 +1301,12 @@ class SimulationManager:
             **scheduler_kwargs,
         )
 
+        scheduler_initializer = getattr(
+            self.scheduler, "initialize_policy_runtime", None
+        )
+        if callable(scheduler_initializer):
+            scheduler_initializer()
+
         if self.drl_bridge is not None:
             runtime = DRLSimulationRuntime(
                 simulation_manager=self,

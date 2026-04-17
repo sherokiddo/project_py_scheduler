@@ -429,6 +429,8 @@ class SchedulerInterface:
             return self._empty_result()
 
         # ЭТАП 6: PDSCH allocation
+        # TODO: Оптимизировать allocator: кэшировать RBG->RB indices/width и CQI->bits_per_rb,
+        # чтобы не пересчитывать FD/PF метрику и служебные lookup в каждом шаге по RBG.
         allocation = self._allocate_pdsch(tti, ues_with_pdcch, eligible_ues)
 
         # ЭТАП 7: Buffer processing

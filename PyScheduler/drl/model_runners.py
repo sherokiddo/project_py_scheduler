@@ -1,17 +1,18 @@
 """
-Унифицированные runtime-runner'ы для DRL-моделей внутри PyScheduler.
+Unified runtime runners for DRL models inside PyScheduler.
 """
 
-from typing import Any, Optional
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Optional, Sequence
 
 import numpy as np
 
 
 class BaseTorchAgentRunner:
     """
-    Общая рантайм-обертка над torch-агентом.
-
-    Подклассы отвечают только за ленивую загрузку конкретного типа агента.
+    Common lazy-loading runtime wrapper for torch agents.
     """
 
     def __init__(
@@ -29,7 +30,7 @@ class BaseTorchAgentRunner:
 
         if self._agent is None and not self.model_path:
             raise ValueError(
-                f"Для {self.__class__.__name__} необходимо передать либо model_path, либо agent."
+                f"{self.__class__.__name__} requires either model_path or agent."
             )
 
     @property
@@ -84,18 +85,15 @@ class BaseTorchAgentRunner:
             )
         )
 
+    def initialize(self) -> None:
+        _ = self.agent
+
     @staticmethod
     def _load_agent(*, path: str, device: Optional[Any]) -> Any:
-        raise NotImplementedError(
-            "BaseTorchAgentRunner._load_agent() должен быть реализован в подклассе."
-        )
+        raise NotImplementedError
 
 
 class DQNModelRunner(BaseTorchAgentRunner):
-    """
-    Runtime-runner для DQN-модели.
-    """
-
     @staticmethod
     def _load_agent(*, path: str, device: Optional[Any]) -> Any:
         from drl.agents.lte_dqn_agent import LTEDQNAgent
@@ -104,10 +102,6 @@ class DQNModelRunner(BaseTorchAgentRunner):
 
 
 class PPOModelRunner(BaseTorchAgentRunner):
-    """
-    Runtime-runner для PPO-модели.
-    """
-
     @staticmethod
     def _load_agent(*, path: str, device: Optional[Any]) -> Any:
         from drl.agents.lte_ppo_agent import LTEPPOAgent
@@ -117,10 +111,7 @@ class PPOModelRunner(BaseTorchAgentRunner):
 
 class PPORankerModelRunner(BaseTorchAgentRunner):
     """
-    Runtime-runner для PPO ranker-модели.
-
-    В отличие от per-RBG runner'ов, ranker возвращает не индекс действия, а
-    полный score-вектор по всем UE текущего TTI.
+    Runtime runner for PPO ranker torch model.
     """
 
     @staticmethod
@@ -146,3 +137,87 @@ class PPORankerModelRunner(BaseTorchAgentRunner):
             ),
             dtype=np.float32,
         )
+
+
+class CppPPORankerModelRunner:
+    """
+    Runtime runner for PPO ranker through C++/LibTorch backend.
+    """
+
+    def __init__(
+        self,
+        *,
+        model_path: str,
+        runtime_library_path: str,
+        dll_search_paths: Optional[Sequence[str | Path]] = None,
+        deterministic: bool = True,
+        max_n_ue: Optional[int] = None,
+    ) -> None:
+        self.model_path = str(model_path)
+        self.runtime_library_path = str(runtime_library_path)
+        self.dll_search_paths = (
+            None
+            if dll_search_paths is None
+            else [str(Path(path)) for path in dll_search_paths]
+        )
+        self.deterministic = bool(deterministic)
+        self._max_n_ue = None if max_n_ue is None else int(max_n_ue)
+        self._bridge = None
+
+    @property
+    def bridge(self) -> Any:
+        if self._bridge is None:
+            from drl.cpp_ranker_bridge import CppPPORankerBridge
+
+            self._bridge = CppPPORankerBridge(
+                runtime_library_path=self.runtime_library_path,
+                model_path=self.model_path,
+                dll_search_paths=self.dll_search_paths,
+            )
+        return self._bridge
+
+    @property
+    def inference_device(self) -> str:
+        return "cpu_cpp_libtorch"
+
+    @property
+    def max_n_ue(self) -> Optional[int]:
+        return self._max_n_ue
+
+    @property
+    def ue_feature_dim(self) -> Optional[int]:
+        return None
+
+    @property
+    def context_dim(self) -> Optional[int]:
+        return None
+
+    def predict(
+        self,
+        obs: np.ndarray,
+        action_mask: np.ndarray,
+        deterministic: Optional[bool] = None,
+    ) -> np.ndarray:
+        use_deterministic = (
+            self.deterministic if deterministic is None else bool(deterministic)
+        )
+        if not use_deterministic:
+            raise ValueError(
+                "CppPPORankerModelRunner supports only deterministic inference."
+            )
+
+        return np.asarray(
+            self.bridge.predict_scores(
+                obs=np.asarray(obs, dtype=np.float32),
+                action_mask=np.asarray(action_mask, dtype=bool),
+            ),
+            dtype=np.float32,
+        )
+
+    def initialize(self) -> None:
+        _ = self.bridge
+
+    def close(self) -> None:
+        if self._bridge is not None:
+            self._bridge.close()
+            self._bridge = None

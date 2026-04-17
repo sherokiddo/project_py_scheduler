@@ -20,13 +20,19 @@
 - `drl_scheduler.py` — общий базовый runtime-layer `DrlScheduler` для DRL-планировщиков;
 - `dqn_scheduler.py` — DQN-специализация поверх `DrlScheduler`;
 - `ppo_scheduler.py` — PPO-специализация поверх `DrlScheduler`;
-- `ppo_ranker_scheduler.py` — TTI-level PPO ranker для runtime-гибридного FD/PF allocation;
+- `ppo_ranker_scheduler.py` — TTI-level PPO ranker, где ML работает как priority/policy engine, а allocator отдельно завершает runtime-гибридный FD/PF allocation;
+- `torchscript_ranker_export.py` — inference-only wrapper и export helper для TorchScript/LibTorch ranker path;
+- `cpp_ranker_bridge.py` — Python `ctypes`-мост к C++/LibTorch ranker runtime;
+- `cpp_ranker_runtime/` — C++ DLL для deterministic TorchScript ranker inference внутри Python runtime;
+- `libtorch_ranker_smoke.py` — подготовка sample-pack для сверки Python ranker и LibTorch inference;
 - `model_runners.py` — общий OOP-модуль с runtime-runner'ами для torch-агентов.
 
 Подпакеты:
 - `agents/` — агенты DRL;
 - `envs/` — обучающие среды;
 - `scripts/` — сценарии обучения, оценки и визуализации.
+- `cpp_ranker_runtime/` — production-oriented DLL runtime для вызова TorchScript ranker через LibTorch.
+- `cpp_libtorch_smoke/` — минимальный C++ smoke-test для проверки TorchScript ranker через LibTorch.
 
 ## Что где живет
 
@@ -45,7 +51,7 @@
 
 Основная runtime-среда:
 - `pyscheduler_lte_env.py` — simulation-backed env поверх реального runtime `PyScheduler`.
-- `pyscheduler_lte_ranker_env.py` — simulation-backed env для ranker-подхода, где одно действие задает score UE на весь TTI, а allocation завершается через hybrid FD/PF метрику.
+- `pyscheduler_lte_ranker_env.py` — simulation-backed env для ranker-подхода, где одно действие задает score UE на весь TTI на priority-stage, а allocation затем завершается через hybrid FD/PF метрику.
 
 Legacy standalone-среды:
 - `lte_scheduler_env.py` — standalone LTE env с собственной внутренней логикой;
@@ -86,6 +92,8 @@ Standalone env из `envs/`:
 - `train_lte_dqn_pyscheduler.py` — основной путь обучения на реальном runtime через `PySchedulerLteEnv`;
 - `train_lte_ppo_scheduler.py` — PPO-обучение на том же runtime-env c последующей загрузкой весов в `PpoScheduler`;
 - `train_lte_ppo_ranker.py` — PPO-обучение ranker-варианта на `PySchedulerLteRankerEnv`;
+- `export_ppo_ranker_torchscript.py` — экспорт PPO ranker checkpoint в TorchScript для LibTorch/C++ inference;
+- `prepare_ppo_ranker_libtorch_smoke.py` — подготовка sample-pack для C++ smoke-test;
 - `plot_training_metrics.py` — постобработка сохраненных CSV в графики и summary;
 - `train_lte_dqn.py` — legacy playground-path на standalone env.
 
@@ -165,6 +173,33 @@ manager.set_scheduler(
     },
 )
 ```
+
+Для PPO ranker через C++ backend:
+
+```python
+manager.set_scheduler(
+    algorithm="PpoRankerScheduler",
+    max_dl_ue_tti=16,
+    algorithm_kwargs={
+        "ppo_ranker_model_path": "PyScheduler/drl/runs/lte_ppo_ranker/lte_ppo_ranker_policy.ts",
+        "ppo_ranker_backend": "cpp",
+        "ppo_ranker_runtime_library_path": "PyScheduler/drl/cpp_ranker_runtime/build/Release/ppo_ranker_runtime.dll",
+        "ppo_ranker_runtime_dll_search_paths": [
+            "D:/libtorch_win_cpu/libtorch/lib",
+        ],
+        "ppo_ranker_max_n_ue": 40,
+        "ppo_ranker_wb_cqi_report_period_tti": 5,
+        "ppo_ranker_deterministic": True,
+        "ppo_ranker_rank_weight_beta": 0.3,
+        "ppo_ranker_pf_epsilon_bps": 1e-6,
+    },
+)
+```
+
+Важно:
+- для backend `cpp` нужен именно TorchScript-файл `.ts`, а не training checkpoint `.pt`;
+- `ppo_ranker_runtime_library_path` указывает на собранную DLL runtime;
+- `ppo_ranker_runtime_dll_search_paths` должен включать каталог с LibTorch DLL, иначе Windows не найдет `torch_cpu.dll`, `c10.dll` и связанные зависимости.
 
 Параметр `dqn_inference_device` нужен именно для runtime-инференса внутри симулятора:
 - по умолчанию `DqnScheduler` использует `cpu`;
@@ -262,6 +297,118 @@ python PyScheduler/drl/scripts/plot_training_metrics.py --run-dir PyScheduler/dr
 - `eval_summary.png` — сводка deterministic eval по сценариям;
 - `summary.json` — короткий агрегированный итог run.
 
+Экспортировать PPO ranker в TorchScript для LibTorch:
+
+```bash
+python PyScheduler/drl/scripts/export_ppo_ranker_torchscript.py --checkpoint-path PyScheduler/drl/runs/lte_ppo_ranker/lte_ppo_ranker_policy.pt --output-path PyScheduler/drl/runs/lte_ppo_ranker/lte_ppo_ranker_policy.ts --device cpu
+```
+
+Скрипт сохраняет:
+- `lte_ppo_ranker_policy.ts` — inference-only TorchScript artifact;
+- `lte_ppo_ranker_policy.meta.json` — metadata с размерностями входа/выхода и зафиксированным inference-контрактом.
+
+TorchScript ranker экспортирует только deterministic inference-path:
+- input: `obs [batch, obs_dim]`, `float32`;
+- input: `action_mask [batch, max_n_ue]`, `bool`;
+- output: `score_vector [batch, max_n_ue]`, `float32`.
+
+Подготовить sample-pack для LibTorch smoke-test:
+
+```bash
+python PyScheduler/drl/scripts/prepare_ppo_ranker_libtorch_smoke.py --checkpoint-path PyScheduler/drl/runs/lte_ppo_ranker/lte_ppo_ranker_policy.pt --torchscript-path PyScheduler/drl/runs/lte_ppo_ranker/lte_ppo_ranker_policy.ts --output-dir PyScheduler/drl/runs/lte_ppo_ranker/libtorch_smoke --scenario-key anchor_5ue_10mhz_wb5_umi_fb --seed 123
+```
+
+Скрипт сохраняет:
+- `obs.txt`;
+- `action_mask.txt`;
+- `expected_scores.txt`;
+- `smoke_manifest.json`.
+
+Это нужно для smoke-проверки C++ path:
+- Python снимает реальное `obs/action_mask` из runtime-based ranker env;
+- Python вычисляет эталонный deterministic `score_vector`;
+- C++/LibTorch загружает тот же `.ts` и сравнивает свой выход с `expected_scores.txt`.
+
+Минимальный C++ smoke-test лежит в `PyScheduler/drl/cpp_libtorch_smoke/`.
+Для сборки нужен `CMake` и Windows toolchain (`cl`) или совместимый C++ компилятор.
+Для Windows практичнее использовать отдельный CPU-only LibTorch distribution, а не `Torch_DIR` из Python wheel.
+В рабочем варианте `Torch_DIR` нужно направлять в каталог вида:
+- `D:/libtorch_win_cpu/libtorch/share/cmake/Torch`
+
+Перед запуском `.exe` Windows также должен видеть LibTorch DLL:
+- `c10.dll`;
+- `torch_cpu.dll`;
+- и остальные `.dll` из `<libtorch>/lib`.
+
+Самый простой вариант для smoke/benchmark-прогона:
+- временно добавить `<libtorch>/lib` в `PATH` в том же терминале.
+
+Пример последовательности:
+
+```bash
+cmake --fresh -S PyScheduler/drl/cpp_libtorch_smoke -B PyScheduler/drl/cpp_libtorch_smoke/build -DTorch_DIR=D:/libtorch_win_cpu/libtorch/share/cmake/Torch
+cmake --build PyScheduler/drl/cpp_libtorch_smoke/build --config Release
+set PATH=D:\libtorch_win_cpu\libtorch\lib;%PATH%
+PyScheduler/drl/cpp_libtorch_smoke/build/Release/ppo_ranker_libtorch_smoke.exe PyScheduler/drl/runs/lte_ppo_ranker/lte_ppo_ranker_policy.ts PyScheduler/drl/runs/lte_ppo_ranker/libtorch_smoke/obs.txt PyScheduler/drl/runs/lte_ppo_ranker/libtorch_smoke/action_mask.txt PyScheduler/drl/runs/lte_ppo_ranker/libtorch_smoke/expected_scores.txt
+```
+
+Ожидаемый результат smoke-теста:
+- печать первых значений `expected_scores` и `actual_scores`;
+- `max_abs_error` и `mean_abs_error`;
+- финальная строка `Smoke-test PASSED`.
+
+## C++ runtime для TEST_MODULES.py
+
+После correctness smoke можно поднять тот же TorchScript ranker прямо в runtime-симуляции.
+
+Сборка DLL:
+
+```bash
+cmake --fresh -S PyScheduler/drl/cpp_ranker_runtime -B PyScheduler/drl/cpp_ranker_runtime/build -DTorch_DIR=D:/libtorch_win_cpu/libtorch/share/cmake/Torch
+cmake --build PyScheduler/drl/cpp_ranker_runtime/build --config Release
+```
+
+На Windows перед запуском Python-процесса LibTorch DLL должны быть видимы:
+- либо через `ppo_ranker_runtime_dll_search_paths`;
+- либо через `PATH` в том же терминале.
+
+Пример ручного прогона через `TEST_MODULES.py`:
+
+```python
+sim_with_manager(
+    scheduler_algorithm="PpoRankerScheduler",
+    runtime_backend="cpp",
+    runtime_model_path="PyScheduler/drl/runs/lte_ppo_ranker/lte_ppo_ranker_policy.ts",
+    runtime_library_path="PyScheduler/drl/cpp_ranker_runtime/build/Release/ppo_ranker_runtime.dll",
+    runtime_dll_search_paths=[
+        "D:/libtorch_win_cpu/libtorch/lib",
+    ],
+)
+```
+
+Этот path работает так:
+- `TEST_MODULES.py` собирает обычный runtime-сценарий;
+- `PpoRankerScheduler` формирует observation и action-mask как раньше;
+- `CppPPORankerModelRunner` вызывает DLL через `ctypes`;
+- C++ runtime делает deterministic forward TorchScript ranker на CPU;
+- scheduler получает `score_vector` по UE и продолжает allocation в штатном pipeline PyScheduler.
+
+То есть core-логика симулятора и allocator не переписываются:
+- меняется только backend инференса policy;
+- observation contract и scheduler contract остаются прежними.
+
+Тот же бинарник умеет работать и как чистый micro-benchmark inference-path без симулятора:
+
+```bash
+PyScheduler/drl/cpp_libtorch_smoke/build/Release/ppo_ranker_libtorch_smoke.exe PyScheduler/drl/runs/lte_ppo_ranker/lte_ppo_ranker_policy.ts PyScheduler/drl/runs/lte_ppo_ranker/libtorch_smoke/obs.txt PyScheduler/drl/runs/lte_ppo_ranker/libtorch_smoke/action_mask.txt PyScheduler/drl/runs/lte_ppo_ranker/libtorch_smoke/expected_scores.txt --benchmark 10000 --warmup 500
+```
+
+Benchmark-режим:
+- сначала прогоняет обычную correctness smoke-проверку;
+- затем делает `warmup`;
+- затем меряет только `forward` по тем же `obs/action_mask`, без чтения файлов и без симулятора;
+- печатает `mean_us`, `min_us`, `p50_us`, `p95_us`, `max_us`.
+
 Артефакты по умолчанию:
 - runtime train-script пишет в `PyScheduler/drl/runs/lte_dqn/`;
 - runtime PPO train-script пишет в `PyScheduler/drl/runs/lte_ppo/`;
@@ -311,3 +458,24 @@ python -m pytest PyScheduler/tests/test_ppo_end_to_end_optional.py -q
 Для PPO на том же сценарии:
 - положите checkpoint в `PyScheduler/drl/runs/lte_ppo/lte_ppo_policy.pt`;
 - вызовите `sim_with_manager(scheduler_algorithm="PpoScheduler")` в `PyScheduler/TEST_MODULES.py`.
+
+Для PPO ranker на Python backend:
+- положите checkpoint в `PyScheduler/drl/runs/lte_ppo_ranker/lte_ppo_ranker_policy.pt`;
+- вызовите `sim_with_manager(scheduler_algorithm="PpoRankerScheduler")`.
+
+Для PPO ranker на C++/LibTorch backend:
+- экспортируйте TorchScript в `PyScheduler/drl/runs/lte_ppo_ranker/lte_ppo_ranker_policy.ts`;
+- соберите DLL `PyScheduler/drl/cpp_ranker_runtime/build/Release/ppo_ranker_runtime.dll`;
+- передайте `runtime_backend="cpp"` и `runtime_dll_search_paths=["D:/libtorch_win_cpu/libtorch/lib"]`;
+- вызовите:
+
+```python
+sim_with_manager(
+    scheduler_algorithm="PpoRankerScheduler",
+    runtime_backend="cpp",
+)
+```
+
+Если пути стандартные, `TEST_MODULES.py` подхватит:
+- `PyScheduler/drl/runs/lte_ppo_ranker/lte_ppo_ranker_policy.ts`;
+- `PyScheduler/drl/cpp_ranker_runtime/build/Release/ppo_ranker_runtime.dll`.

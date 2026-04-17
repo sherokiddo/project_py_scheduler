@@ -98,6 +98,18 @@ class DrlScheduler(SchedulerInterface):
         self._last_step_count = 0
         self._priority_rotation_offset = 0
 
+    def initialize_policy_runtime(self) -> None:
+        """
+        Принудительно инициализировать backend policy до первого TTI.
+        """
+        initializer = getattr(self.policy_runner, "initialize", None)
+        if callable(initializer):
+            initializer()
+            return
+
+        # Fallback для runner-ов без явного initialize().
+        _ = getattr(self.policy_runner, "agent", None)
+
     def _calculate_priorities(
         self,
         windowed_ues: List[Dict],

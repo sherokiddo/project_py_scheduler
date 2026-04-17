@@ -11,7 +11,9 @@ from UE_MODULE import UECollection
 from drl.paths import (
     PYSCHEDULER_DQN_MODEL_PATH,
     PYSCHEDULER_PPO_MODEL_PATH,
+    PYSCHEDULER_PPO_RANKER_CPP_RUNTIME_DLL_PATH,
     PYSCHEDULER_PPO_RANKER_MODEL_PATH,
+    PYSCHEDULER_PPO_RANKER_TORCHSCRIPT_PATH,
 )
 
 
@@ -134,6 +136,9 @@ def print_users_stats(ue_collection: UECollection, tti: int, bs: BaseStation, sc
 def _resolve_runtime_scheduler_config(
     scheduler_algorithm: str,
     runtime_model_path: Path | None = None,
+    runtime_backend: str = "python",
+    runtime_library_path: Path | None = None,
+    runtime_dll_search_paths: list[str] | None = None,
 ) -> tuple[Path, dict]:
     """
     Вернуть путь к весам и конфигурацию runtime-планировщика DRL.
@@ -159,9 +164,37 @@ def _resolve_runtime_scheduler_config(
         }
 
     if scheduler_algorithm == "PpoRankerScheduler":
+        normalized_backend = str(runtime_backend).strip().lower()
+        if normalized_backend in {"", "default"}:
+            normalized_backend = "python"
+
+        if normalized_backend == "cpp":
+            resolved_path = (
+                runtime_model_path or PYSCHEDULER_PPO_RANKER_TORCHSCRIPT_PATH
+            )
+            resolved_runtime_library = (
+                runtime_library_path or PYSCHEDULER_PPO_RANKER_CPP_RUNTIME_DLL_PATH
+            )
+            return resolved_path, {
+                "ppo_ranker_model_path": str(resolved_path),
+                "ppo_ranker_backend": "cpp",
+                "ppo_ranker_runtime_library_path": str(resolved_runtime_library),
+                "ppo_ranker_runtime_dll_search_paths": (
+                    runtime_dll_search_paths
+                    if runtime_dll_search_paths is not None
+                    else [str(resolved_runtime_library.parent)]
+                ),
+                "ppo_ranker_max_n_ue": 40,
+                "ppo_ranker_wb_cqi_report_period_tti": 5,
+                "ppo_ranker_deterministic": True,
+                "ppo_ranker_rank_weight_beta": 0.3,
+                "ppo_ranker_pf_epsilon_bps": 1e-6,
+            }
+
         resolved_path = runtime_model_path or PYSCHEDULER_PPO_RANKER_MODEL_PATH
         return resolved_path, {
             "ppo_ranker_model_path": str(resolved_path),
+            "ppo_ranker_backend": "python",
             "ppo_ranker_max_n_ue": 40,
             "ppo_ranker_wb_cqi_report_period_tti": 5,
             "ppo_ranker_deterministic": True,
@@ -179,6 +212,9 @@ def _resolve_runtime_scheduler_config(
 def sim_with_manager(
     scheduler_algorithm: str = "DqnScheduler",
     runtime_model_path: str | Path | None = None,
+    runtime_backend: str = "python",
+    runtime_library_path: str | Path | None = None,
+    runtime_dll_search_paths: list[str] | None = None,
 ):
     """
     Тестовый стенд для проверки работоспособности моделей канала
@@ -238,15 +274,31 @@ def sim_with_manager(
     resolved_runtime_model_path = (
         None if runtime_model_path is None else Path(runtime_model_path)
     )
+    resolved_runtime_library_path = (
+        None if runtime_library_path is None else Path(runtime_library_path)
+    )
     model_path, algorithm_kwargs = _resolve_runtime_scheduler_config(
         scheduler_algorithm,
         runtime_model_path=resolved_runtime_model_path,
+        runtime_backend=runtime_backend,
+        runtime_library_path=resolved_runtime_library_path,
+        runtime_dll_search_paths=runtime_dll_search_paths,
     )
     if not model_path.exists():
         raise FileNotFoundError(
             f"Weights not found for {scheduler_algorithm}: {model_path}. "
-            "Укажите корректный путь к .pt файлу."
+            "Укажите корректный путь к runtime-модели."
         )
+    if (
+        scheduler_algorithm == "PpoRankerScheduler"
+        and str(runtime_backend).strip().lower() == "cpp"
+    ):
+        runtime_library = Path(algorithm_kwargs["ppo_ranker_runtime_library_path"])
+        if not runtime_library.exists():
+            raise FileNotFoundError(
+                f"C++ runtime library not found for PpoRankerScheduler: {runtime_library}. "
+                "Укажите корректный путь к .dll файлу."
+            )
 
     # Установка планировщика. Можно передвать параметры, которые
     # поддерживает SchedulerInterface.
@@ -424,9 +476,14 @@ def sim_with_manager_qos():
 
 
 if __name__ == "__main__":
+    #sim_with_manager(
+    #    scheduler_algorithm="PpoRankerScheduler",
+    #    runtime_model_path=r"PyScheduler\drl\runs\lte_ppo_ranker_try2\lte_ppo_ranker_policy.pt",
+    #)
     sim_with_manager(
         scheduler_algorithm="PpoRankerScheduler",
-        runtime_model_path=r"PyScheduler\drl\runs\lte_ppo_ranker_try2\lte_ppo_ranker_policy.pt",
+        runtime_backend="cpp",
+        runtime_model_path=r"PyScheduler\drl\runs\lte_ppo_ranker_try2\lte_ppo_ranker_policy.ts",
+        runtime_dll_search_paths=[r"D:\libtorch_cpu\libtorch\lib"],
     )
-
     #sim_with_manager_qos()

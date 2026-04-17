@@ -18,4 +18,10 @@ PYSCHEDULER_PPO_MODEL_PATH = PYSCHEDULER_PPO_RUN_DIR / "lte_ppo_policy.pt"
 PYSCHEDULER_PPO_RANKER_MODEL_PATH = (
     PYSCHEDULER_PPO_RANKER_RUN_DIR / "lte_ppo_ranker_policy.pt"
 )
+PYSCHEDULER_PPO_RANKER_TORCHSCRIPT_PATH = (
+    PYSCHEDULER_PPO_RANKER_RUN_DIR / "lte_ppo_ranker_policy.ts"
+)
+PYSCHEDULER_PPO_RANKER_CPP_RUNTIME_DLL_PATH = (
+    DRL_DIR / "cpp_ranker_runtime" / "build" / "Release" / "ppo_ranker_runtime.dll"
+)
 PLAYGROUND_DQN_MODEL_PATH = PLAYGROUND_DQN_RUN_DIR / "lte_dqn_shared_q.pt"

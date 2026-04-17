@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import SIMULATION_MANAGER as simulation_manager_module
 from BS_MODULE import BaseStation
 from SIMULATION_MANAGER import SimulationManager
+from SCHEDULER import SchedulerInterface
 from UE_MODULE import UECollection
 
 
@@ -85,3 +86,40 @@ def test_start_simulation_initializes_runtime_without_file_logging(monkeypatch):
     assert manager.scheduler is not None
     assert manager.stats_manager is None
     assert manager._log_file is None
+
+
+def test_initialize_runtime_eagerly_initializes_policy_backend(monkeypatch):
+    manager = SimulationManager()
+    manager.set_base_station(BaseStation(bandwidth=10, use_simple_buffer=True))
+    manager.set_ue_collection(UECollection())
+    manager.set_scheduler(
+        algorithm="RoundRobin",
+        pcfich=2,
+        enable_window=False,
+        window_size=4,
+    )
+    manager.set_sim_duration(1)
+    manager.set_stats_manager(enabled=False)
+
+    class DummyScheduler:
+        def __init__(self):
+            self.simulation_context = {"sim_duration_tti": 1}
+            self.initialized = False
+
+        def initialize_policy_runtime(self):
+            self.initialized = True
+
+    dummy_scheduler = DummyScheduler()
+    real_create = SchedulerInterface.create
+
+    def fake_create(*args, **kwargs):
+        return dummy_scheduler
+
+    monkeypatch.setattr(SchedulerInterface, "create", staticmethod(fake_create))
+    try:
+        manager.initialize_runtime()
+    finally:
+        monkeypatch.setattr(SchedulerInterface, "create", real_create)
+
+    assert manager.scheduler is dummy_scheduler
+    assert dummy_scheduler.initialized is True
