@@ -74,6 +74,7 @@ from typing import Dict, List, Optional, Tuple
 
 import GLOBALS
 import numpy as np
+from HARQ_MANAGER import HARQIface
 from TRAFFIC_MODEL import MMPPModel, OnOffModel, PoissonModel
 
 
@@ -1027,6 +1028,7 @@ class UECollection:
         """
         for ue in self.users.values():
             bs.REG_UE(ue)
+            HARQIface.create_process(ue, ue.UE_ID)
 
 
 # Далее тесты для проверки работоспособности буфера и примеры работы с ним.

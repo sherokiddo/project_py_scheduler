@@ -790,6 +790,7 @@ class SchedulerInterface:
                 user['allocated_cce'] = required_cce
                 ues_with_pdcch.append(user)
 
+        # verbose
         if self.verbose:
             blocked_count = len(priority_list) - len(ues_with_pdcch)
             print(f"[SCHEDULER] PDCCH allocation: {len(priority_list)} requested -> {len(ues_with_pdcch)} allocated")
@@ -823,87 +824,50 @@ class SchedulerInterface:
                 для каждого логического канала UE.
 
         """
-        if tb_size <= 0:
-            return []
-
+        # Simple buffer mode
         if self.lte_grid.bs.use_simple_buffer:
-            if not buffer_status_list:
-                return []
+            if len(buffer_status_list) != 1:
+                raise ValueError(
+                    "The size of the buffer status list for Simple Buffer "
+                    "must be 1"
+                )
 
             buffer_status = buffer_status_list[0]
             grant = SchedulingGrant(
                 ue_id=buffer_status.ue_id,
-                num_bytes=min(tb_size, buffer_status.buffer_size),
+                num_bytes=tb_size,
             )
 
             return [grant]
 
+        # Layered buffer mode
         else:
             if not buffer_status_list:
-                return []
+                raise ValueError(
+                    "The buffer status list must not be empty."
+                )
         
             if not all(status.ue_id == buffer_status_list[0].ue_id for status in buffer_status_list):
-                return []
-            
-            active_statuses = [
-                status for status in buffer_status_list
-                if status.buffer_size > 0
-            ]
-            if not active_statuses:
-                return []
-
-            remaining_by_lcid = {
-                status.lcid: status.buffer_size
-                for status in active_statuses
-            }
-            allocated_by_lcid = {
-                status.lcid: 0
-                for status in active_statuses
-            }
-
-            tb_remaining = tb_size
-            active_lcids = [status.lcid for status in active_statuses]
-
-            while tb_remaining > 0 and active_lcids:
-                share = max(1, tb_remaining // len(active_lcids))
-                moved_in_round = 0
-
-                next_active_lcids = []
-                for lcid in active_lcids:
-                    available = remaining_by_lcid[lcid]
-                    if available <= 0:
-                        continue
-
-                    to_take = min(share, available, tb_remaining)
-                    if to_take > 0:
-                        allocated_by_lcid[lcid] += to_take
-                        remaining_by_lcid[lcid] -= to_take
-                        tb_remaining -= to_take
-                        moved_in_round += to_take
-
-                    if remaining_by_lcid[lcid] > 0 and tb_remaining > 0:
-                        next_active_lcids.append(lcid)
-
-                    if tb_remaining == 0:
-                        break
-
-                if moved_in_round == 0:
-                    break
-
-                active_lcids = next_active_lcids
-
-            grants: List[SchedulingGrant] = []
-            for status in active_statuses:
-                num_bytes = allocated_by_lcid[status.lcid]
-                if num_bytes <= 0:
-                    continue
-
-                grant = SchedulingGrant(
-                    ue_id=status.ue_id,
-                    num_bytes=num_bytes,
-                    lcid=status.lcid,
+                raise ValueError(
+                    "The UE ID in all buffer statuses must be the same"
                 )
-                grants.append(grant)
+            
+            # Просто делим транспортный блок на равные части между всеми активными LC.
+            # Несправедливая стратегия, т.к. LC с малым количеством данных получает такой же
+            # объём транспортного блока, что и LC с большим количеством данных.
+            active_lcs = sum(1 for status in buffer_status_list if status.buffer_size > 0)
+            num_bytes_per_lc = tb_size // active_lcs
+
+            grants = []
+            for buffer_status in buffer_status_list:
+                if buffer_status.buffer_size > 0:
+                    grant = SchedulingGrant(
+                        ue_id=buffer_status.ue_id,
+                        num_bytes=num_bytes_per_lc,
+                        lcid=buffer_status.lcid,
+                    )
+
+                    grants.append(grant)
 
             return grants
                 
@@ -944,13 +908,18 @@ class SchedulerInterface:
 
             if not buffer_manager.ue_has_buffer(ueid):
                 self.last_ue_transmitted_bits[ueid] = 0
+            # UE нет в буферах BS — обновить на 0
                 ue.UPD_DL_THROUGHPUT_BPS(0, time_interval_ms)
                 continue
 
             cqi = self._get_wb_cqi(ueid)
             bits_per_rb = self.amc.GET_BITS_PER_RB(cqi)
+
+            # @IvanNoritsin: Тут по хорошему должен расчитываться размер транспортного
+            # блока (на основе allocated_rbs и MCS), но пока что у нас этого нет
             max_bits  = allocated_rbs * bits_per_rb
             max_bytes = max_bits // GLOBALS.BITS_PER_BYTE
+            #ВНИМАНИЕ! Временный костыль.
             remainder_bits = max_bits % GLOBALS.BITS_PER_BYTE
 
             if max_bytes <= 0:
@@ -960,6 +929,9 @@ class SchedulerInterface:
 
             buffer_status_list = buffer_manager.get_buffer_status(ueid)
 
+            # @IvanNoritsin: Мультиплексер принимает на вход размер транспорного
+            # блока, но т.к. у нас нет этой системы просто пердаём вместимость
+            # выделенных ресурсных блоков
             grants = self._logical_channel_multiplexing(max_bytes, buffer_status_list)
 
             try:
