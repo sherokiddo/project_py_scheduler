@@ -113,3 +113,36 @@ class PPOModelRunner(BaseTorchAgentRunner):
         from drl.agents.lte_ppo_agent import LTEPPOAgent
 
         return LTEPPOAgent.load(path=path, device=device)
+
+
+class PPORankerModelRunner(BaseTorchAgentRunner):
+    """
+    Runtime-runner для PPO ranker-модели.
+
+    В отличие от per-RBG runner'ов, ranker возвращает не индекс действия, а
+    полный score-вектор по всем UE текущего TTI.
+    """
+
+    @staticmethod
+    def _load_agent(*, path: str, device: Optional[Any]) -> Any:
+        from drl.agents.lte_ppo_ranker_agent import LTEPPORankerAgent
+
+        return LTEPPORankerAgent.load(path=path, device=device)
+
+    def predict(
+        self,
+        obs: np.ndarray,
+        action_mask: np.ndarray,
+        deterministic: Optional[bool] = None,
+    ) -> np.ndarray:
+        use_deterministic = (
+            self.deterministic if deterministic is None else bool(deterministic)
+        )
+        return np.asarray(
+            self.agent.predict(
+                obs=np.asarray(obs, dtype=np.float32),
+                action_mask=np.asarray(action_mask, dtype=bool),
+                deterministic=use_deterministic,
+            ),
+            dtype=np.float32,
+        )

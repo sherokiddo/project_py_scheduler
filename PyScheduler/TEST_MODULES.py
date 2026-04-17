@@ -8,7 +8,11 @@ from MOBILITY_MODEL import MapBorders
 from SIMULATION_MANAGER import SimulationManager
 from TRAFFIC_MODEL import PoissonModel
 from UE_MODULE import UECollection
-from drl.paths import PYSCHEDULER_DQN_MODEL_PATH, PYSCHEDULER_PPO_MODEL_PATH
+from drl.paths import (
+    PYSCHEDULER_DQN_MODEL_PATH,
+    PYSCHEDULER_PPO_MODEL_PATH,
+    PYSCHEDULER_PPO_RANKER_MODEL_PATH,
+)
 
 
 def visualize_users_mobility(
@@ -127,13 +131,17 @@ def print_users_stats(ue_collection: UECollection, tti: int, bs: BaseStation, sc
         print(f"\tСмещение            : {displacement} m")
         print("-" * 40)
 
-def _resolve_runtime_scheduler_config(scheduler_algorithm: str) -> tuple[Path, dict]:
+def _resolve_runtime_scheduler_config(
+    scheduler_algorithm: str,
+    runtime_model_path: Path | None = None,
+) -> tuple[Path, dict]:
     """
     Вернуть путь к весам и конфигурацию runtime-планировщика DRL.
     """
     if scheduler_algorithm == "DqnScheduler":
-        return PYSCHEDULER_DQN_MODEL_PATH, {
-            "dqn_model_path": str(PYSCHEDULER_DQN_MODEL_PATH),
+        resolved_path = runtime_model_path or PYSCHEDULER_DQN_MODEL_PATH
+        return resolved_path, {
+            "dqn_model_path": str(resolved_path),
             "dqn_max_n_ue": 40,
             "dqn_wb_cqi_report_period_tti": 5,
             "dqn_deterministic": True,
@@ -141,21 +149,37 @@ def _resolve_runtime_scheduler_config(scheduler_algorithm: str) -> tuple[Path, d
         }
 
     if scheduler_algorithm == "PpoScheduler":
-        return PYSCHEDULER_PPO_MODEL_PATH, {
-            "ppo_model_path": str(PYSCHEDULER_PPO_MODEL_PATH),
+        resolved_path = runtime_model_path or PYSCHEDULER_PPO_MODEL_PATH
+        return resolved_path, {
+            "ppo_model_path": str(resolved_path),
             "ppo_max_n_ue": 40,
             "ppo_wb_cqi_report_period_tti": 5,
             "ppo_deterministic": True,
             "ppo_inference_device": "cpu",
         }
 
+    if scheduler_algorithm == "PpoRankerScheduler":
+        resolved_path = runtime_model_path or PYSCHEDULER_PPO_RANKER_MODEL_PATH
+        return resolved_path, {
+            "ppo_ranker_model_path": str(resolved_path),
+            "ppo_ranker_max_n_ue": 40,
+            "ppo_ranker_wb_cqi_report_period_tti": 5,
+            "ppo_ranker_deterministic": True,
+            "ppo_ranker_inference_device": "cpu",
+            "ppo_ranker_rank_weight_beta": 0.3,
+            "ppo_ranker_pf_epsilon_bps": 1e-6,
+        }
+
     raise ValueError(
         f"Unsupported scheduler algorithm: {scheduler_algorithm}. "
-        "Expected 'DqnScheduler' or 'PpoScheduler'."
+        "Expected 'DqnScheduler', 'PpoScheduler' or 'PpoRankerScheduler'."
     )
 
 
-def sim_with_manager(scheduler_algorithm: str = "DqnScheduler"):
+def sim_with_manager(
+    scheduler_algorithm: str = "DqnScheduler",
+    runtime_model_path: str | Path | None = None,
+):
     """
     Тестовый стенд для проверки работоспособности моделей канала
 
@@ -211,8 +235,12 @@ def sim_with_manager(scheduler_algorithm: str = "DqnScheduler"):
     sim.set_ue_collection(ue_collection)
 
     #Путь до DRL-Scheduler
+    resolved_runtime_model_path = (
+        None if runtime_model_path is None else Path(runtime_model_path)
+    )
     model_path, algorithm_kwargs = _resolve_runtime_scheduler_config(
-        scheduler_algorithm
+        scheduler_algorithm,
+        runtime_model_path=resolved_runtime_model_path,
     )
     if not model_path.exists():
         raise FileNotFoundError(
@@ -396,6 +424,9 @@ def sim_with_manager_qos():
 
 
 if __name__ == "__main__":
-    # sim_with_manager()
-    sim_with_manager(scheduler_algorithm="PpoScheduler")
+    sim_with_manager(
+        scheduler_algorithm="PpoRankerScheduler",
+        runtime_model_path=r"PyScheduler\drl\runs\lte_ppo_ranker_try2\lte_ppo_ranker_policy.pt",
+    )
+
     #sim_with_manager_qos()

@@ -20,6 +20,7 @@
 - `drl_scheduler.py` — общий базовый runtime-layer `DrlScheduler` для DRL-планировщиков;
 - `dqn_scheduler.py` — DQN-специализация поверх `DrlScheduler`;
 - `ppo_scheduler.py` — PPO-специализация поверх `DrlScheduler`;
+- `ppo_ranker_scheduler.py` — TTI-level PPO ranker для runtime-гибридного FD/PF allocation;
 - `model_runners.py` — общий OOP-модуль с runtime-runner'ами для torch-агентов.
 
 Подпакеты:
@@ -34,15 +35,17 @@
 В этой папке должны жить все агенты:
 - `lte_dqn_agent.py` — основной LTE DQN агент;
 - `agents/lte_ppo_agent.py` — LTE-специфичный PPO агент с action-mask и shared UE encoder.
+- `agents/lte_ppo_ranker_agent.py` — PPO-агент для TTI-level ranking, который выдает score по всем UE за один шаг.
 
 Файл `dqn_agent.py` в корне пакета был legacy-дубликатом и больше не нужен.
 
 ### `envs/`
 
-Сейчас в `envs/` есть два разных класса сред.
+Сейчас в `envs/` есть несколько разных классов сред.
 
 Основная runtime-среда:
 - `pyscheduler_lte_env.py` — simulation-backed env поверх реального runtime `PyScheduler`.
+- `pyscheduler_lte_ranker_env.py` — simulation-backed env для ranker-подхода, где одно действие задает score UE на весь TTI, а allocation завершается через hybrid FD/PF метрику.
 
 Legacy standalone-среды:
 - `lte_scheduler_env.py` — standalone LTE env с собственной внутренней логикой;
@@ -67,16 +70,29 @@ Standalone env из `envs/`:
 
 Поэтому `PySchedulerLteEnv` нужна не вместо адаптера и не вместо старой env, а поверх уже существующего bridge/adapter-слоя.
 
+`PySchedulerLteRankerEnv` строится на той же базе и переиспользует:
+- тот же runtime `SimulationManager`;
+- тот же observation adapter;
+- ту же механику расчета reward;
+- тот же scheduler-preparation pipeline до этапа allocation.
+
+Отличие только в семантике действия:
+- `PySchedulerLteEnv` делает одно решение per-RBG;
+- `PySchedulerLteRankerEnv` делает одно score-решение per-TTI, после чего среда переводит score в bounded rank-weight и использует его как модификатор существующей FD/PF per-RBG метрики.
+
 ## Скрипты обучения
 
 В `scripts/` теперь есть два разных train-path:
 - `train_lte_dqn_pyscheduler.py` — основной путь обучения на реальном runtime через `PySchedulerLteEnv`;
 - `train_lte_ppo_scheduler.py` — PPO-обучение на том же runtime-env c последующей загрузкой весов в `PpoScheduler`;
+- `train_lte_ppo_ranker.py` — PPO-обучение ranker-варианта на `PySchedulerLteRankerEnv`;
+- `plot_training_metrics.py` — постобработка сохраненных CSV в графики и summary;
 - `train_lte_dqn.py` — legacy playground-path на standalone env.
 
 Идея простая:
 - production-близкое обучение делаем через `train_lte_dqn_pyscheduler.py`;
 - PPO исследуем через `train_lte_ppo_scheduler.py` и можем прогонять его через тот же runtime pipeline;
+- PPO ranker обучаем через `train_lte_ppo_ranker.py`, если хотим policy уровня "один ranking на весь TTI";
 - быстрый baseline и отладку — через `train_lte_dqn.py`.
 
 Текущий runtime-baseline для обучения собран вокруг реального сценария из `TEST_MODULES.py`:
@@ -132,6 +148,24 @@ manager.set_scheduler(
 )
 ```
 
+Для PPO ranker:
+
+```python
+manager.set_scheduler(
+    algorithm="PpoRankerScheduler",
+    max_dl_ue_tti=16,
+    algorithm_kwargs={
+        "ppo_ranker_model_path": "PyScheduler/drl/runs/lte_ppo_ranker/lte_ppo_ranker_policy.pt",
+        "ppo_ranker_max_n_ue": 40,
+        "ppo_ranker_wb_cqi_report_period_tti": 5,
+        "ppo_ranker_deterministic": True,
+        "ppo_ranker_inference_device": "cpu",
+        "ppo_ranker_rank_weight_beta": 0.3,
+        "ppo_ranker_pf_epsilon_bps": 1e-6,
+    },
+)
+```
+
 Параметр `dqn_inference_device` нужен именно для runtime-инференса внутри симулятора:
 - по умолчанию `DqnScheduler` использует `cpu`;
 - это сделано специально, потому что policy вызывается много раз за один TTI на очень маленьких observation;
@@ -164,6 +198,32 @@ PPO-path на той же env:
 python PyScheduler/drl/scripts/train_lte_ppo_scheduler.py --run-dir PyScheduler/drl/runs/lte_ppo --total-env-steps 750000 --rollout-steps 4096 --seed 42 --bootstrap-scenario anchor_5ue_10mhz_wb5_umi_fb
 ```
 
+PPO ranker-path на TTI-level env:
+
+```bash
+python PyScheduler/drl/scripts/train_lte_ppo_ranker.py --run-dir PyScheduler/drl/runs/lte_ppo_ranker --total-env-steps 300000 --rollout-steps 2048 --seed 42 --bootstrap-scenario anchor_5ue_10mhz_wb5_umi_fb
+```
+
+Для ranker-path по умолчанию дополнительно запускается сравнение:
+- `deterministic eval` — то, как policy будет вести себя в боевом inference;
+- `stochastic eval` — тот же checkpoint, но с sampling из policy.
+
+Кроме финального eval, `train_lte_ppo_ranker.py` теперь умеет делать
+периодический `probe-eval` прямо во время обучения:
+- probe всегда идет в `deterministic` режиме;
+- probe помогает сразу увидеть расхождение между train-rollout и реальным inference-path;
+- это особенно полезно для ranker-policy, где стохастический sampling может временно давать красивую fairness-картину, но не переноситься в deterministic режим.
+
+Это сделано специально, чтобы быстро увидеть важный эффект:
+- если train-эпизоды выглядят fair, а deterministic eval резко хуже,
+- policy могла опираться на шум при ранжировании UE.
+
+Параметры:
+- `--eval-compare-stochastic` / `--no-eval-compare-stochastic` — включить или выключить сравнительный eval;
+- `--eval-stochastic-repeats N` — сколько stochastic прогонов усреднять.
+- `--probe-every-episodes N` — как часто запускать детерминированный probe во время обучения;
+- `--probe-scenario SCENARIO_KEY` — на каком сценарии гонять periodic probe.
+
 Для smoke-запуска удобнее сразу ограничить eval и оставить его на CPU:
 
 ```bash
@@ -190,9 +250,22 @@ Legacy playground-path:
 python PyScheduler/drl/scripts/train_lte_dqn.py
 ```
 
+Построить графики по уже завершенному run:
+
+```bash
+python PyScheduler/drl/scripts/plot_training_metrics.py --run-dir PyScheduler/drl/runs/lte_ppo_ranker
+```
+
+Скрипт создает каталог `analysis/` внутри run-директории и сохраняет:
+- `train_overview.png` — кривые reward, SE, JFI и episode-side optimizer signals;
+- `ppo_updates.png` — loss, actor loss, critic loss и entropy по PPO updates;
+- `eval_summary.png` — сводка deterministic eval по сценариям;
+- `summary.json` — короткий агрегированный итог run.
+
 Артефакты по умолчанию:
 - runtime train-script пишет в `PyScheduler/drl/runs/lte_dqn/`;
 - runtime PPO train-script пишет в `PyScheduler/drl/runs/lte_ppo/`;
+- runtime PPO ranker train-script пишет в `PyScheduler/drl/runs/lte_ppo_ranker/`;
 - playground train-script пишет в `PyScheduler/drl/runs/lte_dqn_playground/`.
 
 Для `train_lte_ppo_scheduler.py` eval теперь:

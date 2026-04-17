@@ -460,7 +460,9 @@ def create_ppo_inference_manager(
     )
 
     algorithm_kwargs = dict(sim.sched_config.algorithm_kwargs or {})
-    algorithm_kwargs.pop("dqn_policy_runner", None)
+    for key in list(algorithm_kwargs.keys()):
+        if key.startswith("dqn_"):
+            algorithm_kwargs.pop(key, None)
     algorithm_kwargs["ppo_model_path"] = str(resolved_model_path)
     algorithm_kwargs["ppo_max_n_ue"] = int(max_n_ue)
     algorithm_kwargs["ppo_wb_cqi_report_period_tti"] = int(
@@ -471,6 +473,60 @@ def create_ppo_inference_manager(
 
     sim.set_scheduler(
         algorithm="PpoScheduler",
+        max_dl_ue_tti=resolved_scenario.max_dl_ue_tti,
+        pcfich=int(resolved_scenario.pcfich),
+        enable_window=bool(resolved_scenario.enable_window),
+        window_size=int(resolved_scenario.window_size),
+        max_dl_cce_allowance=resolved_scenario.max_dl_cce_allowance,
+        algorithm_kwargs=algorithm_kwargs,
+    )
+    return sim
+
+
+def create_ppo_ranker_inference_manager(
+    scenario: RuntimeTrainingScenario,
+    *,
+    model_path: str | Path,
+    max_n_ue: int,
+    seed: Optional[int] = None,
+    deterministic: bool = True,
+    inference_device: str = "cpu",
+    rank_weight_beta: float = 0.3,
+    pf_epsilon_bps: float = 1e-6,
+    options: Optional[Dict] = None,
+) -> SimulationManager:
+    """
+    Собрать `SimulationManager` для инференса обученной PPO ranker-модели.
+    """
+
+    resolved_scenario = _apply_scenario_options(scenario, options)
+    resolved_model_path = Path(model_path)
+
+    if not resolved_model_path.exists():
+        raise FileNotFoundError(f"PPO ranker weights not found: {resolved_model_path}")
+
+    sim = create_training_manager(
+        resolved_scenario,
+        max_n_ue=max_n_ue,
+        seed=seed,
+    )
+
+    algorithm_kwargs = dict(sim.sched_config.algorithm_kwargs or {})
+    for key in list(algorithm_kwargs.keys()):
+        if key.startswith("dqn_"):
+            algorithm_kwargs.pop(key, None)
+    algorithm_kwargs["ppo_ranker_model_path"] = str(resolved_model_path)
+    algorithm_kwargs["ppo_ranker_max_n_ue"] = int(max_n_ue)
+    algorithm_kwargs["ppo_ranker_wb_cqi_report_period_tti"] = int(
+        resolved_scenario.wb_cqi_report_period_tti
+    )
+    algorithm_kwargs["ppo_ranker_deterministic"] = bool(deterministic)
+    algorithm_kwargs["ppo_ranker_inference_device"] = str(inference_device)
+    algorithm_kwargs["ppo_ranker_rank_weight_beta"] = float(rank_weight_beta)
+    algorithm_kwargs["ppo_ranker_pf_epsilon_bps"] = float(pf_epsilon_bps)
+
+    sim.set_scheduler(
+        algorithm="PpoRankerScheduler",
         max_dl_ue_tti=resolved_scenario.max_dl_ue_tti,
         pcfich=int(resolved_scenario.pcfich),
         enable_window=bool(resolved_scenario.enable_window),
@@ -539,6 +595,49 @@ def make_pyscheduler_lte_env(
     )
 
 
+def make_pyscheduler_lte_ranker_env(
+    scenario: RuntimeTrainingScenario,
+    *,
+    max_n_ue: int,
+    seed: Optional[int] = None,
+    rank_weight_beta: float = 0.3,
+    pf_epsilon_bps: float = 1e-6,
+) -> Any:
+    """
+    Создать simulation-backed ranker-env для заданного runtime-сценария.
+
+    Среда переиспользует тот же runtime PyScheduler, что и `PySchedulerLteEnv`,
+    но ожидает одно ranking-решение на весь TTI вместо per-RBG действия.
+    """
+
+    from drl.envs.pyscheduler_lte_ranker_env import PySchedulerLteRankerEnv
+
+    if int(max_n_ue) < int(scenario.n_ue):
+        raise ValueError(
+            f"max_n_ue={max_n_ue} must be >= scenario.n_ue={scenario.n_ue}"
+        )
+
+    return PySchedulerLteRankerEnv(
+        simulation_factory=build_simulation_manager_factory(
+            scenario,
+            max_n_ue=max_n_ue,
+            default_seed=seed,
+        ),
+        max_n_ue=max_n_ue,
+        reward_mode="per_tti",
+        reward_window=1,
+        alpha=1.0,
+        beta=2.0,
+        rate_scale_bps=1e6,
+        jfi_target=0.70,
+        lambda_jfi=2.0,
+        strict_observation=True,
+        wb_cqi_report_period_tti=int(scenario.wb_cqi_report_period_tti),
+        rank_weight_beta=float(rank_weight_beta),
+        pf_epsilon_bps=float(pf_epsilon_bps),
+    )
+
+
 def build_pyscheduler_env_pool(
     scenario_keys: tuple[str, ...],
     *,
@@ -551,6 +650,26 @@ def build_pyscheduler_env_pool(
             SCENARIO_CONFIGS[scenario_key],
             max_n_ue=max_n_ue,
             seed=seed_base + idx,
+        )
+    return env_pool
+
+
+def build_pyscheduler_ranker_env_pool(
+    scenario_keys: tuple[str, ...],
+    *,
+    max_n_ue: int,
+    seed_base: int = 0,
+    rank_weight_beta: float = 0.3,
+    pf_epsilon_bps: float = 1e-6,
+) -> Dict[str, Any]:
+    env_pool: Dict[str, Any] = {}
+    for idx, scenario_key in enumerate(scenario_keys):
+        env_pool[scenario_key] = make_pyscheduler_lte_ranker_env(
+            SCENARIO_CONFIGS[scenario_key],
+            max_n_ue=max_n_ue,
+            seed=seed_base + idx,
+            rank_weight_beta=float(rank_weight_beta),
+            pf_epsilon_bps=float(pf_epsilon_bps),
         )
     return env_pool
 
