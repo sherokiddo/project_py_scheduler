@@ -8,7 +8,7 @@ import sys, os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from unittest.mock import MagicMock
-from log_utils import Logger
+from scheduler_tests.log_utils import Logger
 
 BANDWIDTH   = 5
 RB_PER_SLOT = 25

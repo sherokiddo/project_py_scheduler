@@ -14,7 +14,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from unittest.mock import MagicMock
-from log_utils import Logger
+from scheduler_tests.log_utils import Logger
 from conftest import (
     make_user, patch_cqi,
     RB_PER_SLOT, TOTAL_RBG, CQI_BITS_TABLE
@@ -23,7 +23,7 @@ from SCHEDULER import SchedulerInterface
 
 log = Logger("test_common.log")
 
-ALGORITHMS = ["FD_BCQI", "FD_RR", "FD_PF"]
+ALGORITHMS = ["FD_BCQI", "FD_FGS", "FD_PF"]
 
 
 # ══════════════════════════════════════════════════════════

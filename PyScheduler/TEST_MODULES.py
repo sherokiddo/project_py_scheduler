@@ -11,8 +11,10 @@ from UE_MODULE import UECollection
 from drl.paths import (
     PYSCHEDULER_DQN_MODEL_PATH,
     PYSCHEDULER_PPO_MODEL_PATH,
-    PYSCHEDULER_PPO_RANKER_CPP_RUNTIME_DLL_PATH,
+    PYSCHEDULER_PPO_RANKER_LIBTORCH_RUNTIME_DLL_PATH,
     PYSCHEDULER_PPO_RANKER_MODEL_PATH,
+    PYSCHEDULER_PPO_RANKER_ONNX_PATH,
+    PYSCHEDULER_PPO_RANKER_ONNX_RUNTIME_DLL_PATH,
     PYSCHEDULER_PPO_RANKER_TORCHSCRIPT_PATH,
 )
 
@@ -173,11 +175,32 @@ def _resolve_runtime_scheduler_config(
                 runtime_model_path or PYSCHEDULER_PPO_RANKER_TORCHSCRIPT_PATH
             )
             resolved_runtime_library = (
-                runtime_library_path or PYSCHEDULER_PPO_RANKER_CPP_RUNTIME_DLL_PATH
+                runtime_library_path or PYSCHEDULER_PPO_RANKER_LIBTORCH_RUNTIME_DLL_PATH
             )
             return resolved_path, {
                 "ppo_ranker_model_path": str(resolved_path),
                 "ppo_ranker_backend": "cpp",
+                "ppo_ranker_runtime_library_path": str(resolved_runtime_library),
+                "ppo_ranker_runtime_dll_search_paths": (
+                    runtime_dll_search_paths
+                    if runtime_dll_search_paths is not None
+                    else [str(resolved_runtime_library.parent)]
+                ),
+                "ppo_ranker_max_n_ue": 40,
+                "ppo_ranker_wb_cqi_report_period_tti": 5,
+                "ppo_ranker_deterministic": True,
+                "ppo_ranker_rank_weight_beta": 0.3,
+                "ppo_ranker_pf_epsilon_bps": 1e-6,
+            }
+
+        if normalized_backend in {"onnx", "onnx_cpp"}:
+            resolved_path = runtime_model_path or PYSCHEDULER_PPO_RANKER_ONNX_PATH
+            resolved_runtime_library = (
+                runtime_library_path or PYSCHEDULER_PPO_RANKER_ONNX_RUNTIME_DLL_PATH
+            )
+            return resolved_path, {
+                "ppo_ranker_model_path": str(resolved_path),
+                "ppo_ranker_backend": "onnx_cpp",
                 "ppo_ranker_runtime_library_path": str(resolved_runtime_library),
                 "ppo_ranker_runtime_dll_search_paths": (
                     runtime_dll_search_paths
@@ -242,7 +265,7 @@ def sim_with_manager(
         np.random.seed(GLOBALS.SEED)   # покрывает numpy
 
     # Генерация заданного числа UE в коллекцию
-    ue_collection.ADD_RANDOM_USERS(num_ue=5,
+    ue_collection.ADD_RANDOM_USERS(num_ue=10,
                                    x_min=x_min,
                                    x_max=x_max,
                                    y_min=y_min,
@@ -291,7 +314,7 @@ def sim_with_manager(
         )
     if (
         scheduler_algorithm == "PpoRankerScheduler"
-        and str(runtime_backend).strip().lower() == "cpp"
+        and str(runtime_backend).strip().lower() in {"cpp", "onnx", "onnx_cpp"}
     ):
         runtime_library = Path(algorithm_kwargs["ppo_ranker_runtime_library_path"])
         if not runtime_library.exists():
@@ -307,7 +330,7 @@ def sim_with_manager(
         max_dl_ue_tti=None,
         pcfich=2,
         enable_window=False,
-        window_size=4,
+        window_size=5,
         max_dl_cce_allowance=None,
         algorithm_kwargs=algorithm_kwargs,
     )
@@ -318,12 +341,12 @@ def sim_with_manager(
         sim.setup_ue_traffic(
             ue_id=ue.UE_ID,
             model_type="Poisson",
-            packet_rate=5000,
+            packet_rate=2500,
         )
 
     # Установка длительности симуляции
-    sim.set_sim_duration(5000)
-    sim.set_mobility_interval(500)
+    sim.set_sim_duration(50000)
+    sim.set_mobility_interval(50)
     sim.set_channel_interval(10)
 
     # Включение verbose логирования. Для вывода всех логов в файл нужно
@@ -482,7 +505,11 @@ if __name__ == "__main__":
     #)
     sim_with_manager(
         scheduler_algorithm="PpoRankerScheduler",
-        runtime_backend="cpp",
-        runtime_dll_search_paths=[r"D:\libtorch_cpu\libtorch\lib"],
+        runtime_backend="onnx_cpp",
     )
+    #sim_with_manager(
+    #    scheduler_algorithm="PpoRankerScheduler",
+    #    runtime_backend="cpp",
+    #    runtime_dll_search_paths=[r"D:\libtorch_cpu\libtorch\lib"],
+    #)
     #sim_with_manager_qos()

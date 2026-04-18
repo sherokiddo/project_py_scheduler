@@ -1,7 +1,7 @@
 """
 FD Scheduler Benchmark — Вариант A (Mock-based).
 
-Прогоняет три планировщика (FD_BCQI, FD_RR, FD_PF) на одинаковых данных
+Прогоняет три планировщика (FD_BCQI, FD_FGS, FD_PF) на одинаковых данных
 за NUM_TTI итераций и сравнивает ключевые метрики.
 
 Запуск: python FD_benchmark.py
@@ -15,7 +15,7 @@ import time
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 from unittest.mock import MagicMock
-from log_utils import Logger
+from scheduler_tests.log_utils import Logger
 from conftest import CQI_BITS_TABLE, RB_PER_SLOT, RBG_SIZE, TOTAL_RBG
 from SCHEDULER import SchedulerInterface
 
@@ -29,7 +29,7 @@ NUM_TTI    = 5_0000       # количество TTI
 ALPHA      = 0.1         # EWMA коэффициент
 BUFFER     = 10_000_000  # байт — не ограничиваем UE
 
-ALGORITHMS = ["FD_BCQI", "FD_RR", "FD_PF"]
+ALGORITHMS = ["FD_BCQI", "FD_FGS", "FD_PF"]
 
 # Профили UE: (ue_id, wb_cqi, начальный avg_tput bps, sb_cqi_profile)
 # sb_cqi_profile: None = нет SB CQI, list = per-RBG CQI

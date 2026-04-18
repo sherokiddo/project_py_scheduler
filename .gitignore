@@ -2,8 +2,11 @@ __pycache__
 PyScheduler/__pycache__
 .pytest_cache/
 pytest-cache-files-*/
+.tmp_test_artifacts/
 runs/
 PyScheduler/drl/runs/
+PyScheduler/drl/**/build/
+PyScheduler/drl/**/build_bench/
 PyScheduler/metrics_results.json
 PyScheduler/scheduler_efficiency.json
 PyScheduler/emp_stats.csv
@@ -18,3 +21,5 @@ output.txt
 .spyproject/**
 *.log
 logs/
+PyScheduler/drl/runs/**/smoke_*.pt
+PyScheduler/drl/runs/tmp_*.pt

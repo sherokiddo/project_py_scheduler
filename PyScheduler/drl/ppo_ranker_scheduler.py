@@ -9,8 +9,12 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from SCHEDULER import SchedulerInterface
-from drl.cpp_ranker_bridge import normalize_cpp_runtime_search_paths
-from drl.model_runners import CppPPORankerModelRunner, PPORankerModelRunner
+from drl.cpp_libtorch_ranker_bridge import normalize_cpp_runtime_search_paths
+from drl.model_runners import (
+    CppONNXPPORankerModelRunner,
+    CppPPORankerModelRunner,
+    PPORankerModelRunner,
+)
 from drl.pdsch_allocation_session import PDSCHAllocationSession
 from drl.playground_adapter import MODE_PROXY_START_TTI
 from drl.ranker_observation_adapter import (
@@ -755,6 +759,21 @@ class PpoRankerScheduler(SchedulerInterface):
                 max_n_ue=max_n_ue,
             )
 
+        if normalized_backend == "onnx_cpp":
+            if not runtime_library_path:
+                raise ValueError(
+                    "Для ONNX C++ backend PpoRankerScheduler необходимо указать "
+                    "ppo_ranker_runtime_library_path."
+                )
+
+            return CppONNXPPORankerModelRunner(
+                model_path=str(model_path),
+                runtime_library_path=str(runtime_library_path),
+                dll_search_paths=runtime_dll_search_paths,
+                deterministic=deterministic,
+                max_n_ue=max_n_ue,
+            )
+
         return PPORankerModelRunner(
             model_path=str(model_path),
             deterministic=deterministic,
@@ -769,10 +788,12 @@ class PpoRankerScheduler(SchedulerInterface):
         normalized = str(backend).strip().lower()
         if normalized in {"", "default"}:
             return "python"
-        if normalized not in {"python", "cpp"}:
+        if normalized == "onnx":
+            normalized = "onnx_cpp"
+        if normalized not in {"python", "cpp", "onnx_cpp"}:
             raise ValueError(
                 f"Unsupported PPO ranker backend: {backend}. "
-                "Expected 'python' or 'cpp'."
+                "Expected 'python', 'cpp' or 'onnx_cpp'."
             )
         return normalized
 

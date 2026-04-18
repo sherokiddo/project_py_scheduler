@@ -1,5 +1,5 @@
 """
-Этап 4: Юнит-тесты FDxRoundRobin планировщика.
+Этап 4: Юнит-тесты round-robin-подобного FDxFairGreedy планировщика.
 
 Проверяет уникальную логику: честная ротация UE по RBG,
 сохранение offset между TTI, сброс раунда.
@@ -14,12 +14,12 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from unittest.mock import MagicMock
-from log_utils import Logger
+from scheduler_tests.log_utils import Logger
 from conftest import make_user, patch_cqi, RB_PER_SLOT, TOTAL_RBG, RBG_SIZE, CQI_BITS_TABLE
 from SCHEDULER import SchedulerInterface
 
 log  = Logger("test_fd_round_robin.log")
-ALGO = "FD_RR"
+ALGO = "FD_FGS"
 
 
 # ══════════════════════════════════════════════════════════

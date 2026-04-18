@@ -1,5 +1,5 @@
 """
-Python bridge для вызова C++ PPO ranker runtime через ctypes.
+Python bridge для вызова C++ LibTorch PPO ranker runtime через ctypes.
 """
 
 from __future__ import annotations
