@@ -236,7 +236,7 @@ def sim_with_manager(
     ue_collection = UECollection()
 
     # Установка сида
-    GLOBALS.SEED = 42
+    GLOBALS.SEED = 10
 
     if GLOBALS.SEED is not None:
         np.random.seed(GLOBALS.SEED)   # покрывает numpy
@@ -322,7 +322,7 @@ def sim_with_manager(
         )
 
     # Установка длительности симуляции
-    sim.set_sim_duration(50000)
+    sim.set_sim_duration(5000)
     sim.set_mobility_interval(500)
     sim.set_channel_interval(10)
 
@@ -478,12 +478,11 @@ def sim_with_manager_qos():
 if __name__ == "__main__":
     #sim_with_manager(
     #    scheduler_algorithm="PpoRankerScheduler",
-    #    runtime_model_path=r"PyScheduler\drl\runs\lte_ppo_ranker_try2\lte_ppo_ranker_policy.pt",
+    #    runtime_model_path=r"PyScheduler\drl\runs\lte_ppo_ranker_compact_v1\lte_ppo_ranker_policy.pt",
     #)
     sim_with_manager(
         scheduler_algorithm="PpoRankerScheduler",
         runtime_backend="cpp",
-        runtime_model_path=r"PyScheduler\drl\runs\lte_ppo_ranker_try2\lte_ppo_ranker_policy.ts",
         runtime_dll_search_paths=[r"D:\libtorch_cpu\libtorch\lib"],
     )
     #sim_with_manager_qos()

@@ -66,7 +66,7 @@ class TorchScriptPPORankerInference(nn.Module):
         all_valid_mask = torch.ones_like(mask, dtype=torch.bool)
         sanitized_mask = torch.where(valid_counts > 0, mask, all_valid_mask)
 
-        score_mean, _, _ = self.policy(obs, sanitized_mask)
+        score_mean, _ = self.policy.forward_actor(obs, sanitized_mask)
         invalid_fill = torch.full_like(score_mean, self.invalid_score)
         return torch.where(mask, score_mean, invalid_fill)
 
@@ -119,9 +119,11 @@ def build_ranker_export_metadata(
             "score_vector": "float32",
         },
         "deterministic_only": True,
+        "runtime_actor_only": True,
         "masked_invalid_score": float(invalid_score),
         "notes": [
             "Artifact contains only inference path, without PPO training/update logic.",
+            "Runtime forward uses actor-only branch and does not evaluate critic/value head.",
             "If action-mask row is empty, internal policy is evaluated on all-valid mask, then output is fully masked to invalid_score.",
         ],
     }

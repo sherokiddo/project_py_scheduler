@@ -10,7 +10,7 @@ DRL_RUNS_DIR = DRL_DIR / "runs"
 
 PYSCHEDULER_DQN_RUN_DIR = DRL_RUNS_DIR / "lte_dqn"
 PYSCHEDULER_PPO_RUN_DIR = DRL_RUNS_DIR / "lte_ppo_tune_06_reference"
-PYSCHEDULER_PPO_RANKER_RUN_DIR = DRL_RUNS_DIR / "lte_ppo_ranker"
+PYSCHEDULER_PPO_RANKER_RUN_DIR = DRL_RUNS_DIR / "lte_ppo_ranker_compact_v1"
 PLAYGROUND_DQN_RUN_DIR = DRL_RUNS_DIR / "lte_dqn_playground"
 
 PYSCHEDULER_DQN_MODEL_PATH = PYSCHEDULER_DQN_RUN_DIR / "lte_dqn_shared_q.pt"

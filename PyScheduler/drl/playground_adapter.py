@@ -3,6 +3,8 @@
 из `drl_playground`.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -14,8 +16,22 @@ from drl.simulation_bridge import DRLPlaygroundSnapshot, DRLPlaygroundUEState
 PLAYGROUND_MAX_BUFFER_BYTES = 1_000_000.0
 PLAYGROUND_MAX_AVG_TPUT_BPS = 100e6
 PLAYGROUND_MAX_WB_CQI = 15.0
-PLAYGROUND_N_UE_FEATURES = 6
-PLAYGROUND_N_CONTEXT_FEATURES = 3
+PLAYGROUND_MAX_N_RBG = 25.0
+
+OBSERVATION_PROFILE_LEGACY = "legacy"
+OBSERVATION_PROFILE_RANKER_V2 = "ranker_v2"
+SUPPORTED_OBSERVATION_PROFILES = (
+    OBSERVATION_PROFILE_LEGACY,
+    OBSERVATION_PROFILE_RANKER_V2,
+)
+
+LEGACY_N_UE_FEATURES = 6
+LEGACY_N_CONTEXT_FEATURES = 3
+RANKER_V2_N_UE_FEATURES = 4
+RANKER_V2_N_CONTEXT_FEATURES = 2
+
+PLAYGROUND_N_UE_FEATURES = LEGACY_N_UE_FEATURES
+PLAYGROUND_N_CONTEXT_FEATURES = LEGACY_N_CONTEXT_FEATURES
 
 MODE_CURRENT_STEP = "current_step"
 MODE_SNAPSHOT = "snapshot"
@@ -45,10 +61,6 @@ class DRLPlaygroundObservation:
     notes: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
-        """
-        Преобразовать observation-пакет в словарь для отладки и сериализации.
-        """
-
         return {
             "observation": self.observation.tolist(),
             "action_mask": self.action_mask.astype(bool).tolist(),
@@ -66,15 +78,6 @@ class DRLPlaygroundObservation:
 class DRLPlaygroundObservationAdapter:
     """
     Построитель observation/action-mask в формате `drl_playground`.
-
-    Адаптер решает две задачи:
-    - нормализует snapshot PyScheduler до того же порядка признаков, что и env;
-    - при необходимости паддит observation и action-mask до `max_n_ue`.
-
-    Важное ограничение:
-    PyScheduler пока не раскрывает внешний per-RBG step так же, как toy env.
-    Поэтому адаптер поддерживает как "строгий" режим, так и "proxy" режим
-    для старта TTI.
     """
 
     def __init__(
@@ -83,14 +86,20 @@ class DRLPlaygroundObservationAdapter:
         max_n_ue: Optional[int] = None,
         episode_len_tti: Optional[int] = None,
         wb_cqi_report_period_tti: Optional[int] = None,
+        observation_profile: str = OBSERVATION_PROFILE_LEGACY,
         max_buffer_bytes: float = PLAYGROUND_MAX_BUFFER_BYTES,
         max_avg_tput_bps: float = PLAYGROUND_MAX_AVG_TPUT_BPS,
         strict_mode: bool = False,
         ensure_nonempty_action_mask: bool = False,
     ) -> None:
+        self._validate_observation_profile(observation_profile)
         self.max_n_ue = max_n_ue
         self.episode_len_tti = episode_len_tti
         self.wb_cqi_report_period_tti = wb_cqi_report_period_tti
+        self.observation_profile = observation_profile
+        self.ue_feature_dim, self.context_dim = self._resolve_feature_dims(
+            observation_profile
+        )
         self.max_buffer_bytes = float(max(max_buffer_bytes, 1.0))
         self.max_avg_tput_bps = float(max(max_avg_tput_bps, 1.0))
         self.strict_mode = bool(strict_mode)
@@ -108,6 +117,14 @@ class DRLPlaygroundObservationAdapter:
         """
 
         self._validate_mode(mode)
+
+        if mode == MODE_PROXY_START_TTI:
+            fast_packet = self._build_proxy_start_tti_observation(
+                snapshot=snapshot,
+                ue_ids=ue_ids,
+            )
+            if fast_packet is not None:
+                return fast_packet
 
         selected_states, selected_mask = self._select_ue_states(
             snapshot=snapshot,
@@ -162,11 +179,121 @@ class DRLPlaygroundObservationAdapter:
         return DRLPlaygroundObservation(
             observation=observation,
             action_mask=action_mask,
-            ue_ids_in_order=[state.ue_id for state in selected_states],
+            ue_ids_in_order=[int(state.ue_id) for state in selected_states],
             actual_n_ue=actual_n_ue,
             max_n_ue=max_n_ue,
+            ue_feature_dim=self.ue_feature_dim,
+            context_dim=self.context_dim,
             mode=mode,
             exact_env_match=exact_env_match,
+            notes=notes,
+        )
+
+    def _build_proxy_start_tti_observation(
+        self,
+        *,
+        snapshot: DRLPlaygroundSnapshot,
+        ue_ids: Optional[Sequence[int]],
+    ) -> Optional[DRLPlaygroundObservation]:
+        """
+        Быстрый runtime-path для ranker inference в начале TTI.
+        """
+
+        selected_states, selected_mask = self._select_ue_states_runtime_fast(
+            snapshot=snapshot,
+            ue_ids=ue_ids,
+        )
+        if selected_states is None or selected_mask is None:
+            return None
+
+        actual_n_ue = len(selected_states)
+        max_n_ue = self._resolve_max_n_ue(actual_n_ue)
+        episode_len_tti, episode_len_exact = self._resolve_episode_len_tti(snapshot)
+        age_denom, age_exact = self._resolve_wb_cqi_age_denominator(selected_states)
+
+        observation = np.zeros(
+            max_n_ue * PLAYGROUND_N_UE_FEATURES + PLAYGROUND_N_CONTEXT_FEATURES,
+            dtype=np.float32,
+        )
+        action_mask = np.zeros(max_n_ue, dtype=bool)
+        action_mask[:actual_n_ue] = np.asarray(selected_mask, dtype=bool)
+
+        if self.ensure_nonempty_action_mask and not np.any(action_mask) and len(action_mask) > 0:
+            action_mask[0] = True
+
+        if actual_n_ue > 0:
+            ue_obs = observation[: max_n_ue * PLAYGROUND_N_UE_FEATURES].reshape(
+                max_n_ue,
+                PLAYGROUND_N_UE_FEATURES,
+            )[:actual_n_ue]
+
+            reported_wb_cqi = np.fromiter(
+                (float(state.reported_wb_cqi) for state in selected_states),
+                dtype=np.float32,
+                count=actual_n_ue,
+            )
+            wb_cqi_age = np.fromiter(
+                (float(int(state.wb_cqi_age_tti or 0)) for state in selected_states),
+                dtype=np.float32,
+                count=actual_n_ue,
+            )
+            active_flag = np.fromiter(
+                (1.0 if state.active_flag else 0.0 for state in selected_states),
+                dtype=np.float32,
+                count=actual_n_ue,
+            )
+            buffer_bytes = np.fromiter(
+                (float(state.buffer_bytes) for state in selected_states),
+                dtype=np.float32,
+                count=actual_n_ue,
+            )
+            average_throughput_bps = np.fromiter(
+                (float(state.average_throughput_bps) for state in selected_states),
+                dtype=np.float32,
+                count=actual_n_ue,
+            )
+
+            age_denom_value = max(age_denom, 1)
+            ue_obs[:, 0] = np.clip(reported_wb_cqi / PLAYGROUND_MAX_WB_CQI, 0.0, 1.0)
+            ue_obs[:, 1] = np.clip(wb_cqi_age / age_denom_value, 0.0, 1.0)
+            ue_obs[:, 2] = active_flag
+            ue_obs[:, 3] = np.clip(buffer_bytes / self.max_buffer_bytes, 0.0, 1.0)
+            ue_obs[:, 4] = np.clip(
+                average_throughput_bps / self.max_avg_tput_bps,
+                0.0,
+                1.0,
+            )
+            ue_obs[:, 5] = 0.0
+
+        ctx = observation[max_n_ue * PLAYGROUND_N_UE_FEATURES :]
+        current_tti = int(snapshot.step_snapshot.current_tti)
+        ctx[0] = 0.0
+        ctx[1] = float(min(max(current_tti / max(episode_len_tti, 1), 0.0), 1.0))
+        ctx[2] = 0.0
+
+        notes: List[str] = []
+        if not episode_len_exact:
+            notes.append(
+                "Нормировка current_tti использует fallback, потому что длина эпизода не задана явно."
+            )
+        if not age_exact:
+            notes.append(
+                "Нормировка wb_cqi_age использует выведенный знаменатель, а не явный период report."
+            )
+        notes.append(
+            "proxy_start_tti синтетически обнуляет progress-контекст и alloc_frac_this_tti."
+        )
+
+        return DRLPlaygroundObservation(
+            observation=observation,
+            action_mask=action_mask,
+            ue_ids_in_order=[int(state.ue_id) for state in selected_states],
+            actual_n_ue=actual_n_ue,
+            max_n_ue=max_n_ue,
+            ue_feature_dim=self.ue_feature_dim,
+            context_dim=self.context_dim,
+            mode=MODE_PROXY_START_TTI,
+            exact_env_match=False,
             notes=notes,
         )
 
@@ -181,30 +308,58 @@ class DRLPlaygroundObservationAdapter:
         Построить per-UE часть observation.
         """
 
-        obs = np.zeros(
-            len(selected_states) * PLAYGROUND_N_UE_FEATURES,
-            dtype=np.float32,
-        )
+        n_states = len(selected_states)
+        obs = np.zeros((n_states, PLAYGROUND_N_UE_FEATURES), dtype=np.float32)
         notes: List[str] = []
         exact_env_match = True
 
-        for slot, state in enumerate(selected_states):
-            alloc_frac_this_tti = float(state.alloc_rbg_frac_tti)
-            if mode == MODE_PROXY_START_TTI:
-                alloc_frac_this_tti = 0.0
-
-            age_value = int(state.wb_cqi_age_tti or 0)
-            age_norm = float(np.clip(age_value / max(age_denom, 1), 0.0, 1.0))
-
-            base = slot * PLAYGROUND_N_UE_FEATURES
-            obs[base + 0] = float(np.clip(state.reported_wb_cqi / PLAYGROUND_MAX_WB_CQI, 0.0, 1.0))
-            obs[base + 1] = age_norm
-            obs[base + 2] = float(bool(state.active_flag))
-            obs[base + 3] = float(np.clip(state.buffer_bytes / self.max_buffer_bytes, 0.0, 1.0))
-            obs[base + 4] = float(
-                np.clip(state.average_throughput_bps / self.max_avg_tput_bps, 0.0, 1.0)
+        if n_states > 0:
+            reported_wb_cqi = np.fromiter(
+                (float(state.reported_wb_cqi) for state in selected_states),
+                dtype=np.float32,
+                count=n_states,
             )
-            obs[base + 5] = float(np.clip(alloc_frac_this_tti, 0.0, 1.0))
+            wb_cqi_age = np.fromiter(
+                (float(int(state.wb_cqi_age_tti or 0)) for state in selected_states),
+                dtype=np.float32,
+                count=n_states,
+            )
+            active_flag = np.fromiter(
+                (1.0 if state.active_flag else 0.0 for state in selected_states),
+                dtype=np.float32,
+                count=n_states,
+            )
+            buffer_bytes = np.fromiter(
+                (float(state.buffer_bytes) for state in selected_states),
+                dtype=np.float32,
+                count=n_states,
+            )
+            average_throughput_bps = np.fromiter(
+                (float(state.average_throughput_bps) for state in selected_states),
+                dtype=np.float32,
+                count=n_states,
+            )
+
+            if mode == MODE_PROXY_START_TTI:
+                alloc_frac_this_tti = np.zeros(n_states, dtype=np.float32)
+            else:
+                alloc_frac_this_tti = np.fromiter(
+                    (float(state.alloc_rbg_frac_tti) for state in selected_states),
+                    dtype=np.float32,
+                    count=n_states,
+                )
+
+            age_denom_value = max(age_denom, 1)
+            obs[:, 0] = np.clip(reported_wb_cqi / PLAYGROUND_MAX_WB_CQI, 0.0, 1.0)
+            obs[:, 1] = np.clip(wb_cqi_age / age_denom_value, 0.0, 1.0)
+            obs[:, 2] = active_flag
+            obs[:, 3] = np.clip(buffer_bytes / self.max_buffer_bytes, 0.0, 1.0)
+            obs[:, 4] = np.clip(
+                average_throughput_bps / self.max_avg_tput_bps,
+                0.0,
+                1.0,
+            )
+            obs[:, 5] = np.clip(alloc_frac_this_tti, 0.0, 1.0)
 
         if mode == MODE_SNAPSHOT:
             notes.append(
@@ -212,7 +367,7 @@ class DRLPlaygroundObservationAdapter:
             )
             exact_env_match = False
 
-        return obs, notes, exact_env_match
+        return obs.reshape(-1), notes, exact_env_match
 
     def _build_context_observation(
         self,
@@ -237,17 +392,23 @@ class DRLPlaygroundObservationAdapter:
             allocated_fraction = snapshot.step_snapshot.allocated_rbg_fraction_progress
 
             if current_rbg_index is None:
-                notes.append("В snapshot отсутствует current_rbg_index для точного current_step режима.")
+                notes.append(
+                    "В snapshot отсутствует current_rbg_index для точного current_step режима."
+                )
                 exact_env_match = False
                 current_rbg_index = 0
 
             if allocated_fraction is None:
-                notes.append("В snapshot отсутствует allocated_rbg_fraction_progress для точного current_step режима.")
+                notes.append(
+                    "В snapshot отсутствует allocated_rbg_fraction_progress для точного current_step режима."
+                )
                 exact_env_match = False
                 allocated_fraction = 0.0
 
             if not snapshot.compatibility.exact_per_rbg_step_supported:
-                notes.append("PyScheduler пока не раскрывает точную per-RBG step семантику наружу.")
+                notes.append(
+                    "PyScheduler пока не раскрывает точную per-RBG step семантику наружу."
+                )
                 exact_env_match = False
 
         elif mode == MODE_PROXY_START_TTI:
@@ -260,7 +421,9 @@ class DRLPlaygroundObservationAdapter:
 
             if current_rbg_index is None:
                 current_rbg_index = 0
-                notes.append("В snapshot нет current_rbg_index, поэтому используется fallback 0.")
+                notes.append(
+                    "В snapshot нет current_rbg_index, поэтому используется fallback 0."
+                )
                 exact_env_match = False
 
             if allocated_fraction is None:
@@ -270,9 +433,9 @@ class DRLPlaygroundObservationAdapter:
                 )
                 exact_env_match = False
 
-        ctx[0] = float(np.clip(current_rbg_index / n_rbg, 0.0, 1.0))
-        ctx[1] = float(np.clip(current_tti / max(episode_len_tti, 1), 0.0, 1.0))
-        ctx[2] = float(np.clip(float(allocated_fraction), 0.0, 1.0))
+        ctx[0] = float(min(max(current_rbg_index / n_rbg, 0.0), 1.0))
+        ctx[1] = float(min(max(current_tti / max(episode_len_tti, 1), 0.0), 1.0))
+        ctx[2] = float(min(max(float(allocated_fraction), 0.0), 1.0))
         return ctx, notes, exact_env_match
 
     def _select_ue_states(
@@ -281,15 +444,16 @@ class DRLPlaygroundObservationAdapter:
         snapshot: DRLPlaygroundSnapshot,
         ue_ids: Optional[Sequence[int]],
     ) -> tuple[List[DRLPlaygroundUEState], List[bool]]:
-        """
-        Выбрать UE и их порядок в observation.
-        """
+        fast_states, fast_mask = self._select_ue_states_runtime_fast(
+            snapshot=snapshot,
+            ue_ids=ue_ids,
+        )
+        if fast_states is not None and fast_mask is not None:
+            return fast_states, fast_mask
 
         states = list(snapshot.ue_states)
         if len(snapshot.action_mask) != len(states):
-            raise ValueError(
-                "Длина action_mask не совпадает с числом UE в snapshot."
-            )
+            raise ValueError("Длина action_mask не совпадает с числом UE в snapshot.")
 
         seen_ids: set[int] = set()
         state_by_id: Dict[int, DRLPlaygroundUEState] = {}
@@ -319,11 +483,30 @@ class DRLPlaygroundObservationAdapter:
         selected_mask = [mask_by_id[ue_id] for ue_id in selected_ids]
         return selected_states, selected_mask
 
-    def _resolve_max_n_ue(self, actual_n_ue: int) -> int:
-        """
-        Определить итоговую ширину action/observation пространства.
-        """
+    def _select_ue_states_runtime_fast(
+        self,
+        *,
+        snapshot: DRLPlaygroundSnapshot,
+        ue_ids: Optional[Sequence[int]],
+    ) -> tuple[Optional[List[DRLPlaygroundUEState]], Optional[List[bool]]]:
+        states = list(snapshot.ue_states)
+        if len(snapshot.action_mask) != len(states):
+            raise ValueError("Длина action_mask не совпадает с числом UE в snapshot.")
 
+        if ue_ids is None:
+            return states, [bool(value) for value in snapshot.action_mask]
+
+        requested_ids = [int(ue_id) for ue_id in ue_ids]
+        if len(requested_ids) != len(states):
+            return None, None
+
+        state_ids = [int(state.ue_id) for state in states]
+        if requested_ids != state_ids:
+            return None, None
+
+        return states, [bool(value) for value in snapshot.action_mask]
+
+    def _resolve_max_n_ue(self, actual_n_ue: int) -> int:
         max_n_ue = actual_n_ue if self.max_n_ue is None else int(self.max_n_ue)
         if max_n_ue < actual_n_ue:
             raise ValueError(
@@ -335,10 +518,6 @@ class DRLPlaygroundObservationAdapter:
         self,
         snapshot: DRLPlaygroundSnapshot,
     ) -> tuple[int, bool]:
-        """
-        Определить знаменатель для нормировки current_tti.
-        """
-
         if self.episode_len_tti is not None:
             return max(int(self.episode_len_tti), 1), True
 
@@ -352,10 +531,6 @@ class DRLPlaygroundObservationAdapter:
         self,
         states: Sequence[DRLPlaygroundUEState],
     ) -> tuple[int, bool]:
-        """
-        Определить знаменатель для нормировки wb_cqi_age.
-        """
-
         if self.wb_cqi_report_period_tti is not None:
             return max(int(self.wb_cqi_report_period_tti) - 1, 1), True
 
@@ -366,8 +541,16 @@ class DRLPlaygroundObservationAdapter:
         ]
         if not observed_ages:
             return 1, False
-
         return max(max(observed_ages), 1), False
+
+    @staticmethod
+    def _resolve_feature_dims(observation_profile: str) -> tuple[int, int]:
+        if observation_profile == OBSERVATION_PROFILE_RANKER_V2:
+            return RANKER_V2_N_UE_FEATURES, RANKER_V2_N_CONTEXT_FEATURES
+        return LEGACY_N_UE_FEATURES, LEGACY_N_CONTEXT_FEATURES
+
+    def _uses_episode_progress_context(self) -> bool:
+        return self.observation_profile == OBSERVATION_PROFILE_LEGACY
 
     def _pad_observation(
         self,
@@ -375,21 +558,19 @@ class DRLPlaygroundObservationAdapter:
         actual_n_ue: int,
         max_n_ue: int,
     ) -> np.ndarray:
-        """
-        Паддить observation по той же схеме, что и PaddedLTESchedulerEnv.
-        """
-
         obs = np.asarray(obs, dtype=np.float32)
         base_ue_dim = actual_n_ue * PLAYGROUND_N_UE_FEATURES
         full_obs_dim = max_n_ue * PLAYGROUND_N_UE_FEATURES + PLAYGROUND_N_CONTEXT_FEATURES
 
         if max_n_ue == actual_n_ue:
-            return np.clip(obs, 0.0, 1.0)
+            np.clip(obs, 0.0, 1.0, out=obs)
+            return obs
 
         padded = np.zeros(full_obs_dim, dtype=np.float32)
         padded[:base_ue_dim] = obs[:base_ue_dim]
         padded[max_n_ue * PLAYGROUND_N_UE_FEATURES :] = obs[base_ue_dim:]
-        return np.clip(padded, 0.0, 1.0)
+        np.clip(padded, 0.0, 1.0, out=padded)
+        return padded
 
     def _pad_action_mask(
         self,
@@ -397,10 +578,6 @@ class DRLPlaygroundObservationAdapter:
         actual_n_ue: int,
         max_n_ue: int,
     ) -> np.ndarray:
-        """
-        Паддить action-mask до `max_n_ue`.
-        """
-
         mask = np.asarray(action_mask, dtype=bool)
         if max_n_ue == actual_n_ue:
             if self.ensure_nonempty_action_mask and not np.any(mask) and len(mask) > 0:
@@ -410,19 +587,22 @@ class DRLPlaygroundObservationAdapter:
 
         padded = np.zeros(max_n_ue, dtype=bool)
         padded[:actual_n_ue] = mask[:actual_n_ue]
-
         if self.ensure_nonempty_action_mask and not np.any(padded) and len(padded) > 0:
             padded[0] = True
         return padded
 
     @staticmethod
     def _validate_mode(mode: str) -> None:
-        """
-        Проверить поддерживаемость режима адаптации.
-        """
-
         if mode not in SUPPORTED_ADAPTER_MODES:
             raise ValueError(
                 f"Неподдерживаемый режим адаптера: {mode}. "
                 f"Ожидается один из {SUPPORTED_ADAPTER_MODES}."
+            )
+
+    @staticmethod
+    def _validate_observation_profile(observation_profile: str) -> None:
+        if observation_profile not in SUPPORTED_OBSERVATION_PROFILES:
+            raise ValueError(
+                f"Неподдерживаемый observation_profile: {observation_profile}. "
+                f"Ожидается один из {SUPPORTED_OBSERVATION_PROFILES}."
             )

@@ -28,6 +28,10 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 from drl.paths import PYSCHEDULER_PPO_RANKER_RUN_DIR
+from drl.ranker_observation_adapter import (
+    RANKER_OBSERVATION_N_CONTEXT_FEATURES,
+    RANKER_OBSERVATION_N_UE_FEATURES,
+)
 from drl.runtime_scenario_factory import (
     CURRICULUM_STAGES,
     EVAL_SCENARIO_KEYS,
@@ -52,6 +56,17 @@ except ModuleNotFoundError:
 
 DEFAULT_RUN_DIR = PYSCHEDULER_PPO_RANKER_RUN_DIR
 DEFAULT_MAX_N_UE = 40
+
+RANKER_UE_FEATURE_NAMES = (
+    "reported_wb_cqi",
+    "wb_cqi_age_tti",
+    "buffer_bytes",
+    "average_throughput_bps",
+)
+RANKER_CONTEXT_FEATURE_NAMES = (
+    "active_ue_count",
+    "n_rbg",
+)
 
 
 def evaluate_agent(
@@ -86,6 +101,30 @@ def evaluate_agent(
     summary = env.get_episode_summary()
     summary["invalid_action_rate"] = invalid_action_count / max(total_steps, 1)
     return summary
+
+
+def build_ranker_observation_contract(env: Any) -> Dict[str, Any]:
+    """
+    Описать текущий observation-contract ranker-среды.
+
+    Этот контракт сохраняется рядом с run-артефактами, чтобы не было
+    двусмысленности, на каком именно входе была обучена модель.
+    """
+
+    return {
+        "variant": "ranker_compact_v1",
+        "decision_granularity": "one_ranking_per_tti",
+        "adapter_mode": "proxy_start_tti",
+        "ue_feature_names": list(RANKER_UE_FEATURE_NAMES),
+        "context_feature_names": list(RANKER_CONTEXT_FEATURE_NAMES),
+        "ue_feature_dim": int(env.ue_feature_dim),
+        "context_dim": int(env.context_dim),
+        "obs_dim": int(env.max_n_ue * env.ue_feature_dim + env.context_dim),
+        "max_n_ue": int(env.max_n_ue),
+        "n_rbg": int(getattr(env, "n_rbg", 0) or 0),
+        "expected_ue_feature_dim": int(RANKER_OBSERVATION_N_UE_FEATURES),
+        "expected_context_dim": int(RANKER_OBSERVATION_N_CONTEXT_FEATURES),
+    }
 
 
 def evaluate_scenarios(
@@ -394,6 +433,31 @@ def main() -> None:
         raise ValueError(f"Unknown probe scenario: {probe_scenario_key}")
 
     bootstrap_env = train_env_pool[bootstrap_key]
+    observation_contract = build_ranker_observation_contract(bootstrap_env)
+    if bootstrap_env.ue_feature_dim != RANKER_OBSERVATION_N_UE_FEATURES:
+        raise ValueError(
+            "PySchedulerLteRankerEnv должен использовать compact ranker observation "
+            f"с ue_feature_dim={RANKER_OBSERVATION_N_UE_FEATURES}, "
+            f"но получено {bootstrap_env.ue_feature_dim}."
+        )
+    if bootstrap_env.context_dim != RANKER_OBSERVATION_N_CONTEXT_FEATURES:
+        raise ValueError(
+            "PySchedulerLteRankerEnv должен использовать compact ranker observation "
+            f"с context_dim={RANKER_OBSERVATION_N_CONTEXT_FEATURES}, "
+            f"но получено {bootstrap_env.context_dim}."
+        )
+    print(
+        "Ranker observation contract: "
+        f"variant={observation_contract['variant']}, "
+        f"ue_dim={observation_contract['ue_feature_dim']}, "
+        f"context_dim={observation_contract['context_dim']}, "
+        f"obs_dim={observation_contract['obs_dim']}"
+    )
+    print(
+        "Ranker features: "
+        f"UE={', '.join(RANKER_UE_FEATURE_NAMES)} | "
+        f"CTX={', '.join(RANKER_CONTEXT_FEATURE_NAMES)}"
+    )
     agent = LTEPPORankerAgent(
         max_n_ue=bootstrap_env.max_n_ue,
         ue_feature_dim=bootstrap_env.ue_feature_dim,
@@ -577,6 +641,16 @@ def main() -> None:
     agent.save(weights_path)
     print(f"Weights saved: {weights_path}")
 
+    observation_contract_path = run_dir / "observation_contract.json"
+    with open(observation_contract_path, "w", encoding="utf-8") as file_obj:
+        json.dump(
+            observation_contract,
+            file_obj,
+            ensure_ascii=False,
+            indent=2,
+        )
+    print(f"Observation contract saved: {observation_contract_path}")
+
     run_config_path = run_dir / "run_config.json"
     with open(run_config_path, "w", encoding="utf-8") as file_obj:
         json.dump(
@@ -606,6 +680,7 @@ def main() -> None:
                 "probe_scenario": args.probe_scenario,
                 "train_device_resolved": str(device),
                 "eval_device_resolved": str(eval_device),
+                "observation_contract": observation_contract,
             },
             file_obj,
             ensure_ascii=False,

@@ -9,6 +9,11 @@ from drl.playground_adapter import (
     MODE_PROXY_START_TTI,
     MODE_SNAPSHOT,
 )
+from drl.ranker_observation_adapter import (
+    RANKER_OBSERVATION_N_CONTEXT_FEATURES,
+    RANKER_OBSERVATION_N_UE_FEATURES,
+    RankerObservationAdapter,
+)
 from drl.simulation_bridge import (
     DRLPlaygroundCompatibilityReport,
     DRLPlaygroundSimulationConfig,
@@ -26,6 +31,9 @@ from drl.simulation_bridge import (
 __all__ = [
     "DRLPlaygroundObservation",
     "DRLPlaygroundObservationAdapter",
+    "RankerObservationAdapter",
+    "RANKER_OBSERVATION_N_UE_FEATURES",
+    "RANKER_OBSERVATION_N_CONTEXT_FEATURES",
     "DRLPlaygroundCompatibilityReport",
     "DRLPlaygroundSimulationConfig",
     "DRLPlaygroundSnapshot",

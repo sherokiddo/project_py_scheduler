@@ -196,7 +196,7 @@ class SharedUERankerActorCritic(nn.Module):
         context_obs = obs[:, ue_flat_dim:]
         return ue_obs, context_obs
 
-    def forward(
+    def _encode_features(
         self,
         obs: torch.Tensor,
         action_mask: torch.Tensor,
@@ -209,19 +209,56 @@ class SharedUERankerActorCritic(nn.Module):
         masked_sum      = torch.sum(ue_hidden * mask, dim=1)
         masked_count    = torch.clamp(mask.sum(dim=1), min=1.0)
         pooled_hidden   = masked_sum / masked_count
+        return ue_hidden, context_hidden, pooled_hidden
 
-        pooled_expanded = pooled_hidden.unsqueeze(1).expand(-1, self.max_n_ue, -1)
+    def _compute_score_mean(
+        self,
+        ue_hidden: torch.Tensor,
+        context_hidden: torch.Tensor,
+        pooled_hidden: torch.Tensor,
+    ) -> torch.Tensor:
+        pooled_expanded  = pooled_hidden.unsqueeze(1).expand(-1, self.max_n_ue, -1)
         context_expanded = context_hidden.unsqueeze(1).expand(-1, self.max_n_ue, -1)
 
         score_input = torch.cat(
             [ue_hidden, pooled_expanded, context_expanded],
             dim=-1,
         )
-        score_mean = self.score_head(score_input).squeeze(-1)
+        return self.score_head(score_input).squeeze(-1)
 
+    def forward_actor(
+        self,
+        obs: torch.Tensor,
+        action_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        ue_hidden, context_hidden, pooled_hidden = self._encode_features(
+            obs,
+            action_mask,
+        )
+        score_mean = self._compute_score_mean(
+            ue_hidden,
+            context_hidden,
+            pooled_hidden,
+        )
+        log_std = self.log_std.unsqueeze(0).expand_as(score_mean)
+        return score_mean, log_std
+
+    def forward(
+        self,
+        obs: torch.Tensor,
+        action_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        ue_hidden, context_hidden, pooled_hidden = self._encode_features(
+            obs,
+            action_mask,
+        )
+        score_mean = self._compute_score_mean(
+            ue_hidden,
+            context_hidden,
+            pooled_hidden,
+        )
         value_input = torch.cat([pooled_hidden, context_hidden], dim=-1)
         value = self.value_head(value_input).squeeze(-1)
-
         log_std = self.log_std.unsqueeze(0).expand_as(score_mean)
         return score_mean, log_std, value
 
@@ -308,6 +345,17 @@ class LTEPPORankerAgent:
         std = torch.exp(log_std)
         return score_mean, std, value
 
+    def _policy_actor_outputs(
+        self,
+        obs: torch.Tensor,
+        action_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        sanitized_mask = self._sanitize_action_mask_tensor(action_mask)
+        score_mean, log_std = self.policy.forward_actor(obs, sanitized_mask)
+        log_std = torch.clamp(log_std, min=self.min_log_std, max=self.max_log_std)
+        std = torch.exp(log_std)
+        return score_mean, std
+
     def _masked_scores(
         self,
         score_mean: torch.Tensor,
@@ -338,15 +386,39 @@ class LTEPPORankerAgent:
         action_mask: np.ndarray,
         deterministic: bool = True,
     ) -> np.ndarray:
-        action_scores, _, _ = self.select_action(
+        mask = self._sanitize_action_mask_np(action_mask)
+        obs_tensor = torch.as_tensor(
             obs,
-            action_mask,
-            deterministic=deterministic,
+            dtype=torch.float32,
+            device=self.device,
+        ).unsqueeze(0)
+        mask_tensor = torch.as_tensor(
+            mask,
+            dtype=torch.bool,
+            device=self.device,
+        ).unsqueeze(0)
+
+        with torch.no_grad():
+            score_mean, std = self._policy_actor_outputs(obs_tensor, mask_tensor)
+            if deterministic:
+                action_tensor = score_mean
+            else:
+                dist = torch.distributions.Normal(score_mean, std)
+                action_tensor = dist.sample()
+
+            action_tensor = torch.where(
+                mask_tensor,
+                action_tensor,
+                torch.full_like(action_tensor, -1e9),
+            )
+
+        return (
+            action_tensor.squeeze(0)
+            .detach()
+            .cpu()
+            .numpy()
+            .astype(np.float32)
         )
-        mask                 = self._sanitize_action_mask_np(action_mask)
-        action_scores        = np.asarray(action_scores, dtype=np.float32).copy()
-        action_scores[~mask] = -1e9
-        return action_scores
 
     def predict_ranking(
         self,

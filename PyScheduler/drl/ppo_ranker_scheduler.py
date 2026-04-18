@@ -12,7 +12,12 @@ from SCHEDULER import SchedulerInterface
 from drl.cpp_ranker_bridge import normalize_cpp_runtime_search_paths
 from drl.model_runners import CppPPORankerModelRunner, PPORankerModelRunner
 from drl.pdsch_allocation_session import PDSCHAllocationSession
-from drl.playground_adapter import DRLPlaygroundObservationAdapter, MODE_PROXY_START_TTI
+from drl.playground_adapter import MODE_PROXY_START_TTI
+from drl.ranker_observation_adapter import (
+    RANKER_OBSERVATION_N_CONTEXT_FEATURES,
+    RANKER_OBSERVATION_N_UE_FEATURES,
+    RankerObservationAdapter,
+)
 from drl.simulation_bridge import (
     DRLPlaygroundCompatibilityReport,
     DRLPlaygroundSimulationConfig,
@@ -80,7 +85,7 @@ class PpoRankerScheduler(SchedulerInterface):
             configured_max_n_ue=ppo_ranker_max_n_ue,
             policy_runner=self.policy_runner,
         )
-        self.observation_adapter = DRLPlaygroundObservationAdapter(
+        self.observation_adapter = RankerObservationAdapter(
             max_n_ue=self.max_n_ue,
             episode_len_tti=resolved_episode_len_tti,
             wb_cqi_report_period_tti=ppo_ranker_wb_cqi_report_period_tti,
@@ -124,14 +129,34 @@ class PpoRankerScheduler(SchedulerInterface):
         initializer = getattr(self.policy_runner, "initialize", None)
         if callable(initializer):
             initializer()
-            return
-
-        if hasattr(self.policy_runner, "bridge"):
+        elif hasattr(self.policy_runner, "bridge"):
             _ = self.policy_runner.bridge
-            return
-
-        if hasattr(self.policy_runner, "agent"):
+        elif hasattr(self.policy_runner, "agent"):
             _ = self.policy_runner.agent
+
+        self._warmup_policy_runtime()
+
+    def _warmup_policy_runtime(self) -> None:
+        """
+        Выполнить один dry-run inference до старта симуляции.
+
+        Это выносит ленивую инициализацию первого forward/pass, thread-pool,
+        внутренних tensor-буферов и backend dispatch из первого реального TTI.
+        """
+        obs_dim = (
+            self.max_n_ue * RANKER_OBSERVATION_N_UE_FEATURES
+            + RANKER_OBSERVATION_N_CONTEXT_FEATURES
+        )
+        warmup_obs = np.zeros(obs_dim, dtype=np.float32)
+        warmup_mask = np.zeros(self.max_n_ue, dtype=bool)
+        if self.max_n_ue > 0:
+            warmup_mask[0] = True
+
+        _ = self.policy_runner.predict(
+            warmup_obs,
+            warmup_mask,
+            deterministic=self.ppo_ranker_deterministic,
+        )
 
     def _calculate_priorities(
         self,

@@ -17,6 +17,12 @@ import numpy as np
 from gymnasium import spaces
 
 from drl.envs.pyscheduler_lte_env import PySchedulerLteEnv
+from drl.playground_adapter import MODE_PROXY_START_TTI
+from drl.ranker_observation_adapter import (
+    RANKER_OBSERVATION_N_CONTEXT_FEATURES,
+    RANKER_OBSERVATION_N_UE_FEATURES,
+    RankerObservationAdapter,
+)
 
 
 class PySchedulerLteRankerEnv(PySchedulerLteEnv):
@@ -29,6 +35,9 @@ class PySchedulerLteRankerEnv(PySchedulerLteEnv):
 
         combined_metric(u, k) = rank_weight(u) * fd_pf_metric(u, k)
     """
+
+    N_UE_FEATURES = RANKER_OBSERVATION_N_UE_FEATURES
+    N_CONTEXT_FEATURES = RANKER_OBSERVATION_N_CONTEXT_FEATURES
 
     def __init__(
         self,
@@ -49,6 +58,13 @@ class PySchedulerLteRankerEnv(PySchedulerLteEnv):
         self.last_ranked_ue_ids: List[int] = []
         self.last_score_vector: Optional[np.ndarray] = None
         self.last_rank_weight_vector: Optional[np.ndarray] = None
+        self.observation_adapter = RankerObservationAdapter(
+            max_n_ue=self.max_n_ue,
+            episode_len_tti=None,
+            wb_cqi_report_period_tti=self.wb_cqi_report_period_tti,
+            strict_mode=self.strict_observation,
+            ensure_nonempty_action_mask=self.ensure_nonempty_action_mask,
+        )
 
     def reset(
         self,
@@ -91,6 +107,16 @@ class PySchedulerLteRankerEnv(PySchedulerLteEnv):
             info = self._build_info(invalid_action=invalid_action)
 
         return obs, float(reward), bool(terminated), False, info
+
+    def _build_current_observation_packet(self):
+        snapshot = self.current_session.build_step_snapshot(
+            self.current_session.get_action_mask()
+        )
+        return self.observation_adapter.build(
+            snapshot=snapshot,
+            mode=MODE_PROXY_START_TTI,
+            ue_ids=self.current_session.eligible_ue_ids,
+        )
 
     def _coerce_action_scores(self, action: Any) -> Tuple[np.ndarray, bool]:
         """
