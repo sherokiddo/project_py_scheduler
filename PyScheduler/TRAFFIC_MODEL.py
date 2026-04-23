@@ -299,30 +299,22 @@ class PoissonModel(ITrafficModel):
         super().__init__(min_packet_size, max_packet_size)
         self.packet_rate = packet_rate
 
-    def generate_traffic(self, ue_id: int, current_time: int, update_interval: int) -> List[Packet]:
-        """
-        Генерация пуассоновского трафика.
-        """
+    def generate_traffic(self, ue_id: int, current_time: int, update_interval: int):
         packets = []
-        generate_time = current_time - update_interval
-        end_generate = current_time
 
-        mean_interval_ms = 1000.0 / self.packet_rate
+        lam = self.packet_rate * (update_interval / 1000.0)
+        num_packets = np.random.poisson(lam)
 
-        while generate_time < end_generate:
-            interval = np.random.exponential(mean_interval_ms)
-            generate_time += interval
-
-            if generate_time > end_generate:
-                break
-
+        for _ in range(num_packets):
             packet_size = np.random.randint(self.min_packet_size, self.max_packet_size)
+
             packet = Packet(
                 size=packet_size,
                 ue_id=ue_id,
-                creation_time=generate_time,
+                creation_time=current_time,
                 priority=0,
             )
+
             packets.append(packet)
 
         return packets
@@ -603,6 +595,184 @@ class MMPPModel(ITrafficModel):
             }
         )
         return info
+    
+class PeriodicTrafficModel(ITrafficModel):
+
+    def __init__(
+        self,
+        packet_interval_ms: int = 1,
+        packet_size: int = 1500,
+    ):
+
+        super().__init__(
+            min_packet_size=packet_size,
+            max_packet_size=packet_size,
+        )
+
+        if packet_interval_ms <= 0:
+            raise ValueError("packet_interval_ms must be > 0")
+
+        if packet_size <= 0:
+            raise ValueError("packet_size_bytes must be > 0")
+
+        self.packet_interval_ms = packet_interval_ms
+        self.packet_size = packet_size
+
+        # Эта модель намеренно поддерживает только один UE на экземпляр.
+        self._bound_ue_id: Optional[int] = None
+        self._next_packet_time: int = 0
+
+    def _initialize_state(self, ue_id: int):
+        self._bound_ue_id = ue_id
+        self._next_packet_time = 0
+
+    def generate_traffic(
+        self, ue_id: int, current_time: int, update_interval: int
+    ) -> List[Packet]:
+
+        if self._bound_ue_id is None:
+            self._initialize_state(ue_id)
+        elif ue_id != self._bound_ue_id:
+            raise ValueError(
+                f"PeriodicTrafficModel instance is bound to UE {self._bound_ue_id}, "
+                f"got UE {ue_id}. Create a separate model per UE."
+            )
+
+        if update_interval <= 0:
+            return []
+
+        packets: List[Packet] = []
+
+        interval_start = current_time - update_interval
+        interval_end = current_time
+
+        next_packet_time = self._next_packet_time
+
+        while next_packet_time <= interval_end:
+            if next_packet_time >= interval_start:
+                packets.append(
+                    Packet(
+                        size=self.packet_size,
+                        ue_id=ue_id,
+                        creation_time=next_packet_time,
+                    )
+                )
+
+            next_packet_time += self.packet_interval_ms
+
+        self._next_packet_time = next_packet_time
+        return packets
+
+    def clear_state(self, ue_id: int):
+        if self._bound_ue_id == ue_id:
+            self._bound_ue_id = None
+            self._next_packet_time = 0
+
+    def get_model_name(self) -> str:
+        return "PeriodicTraffic"
+
+    def get_model_info(self) -> Dict:
+        packet_rate_pps = 1000.0 / self.packet_interval_ms
+        bitrate_bps = packet_rate_pps * self.packet_size * 8
+
+        return {
+            "packet_interval_ms": self.packet_interval_ms,
+            "packet_size": self.packet_size,
+            "packet_rate_pps": packet_rate_pps,
+            "bitrate_bps": bitrate_bps,
+            "active_devices": 1 if self._bound_ue_id is not None else 0,
+        }
+    
+    
+class BitrateTrafficModel(ITrafficModel):
+
+    def __init__(
+        self,
+        bitrate_bps: int,
+        packet_size: int = 1500,
+    ):
+        super().__init__(
+            min_packet_size=packet_size,
+            max_packet_size=packet_size,
+        )
+
+        if bitrate_bps <= 0:
+            raise ValueError("bitrate_bps must be > 0")
+
+        if packet_size <= 0:
+            raise ValueError("packet_size must be > 0")
+
+        self.bitrate_bps = bitrate_bps
+        self.packet_size = packet_size
+        self._packets_per_ms = bitrate_bps / (packet_size * 8 * 1000)
+
+        self._bound_ue_id: Optional[int] = None
+        self._next_time_ms: int = 0
+        self._packet_credit: float = 0.0
+
+    def _initialize_state(self, ue_id: int):
+        self._bound_ue_id = ue_id
+        self._next_time_ms = 0
+        self._packet_credit = 0.0
+
+    def generate_traffic(
+        self, ue_id: int, current_time: int, update_interval: int
+    ) -> List[Packet]:
+
+        if self._bound_ue_id is None:
+            self._initialize_state(ue_id)
+        elif ue_id != self._bound_ue_id:
+            raise ValueError(
+                f"BitrateTrafficModel instance is bound to UE {self._bound_ue_id}, "
+                f"got UE {ue_id}. Create a separate model per UE."
+            )
+
+        if update_interval <= 0:
+            return []
+
+        packets: List[Packet] = []
+
+        interval_end = current_time
+
+        while self._next_time_ms <= interval_end:
+            self._packet_credit += self._packets_per_ms
+
+            packets_to_generate = int(self._packet_credit)
+            if packets_to_generate > 0:
+                for _ in range(packets_to_generate):
+                    packets.append(
+                        Packet(
+                            size=self.packet_size,
+                            ue_id=ue_id,
+                            creation_time=self._next_time_ms,
+                        )
+                    )
+                self._packet_credit -= packets_to_generate
+
+            self._next_time_ms += 1
+
+        return packets
+
+    def clear_state(self, ue_id: int):
+        if self._bound_ue_id == ue_id:
+            self._bound_ue_id = None
+            self._next_time_ms = 0
+            self._packet_credit = 0.0
+
+    def get_model_name(self) -> str:
+        return "BitrateTraffic"
+
+    def get_model_info(self) -> Dict:
+        packet_rate_pps = self.bitrate_bps / (self.packet_size * 8)
+        packets_per_ms = packet_rate_pps / 1000.0
+
+        return {
+            "bitrate_bps": self.bitrate_bps,
+            "packet_size": self.packet_size,
+            "packet_rate_pps": packet_rate_pps,
+            "packets_per_ms": packets_per_ms,
+            "active_devices": 1 if self._bound_ue_id is not None else 0,
+        }
 
 
 class TrafficModelFactory:
@@ -671,6 +841,10 @@ class TrafficModelFactory:
                     [[0, 0.07, 0.03], [0.12, 0, 0.08], [0.4, 0.1, 0]]
                 )
             return MMPPModel(**kwargs)
+        elif model_type == "PereodicTraffic":
+            return PeriodicTrafficModel(**kwargs)
+        elif model_type == "BitrateTraffic":
+            return BitrateTrafficModel(**kwargs)
         else:
             available = TrafficModelFactory.get_available_models()
             raise ValueError(f"Unknown model type: '{model_type}'. Available: {available}")

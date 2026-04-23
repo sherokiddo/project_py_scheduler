@@ -292,7 +292,7 @@ class IBufferManager(ABC):
         pass
     
     @abstractmethod
-    def get_packets(self, grants: List) -> Tuple[List[Packet], int]:
+    def get_packets(self, grants: List) -> Tuple[List[Packet], int, dict]:
         """
         Извлечение пакетов из буферов соответствующего UE на основании грантов.
 
@@ -444,7 +444,7 @@ class SimpleBufferManager(IBufferManager):
         buffer_status = self.buffers[ue_id].get_buffer_status()
         return [buffer_status]
     
-    def get_packets(self, grants: List) -> Tuple[List[Packet], int]:
+    def get_packets(self, grants: List) -> Tuple[List[Packet], int, dict]:
         """
         Извлечение пакетов из буферов соответствующего UE на основании грантов.
 
@@ -479,7 +479,7 @@ class SimpleBufferManager(IBufferManager):
         packets, extracted_bytes = self.buffers[ue_id].get_packets(num_bytes)
         self.current_total_size -= extracted_bytes
         
-        return packets, extracted_bytes
+        return packets, extracted_bytes, {}
     
     def upd_buffers_all(self) -> None:
         """
@@ -727,6 +727,8 @@ class RLCUM(RLCEntity):
         self.packets_dropped = 0
         self.packets_expired = 0
         self.extracted_bytes = 0
+        self.packets_extracted = 0
+        self.packets_extracted_late = 0
 
     def add_packet(self, packet: Packet) -> bool:
         """
@@ -778,12 +780,16 @@ class RLCUM(RLCEntity):
 
             # Сегментация пакета
             if (extracted_bytes + packet_size) > num_bytes_to_extract:
-               segment_size = num_bytes_to_extract - extracted_bytes
-               segment = packet.split_packet(segment_size)
+                segment_size = num_bytes_to_extract - extracted_bytes
+                segment = packet.split_packet(segment_size)
 
-               extracted_packets.append(segment)
-               extracted_bytes += segment_size
-               break
+                extracted_packets.append(segment)
+                extracted_bytes += segment_size
+
+                if segment.age(GLOBALS.CURRENT_TIME) > segment.qci.get_delay_budget():
+                    self.packets_extracted_late += 1
+
+                break
 
             # Полное извлечение пакета
             else:
@@ -791,8 +797,12 @@ class RLCUM(RLCEntity):
                 extracted_packets.append(extracted_packet)
                 extracted_bytes += packet_size
 
+                if extracted_packet.age(GLOBALS.CURRENT_TIME) > extracted_packet.qci.get_delay_budget():
+                    self.packets_extracted_late += 1
+
         self.current_tx_buffer_size -= extracted_bytes
         self.extracted_bytes = extracted_bytes
+        self.packets_extracted = len(extracted_packets)
 
         return extracted_packets, extracted_bytes
 
@@ -803,6 +813,8 @@ class RLCUM(RLCEntity):
         Удаляются пакеты, возраст которых превышает значение
         PDCP discard timer (если пакет не был сегментирован).
         """
+        self._clear_stats()
+
         new_buffer_size = 0
 
         for _ in range(len(self.tx_buffer)):
@@ -854,10 +866,7 @@ class RLCUM(RLCEntity):
         self.tx_buffer.clear()
         self.current_tx_buffer_size = 0
 
-        self.packets_added = 0
-        self.packets_dropped = 0
-        self.packets_expired = 0
-        self.extracted_bytes = 0
+        self._clear_stats()
 
     def get_stats(self) -> Dict:
         """
@@ -883,6 +892,8 @@ class RLCUM(RLCEntity):
             "qci": self.qci,
             "buffer_size": self.current_tx_buffer_size,
             "extracted_bytes": self.extracted_bytes,
+            "packets_extracted": self.packets_extracted,
+            "packets_extracted_late": self.packets_extracted_late,
             "packets_added": self.packets_added,
             "packets_dropped": self.packets_dropped,
             "packets_expired": self.packets_expired,
@@ -891,6 +902,15 @@ class RLCUM(RLCEntity):
         }
 
         return stats
+    
+    def _clear_stats(self) -> None:
+
+        self.packets_added = 0
+        self.packets_dropped = 0
+        self.packets_expired = 0
+        self.extracted_bytes = 0
+        self.packets_extracted = 0
+        self.packets_extracted_late = 0
 
 
 class UeProtocolStack:
@@ -1069,6 +1089,8 @@ class UeProtocolStack:
         # Статистика для каждого отдельного QCI
         buffer_size_per_qci = {}
         extracted_bytes_per_qci = {}
+        packets_extracted_per_qci = {}
+        packets_extracted_late_per_qci = {}
         packets_added_per_qci = {}
         packets_dropped_per_qci = {}
         packets_expired_per_qci = {}
@@ -1083,6 +1105,8 @@ class UeProtocolStack:
 
             buffer_size_per_qci[qci] = rlc_entity_stats.get("buffer_size")
             extracted_bytes_per_qci[qci] = rlc_entity_stats.get("extracted_bytes")
+            packets_extracted_per_qci[qci] = rlc_entity_stats.get("packets_extracted")
+            packets_extracted_late_per_qci[qci] = rlc_entity_stats.get("packets_extracted_late")
             packets_added_per_qci[qci] = rlc_entity_stats.get("packets_added")
             packets_dropped_per_qci[qci] = rlc_entity_stats.get("packets_dropped")
             packets_expired_per_qci[qci] = rlc_entity_stats.get("packets_expired")
@@ -1100,6 +1124,8 @@ class UeProtocolStack:
             "ue_packets_expired": ue_packets_expired,
             "buffer_size_per_qci": buffer_size_per_qci,
             "extracted_bytes_per_qci": extracted_bytes_per_qci,
+            "packets_extracted_per_qci": packets_extracted_per_qci,
+            "packets_extracted_late_per_qci": packets_extracted_late_per_qci,
             "packets_added_per_qci": packets_added_per_qci,
             "packets_dropped_per_qci": packets_dropped_per_qci,
             "packets_expired_per_qci": packets_expired_per_qci,
@@ -1193,7 +1219,7 @@ class LayeredBufferManager(IBufferManager):
         
         return ue_stack.get_buffer_status()
 
-    def get_packets(self, grants: List) -> Tuple[List[Packet], int]:
+    def get_packets(self, grants: List) -> Tuple[List[Packet], int, dict]:
         """
         Извлечение пакетов из буферов соответствующего UE на основании грантов.
 
@@ -1228,6 +1254,7 @@ class LayeredBufferManager(IBufferManager):
         
         packets = []
         extracted_bytes = 0
+        extracted_bytes_per_qci = {}
         
         for grant in grants:
             lcid = grant.lcid
@@ -1237,10 +1264,11 @@ class LayeredBufferManager(IBufferManager):
             
             packets.extend(lc_packets)
             extracted_bytes += lc_extracted_bytes
+            extracted_bytes_per_qci[lc_packets[0].qci] = lc_extracted_bytes
 
         self.current_total_size -= extracted_bytes
 
-        return packets, extracted_bytes
+        return packets, extracted_bytes, extracted_bytes_per_qci
             
     def upd_buffers_all(self) -> None:
         """
@@ -1342,11 +1370,14 @@ class LayeredBufferManager(IBufferManager):
         packets_added_per_ue = {}
         packets_dropped_per_ue = {}
         packets_expired_per_ue = {}
+        buffer_size_per_ue = {}
 
         # Статистика для каждого отдельного QCI каждого UE
         buffer_size_per_ue_per_qci = {}
         extracted_bytes_per_ue_per_qci = {}
+        packets_extracted_per_ue_per_qci = {}
         packets_added_per_ue_per_qci = {}
+        packets_extracted_late_per_ue_per_qci = {}
         packets_dropped_per_ue_per_qci = {}
         packets_expired_per_ue_per_qci = {}
 
@@ -1365,9 +1396,13 @@ class LayeredBufferManager(IBufferManager):
             packets_added_per_ue[ue_id] = ue_stack_stats.get("ue_packets_added")
             packets_dropped_per_ue[ue_id] = ue_stack_stats.get("ue_packets_dropped")
             packets_expired_per_ue[ue_id] = ue_stack_stats.get("ue_packets_expired")
+            buffer_size_qci = ue_stack_stats.get("buffer_size_per_qci", {})
+            buffer_size_per_ue[ue_id] = sum(buffer_size_qci.values())
 
-            buffer_size_per_ue_per_qci[ue_id] = ue_stack_stats.get("buffer_size_per_qci")
+            buffer_size_per_ue_per_qci[ue_id] = buffer_size_qci
             extracted_bytes_per_ue_per_qci[ue_id] = ue_stack_stats.get("extracted_bytes_per_qci")
+            packets_extracted_per_ue_per_qci[ue_id] = ue_stack_stats.get("packets_extracted_per_qci")
+            packets_extracted_late_per_ue_per_qci[ue_id] = ue_stack_stats.get("packets_extracted_late_per_qci")
             packets_added_per_ue_per_qci[ue_id] = ue_stack_stats.get("packets_added_per_qci")
             packets_dropped_per_ue_per_qci[ue_id] = ue_stack_stats.get("packets_dropped_per_qci")
             packets_expired_per_ue_per_qci[ue_id] = ue_stack_stats.get("packets_expired_per_qci")
@@ -1385,8 +1420,11 @@ class LayeredBufferManager(IBufferManager):
             "packets_added_per_ue": packets_added_per_ue,
             "packets_dropped_per_ue": packets_dropped_per_ue,
             "packets_expired_per_ue": packets_expired_per_ue,
+            "buffer_size_per_ue": buffer_size_per_ue,
             "buffer_size_per_ue_per_qci": buffer_size_per_ue_per_qci,
             "extracted_bytes_per_ue_per_qci": extracted_bytes_per_ue_per_qci,
+            "packets_extracted_per_ue_per_qci": packets_extracted_per_ue_per_qci,
+            "packets_extracted_late_per_ue_per_qci": packets_extracted_late_per_ue_per_qci,
             "packets_added_per_ue_per_qci": packets_added_per_ue_per_qci,
             "packets_dropped_per_ue_per_qci": packets_dropped_per_ue_per_qci,
             "packets_expired_per_ue_per_qci": packets_expired_per_ue_per_qci,

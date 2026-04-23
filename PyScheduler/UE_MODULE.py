@@ -370,6 +370,8 @@ class UserEquipment:
         # Статистика для DL
         self.current_dl_throughput = 0.0
         self.average_dl_throughput = 0.0
+        self.current_dl_throughput_per_qci = {}
+        self.average_dl_throughput_per_qci = {}
         self.total_dl_transmitted_bits = 0
         self.total_transmitted_dl_packets = 0
         self.total_dropped_dl_packets = 0
@@ -626,19 +628,27 @@ class UserEquipment:
         # Обновление общей статистики
         self.total_transmitted_bits += bits_transmitted
 
-    def UPD_DL_THROUGHPUT_BPS(self, bits_dl_transmitted: int, time_interval_ms: int):
+    def UPD_DL_THROUGHPUT_BPS(
+        self,
+        bits_dl_transmitted: int,
+        bits_transmitted_per_qci: Dict[int, int],
+        time_interval_ms: int,
+    ):
         """
         Обновить статистику пропускной способности в DL.
 
         Args:
             bits_dl_transmitted (int): Количество переданных бит в DL.
+            bits_transmitted_per_qci (Dict[int, int]): Переданные биты по каждому QCI.
             time_interval_ms (int): Интервал времени (мс).
 
         """
+        def _to_bps(bits: int) -> float:
+            """Конвертация переданных бит за интервал в бит/с."""
+            return (bits * 1000) / time_interval_ms if time_interval_ms > 0 else 0
+
         # Текущая пропускная способность в бит/с
-        self.current_dl_throughput = (
-            (bits_dl_transmitted * 1000) / time_interval_ms if time_interval_ms > 0 else 0
-        )
+        self.current_dl_throughput = _to_bps(bits_dl_transmitted)
 
         # EWMA обновление average_throughput для Proportional Fair
         alpha = 0.002  # временный хардкод, вывести в управление.
@@ -646,6 +656,25 @@ class UserEquipment:
         self.average_throughput = (
             1 - alpha
         ) * average_throughput_past + alpha * self.current_dl_throughput
+
+        # Обновляем все известные QCI на каждом TTI:
+        # если передачи по QCI не было, current throughput становится 0,
+        # а average throughput плавно затухает по EWMA.
+        tracked_qcis = (
+            set(self.current_dl_throughput_per_qci)
+            | set(self.average_dl_throughput_per_qci)
+            | set(bits_transmitted_per_qci)
+        )
+        for qci in tracked_qcis:
+            bits_per_qci = bits_transmitted_per_qci.get(qci, 0)
+            throughput_qci = _to_bps(bits_per_qci)
+            self.current_dl_throughput_per_qci[qci] = throughput_qci
+
+            average_throughput_qci_past = self.average_dl_throughput_per_qci.get(qci, 0)
+            self.average_dl_throughput_per_qci[qci] = (
+                (1 - alpha) * average_throughput_qci_past
+                + alpha * throughput_qci
+            )
 
         # Текущее переданное количество бит
         self.last_transmitted_bits = bits_dl_transmitted
