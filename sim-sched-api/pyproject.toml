@@ -1,0 +1,21 @@
+[tool.poetry]
+package-mode = false
+name = "schedule-api"
+version = "0.1.0"
+description = ""
+authors = ["d.moskovskikh"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+fastapi = "^0.125.0"
+uvicorn = {extras = ["standard"], version = "^0.38.0"}
+numpy = "^2.4.1"
+pydantic = "^2.12.5"
+
+[tool.poetry.scripts]
+start = "uvicorn app:app --reload --host 0.0.0.0 --port 8000"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

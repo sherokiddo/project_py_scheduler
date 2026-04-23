@@ -26,7 +26,7 @@ import sys
 import numpy as np
 import warnings
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Callable, Dict, Any
 
 import GLOBALS
 from UE_MODULE import UECollection
@@ -878,6 +878,9 @@ class SimulationManager:
         self._log_file = None
         self._original_stdout = None
         self._original_stderr = None
+        self._progress_handler: Optional[Callable[[Dict[str, Any]], None]] = None
+        self.realtime_emit_interval = 1
+        self.realtime_payload_mode = "light"
 
     def set_sim_duration(self, sim_duration: int) -> None:
         """
@@ -1023,6 +1026,107 @@ class SimulationManager:
         self.sim_config.verbose = True
         self._to_file = to_file
 
+    def set_progress_callback(self, handler: Callable[[Dict[str, Any]], None]) -> None:
+        """
+        Установить обработчик realtime-событий по завершению TTI.
+
+        Args:
+            handler: callable, принимающий словарь snapshot.
+        """
+        self._progress_handler = handler
+
+    def set_realtime_emit_interval(self, interval: int = 1) -> None:
+        """
+        Установить интервал отправки realtime-снимков.
+
+        Args:
+            interval: Интервал в TTI (1 = каждый TTI).
+        """
+        if not isinstance(interval, int) or interval <= 0:
+            raise ValueError(
+                f"Интервал realtime-событий должен быть положительным целым числом. "
+                f"Получено: {interval} ({type(interval).__name__})"
+            )
+        self.realtime_emit_interval = interval
+
+    def set_realtime_payload_mode(self, mode: str = "light") -> None:
+        """
+        Установить режим payload для realtime-снимков.
+
+        Args:
+            mode: 'light' или 'full'
+        """
+        allowed_modes = {"light", "full"}
+        if mode not in allowed_modes:
+            raise ValueError(f"Режим realtime payload должен быть одним из {allowed_modes}. Получено: {mode}")
+        self.realtime_payload_mode = mode
+
+    def _build_tti_snapshot(
+        self,
+        tti: int,
+        scheduler: SchedulerInterface,
+        sched_result: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Собрать immutable snapshot состояния после завершения TTI.
+        """
+        allocation = sched_result.get("allocation", {})
+
+        ue_items = []
+        for ue in self.ue_collection.GET_ALL_USERS():
+            ue_id = int(ue.UE_ID)
+            ue_buffer = self.base_station.ue_buffers.get(ue_id)
+            ue_buffer_size = int(ue_buffer.sizes.get(ue_id, 0)) if ue_buffer else 0
+
+            ue_payload = {
+                "ue_id": ue_id,
+                "x": float(ue.position[0]),
+                "y": float(ue.position[1]),
+                "sinr": float(ue.SINR),
+                "cqi": int(ue.cqi),
+                "throughput_bps": float(ue.current_dl_throughput),
+                "avg_throughput_bps": float(ue.average_throughput),
+                "allocated_rb": int(len(allocation.get(ue_id, []))),
+                "buffer_bytes": ue_buffer_size,
+                "last_transmitted_bits": int(getattr(ue, "last_transmitted_bits", 0)),
+            }
+            if self.realtime_payload_mode == "full":
+                ue_payload["cqi_subband"] = getattr(ue, "cqi_subband", None)
+            ue_items.append(ue_payload)
+
+        snapshot = {
+            "type": "tti_snapshot",
+            "tti": int(tti),
+            "sim_time_ms": int(tti),
+            "payload_mode": self.realtime_payload_mode,
+            "scheduler": scheduler.get_stats(),
+            "amc": scheduler.amc.get_stats(),
+            "pdcch": scheduler.pdcch_manager.get_stats(),
+            "ues": ue_items,
+        }
+        if self.realtime_payload_mode == "full":
+            snapshot["allocation"] = allocation
+            snapshot["bitmap"] = sched_result.get("bitmap", {})
+        return snapshot
+
+    def _emit_tti_snapshot(
+        self,
+        tti: int,
+        scheduler: SchedulerInterface,
+        sched_result: Dict[str, Any]
+    ) -> None:
+        """
+        Отправить snapshot в внешний realtime-слой, не ломая основной цикл.
+        """
+        if self._progress_handler is None:
+            return
+        try:
+            snapshot = self._build_tti_snapshot(tti, scheduler, sched_result)
+            self._progress_handler(snapshot)
+        except Exception:
+            # Ошибка транспорта не должна останавливать симуляцию.
+            pass
+
     def start_simulation(self) -> None:
         """
         Запуск основной симуляции.
@@ -1140,6 +1244,9 @@ class SimulationManager:
                 # Планирование ресурсов
                 sched_result = scheduler.schedule(tti, users)
 
+                if tti % self.realtime_emit_interval == 0:
+                    self._emit_tti_snapshot(tti, scheduler, sched_result)
+
                 # Сбор статистики (только collect, без экспорта!)
                 if self.stats_manager and tti % self.stats_manager.config.collect_interval == 0:
                     self.stats_manager.collect(tti)
@@ -1149,9 +1256,8 @@ class SimulationManager:
                     for ue in self.ue_collection.GET_ALL_USERS():
                         ue_avg_throughputs[ue.UE_ID] = ue.average_throughput
                     longterm_fairness_metrics = self.stats_manager._calculate_fairness(ue_throughputs=ue_avg_throughputs)
-                    print(f"[SIMULATION] Jain's Fairness Index: {longterm_fairness_metrics['dl_fairness_jain_index']:.4f}")
-
-
+                    jain_index = longterm_fairness_metrics['dl_fairness_jain_index']
+                    print(f"[SIMULATION] Jain's Fairness Index: {jain_index:.4f}")
 
                 # Вывод summary (если verbose включен)
                 if self.stats_config.scheduler_level == "full" or \

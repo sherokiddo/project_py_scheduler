@@ -1,9 +1,3 @@
 [submodule "ui-system"]
 	path = ui-system
 	url = https://github.com/BagreyA/ui-system.git
-[submodule "scheduler-api"]
-	path = scheduler-api
-	url = https://github.com/DmitriyMosk/sim-sched-api.git
-[submodule "go-api-scheduler"]
-	path = go-api-scheduler
-	url = https://github.com/Dobromilov/api-scheduler.git
