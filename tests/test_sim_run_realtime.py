@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 import unittest
 from collections import deque
@@ -68,6 +69,13 @@ class _FakeSimulationManager:
         return None
 
     def set_stats_manager(self, **_kwargs):
+        self.stats_config.enabled = bool(_kwargs.get("enabled", True))
+        self.stats_manager = SimpleNamespace(
+            history=[
+                {"tti": 0, "dl_throughput_sum_kbps": 100.0},
+                {"tti": 1, "dl_throughput_sum_kbps": 120.0},
+            ]
+        )
         return None
 
     def set_base_station(self, _bs):
@@ -96,10 +104,13 @@ class SimRunRealtimeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self._simulations_backup = sim_run.simulations.copy()
         sim_run.simulations.clear()
+        self._delivery_mode_backup = sim_run.DELIVERY_MODE
+        sim_run.DELIVERY_MODE = "batch"
 
     def tearDown(self):
         sim_run.simulations.clear()
         sim_run.simulations.update(self._simulations_backup)
+        sim_run.DELIVERY_MODE = self._delivery_mode_backup
 
     def test_append_event_respects_bounded_queue(self):
         sim_run.simulations["run-1"] = {
@@ -169,6 +180,71 @@ class SimRunRealtimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sim_run.simulations[run_id]["latest_event"]["type"], "completed")
         events = list(sim_run.simulations[run_id]["events"])
         self.assertTrue(any(evt.get("type") == "tti_batch" for evt in events))
+        self.assertTrue(any(msg.get("type") == "completed" for msg in ws.messages))
+
+    async def test_run_simulation_basic_sends_single_full_json(self):
+        run_id = "run-basic"
+        ws = _FakeWS()
+        sim_run.simulations[run_id] = {
+            "status": "starting",
+            "ws_clients": [ws],
+            "events": deque(maxlen=256),
+            "latest_event": None,
+        }
+        sim_run.DELIVERY_MODE = "basic"
+
+        config = {
+            "sim_duration": 2,
+            "update_interval": 1,
+            "realtime_batch_size": 1,
+            "bs_coords": {"x": 0.0, "y": 0.0},
+            "bs_bw_mhz": 10,
+            "bs_scheduler": "RoundRobin",
+            "ue_ids": [1],
+            "ue_coords": {"x_min": 0.0, "x_max": 100.0, "y_min": 0.0, "y_max": 100.0},
+            "ue_move_pattern": "RandomWalk",
+            "ue_traffic_pattern": "PoissonModel",
+            "sim_packet_rate": 100,
+        }
+
+        loop = asyncio.get_running_loop()
+
+        async def _run_sync(_executor, func, *args):
+            return func(*args)
+
+        with patch.object(loop, "run_in_executor", side_effect=_run_sync), \
+             patch.object(sim_run, "SimulationManager", _FakeSimulationManager), \
+             patch.object(sim_run, "UECollection", _FakeUECollection), \
+             patch.object(sim_run, "UserEquipment", lambda **kwargs: SimpleNamespace(**kwargs)), \
+             patch.object(sim_run, "BaseStation", lambda **kwargs: SimpleNamespace(**kwargs)), \
+             patch.object(sim_run, "PoissonModel", lambda **kwargs: SimpleNamespace(**kwargs)), \
+             patch.object(sim_run, "OnOffModel", lambda **kwargs: SimpleNamespace(**kwargs)), \
+             patch.object(sim_run, "MMPPModel", lambda **kwargs: SimpleNamespace(**kwargs)), \
+             patch.object(sim_run, "cleanup_simulation", new=AsyncMock(return_value=None)):
+            await sim_run.run_simulation(run_id, config)
+
+        events = list(sim_run.simulations[run_id]["events"])
+        self.assertFalse(any(evt.get("type") == "tti_batch" for evt in events))
+
+        full_json_events = [evt for evt in events if evt.get("type") == "full_json"]
+        self.assertEqual(len(full_json_events), 1)
+        self.assertEqual(full_json_events[0]["count"], 2)
+        self.assertEqual(full_json_events[0]["items"][0]["tti"], 0)
+
+        ws_full_json = [msg for msg in ws.messages if msg.get("type") == "full_json"]
+        self.assertEqual(len(ws_full_json), 1)
+        self.assertEqual(ws_full_json[0]["count"], 2)
+        self.assertTrue(ws_full_json[0].get("metrics_file", "").startswith("metrics/"))
+
+        metrics_path = sim_run.API_ROOT / ws_full_json[0]["metrics_file"]
+        self.assertTrue(metrics_path.exists())
+        with metrics_path.open(encoding="utf-8") as f:
+            exported_payload = json.load(f)
+        self.assertEqual(exported_payload["type"], "full_json")
+        self.assertEqual(exported_payload["count"], 2)
+        metrics_path.unlink(missing_ok=True)
+
+        self.assertTrue(any(msg.get("type") == "completed" for msg in ws.messages))
 
     async def test_run_simulation_failure_sends_failed_event(self):
         run_id = "run-fail"

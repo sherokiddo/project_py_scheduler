@@ -306,6 +306,11 @@ class StatsManager:
             # Fairness
             fairness_metrics = self._calculate_fairness(ue_throughputs)
             snapshot.update(fairness_metrics)
+            snapshot["dl_fairness_jain_index_active_window_long"] = self._calculate_jain_index(
+                self._extract_average_throughputs(
+                    getattr(self.scheduler, "_last_windowed_users", [])
+                )
+            )
 
         self.history.append(snapshot)
 
@@ -616,6 +621,37 @@ class StatsManager:
             'dl_fairness_jain_index': round(jain_index, 4),
             'dl_throughput_variance': round(variance, 2),
             'dl_throughput_std': round(std, 2)}
+
+    def _calculate_jain_index(self, ue_throughputs: dict) -> Optional[float]:
+        """
+        Рассчитать только индекс Jain для переданного набора throughput.
+        """
+        if not ue_throughputs or len(ue_throughputs) < 2:
+            return 1.0
+
+        throughputs = list(ue_throughputs.values())
+        sum_throughput = sum(throughputs)
+        sum_squared = sum(x ** 2 for x in throughputs)
+
+        if sum_throughput == 0 or sum_squared == 0:
+            return None
+
+        return round((sum_throughput ** 2) / (len(throughputs) * sum_squared), 4)
+
+    @staticmethod
+    def _extract_average_throughputs(users: list) -> dict:
+        """
+        Собрать average_throughput для набора UE из runtime scheduler.
+        """
+        avg_throughputs = {}
+        for user in users or []:
+            ue_id = user.get("UE_ID")
+            ue = user.get("ue")
+            if ue_id is None or ue is None:
+                continue
+            avg_throughputs[int(ue_id)] = float(getattr(ue, "average_throughput", 0.0) or 0.0)
+
+        return avg_throughputs
 
     def _calculate_std(self, values: list) -> float:
         """

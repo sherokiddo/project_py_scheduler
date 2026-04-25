@@ -1,6 +1,8 @@
 import asyncio
+import json
 import threading
 from collections import deque
+from pathlib import Path
 from typing import Any, Dict, List
 
 from SIMULATION_MANAGER import SimulationManager
@@ -11,7 +13,19 @@ from MOBILITY_MODEL import MapBorders
 
 simulations: Dict[str, dict] = {}
 EVENT_QUEUE_MAXLEN = 256
+API_ROOT = Path(__file__).resolve().parents[1]
+METRICS_DIR = API_ROOT / "metrics"
 
+""" 
+режимы: 
+basic - отправка полноценного json на фронтенд
+batch - отправка батчами по 50 json  
+"""
+DELIVERY_MODE = "basic"
+
+def mode_valid(mode: str) -> bool:
+    mode = mode.strip().lower()
+    return mode in {"basic", "batch"}
 
 def append_event(run_id: str, event: Dict[str, Any]) -> None:
     """Положить событие в bounded queue и обновить latest snapshot."""
@@ -66,6 +80,12 @@ async def run_simulation(run_id: str, config: dict):
     sim_data.setdefault("latest_event", None)
     sim_data.setdefault("ws_clients", [])
 
+    delivery_mode = (DELIVERY_MODE or "").strip().lower()
+    if not mode_valid(delivery_mode):
+        delivery_mode = "basic"
+    
+    sim_data["delivery_mode"] = delivery_mode
+
     sim_manager = SimulationManager()
 
     sim_duration = config.get("sim_duration", 1000)
@@ -87,8 +107,14 @@ async def run_simulation(run_id: str, config: dict):
     if config.get("verbose", False):
         sim_manager.enable_verbose_log(to_file=config.get("log_to_file", False))
 
-    if config.get("stats_log", False):
-        sim_manager.set_stats_manager(enabled=True)
+    if config.get("stats_log", False) or delivery_mode == "basic":
+        sim_manager.set_stats_manager(
+            enabled=True,
+            collect_interval=config.get("stats_collect_interval", 1),
+            scheduler_level=config.get("stats_scheduler_level", "advanced"),
+            amc_level=config.get("stats_amc_level", "advanced"),
+            pdcch_level=config.get("stats_pdcch_level", "basic"),
+        )
         sim_manager.stats_config.file_prefix = config.get("stats_file_prefix", "sim_stats")
 
     bs = BaseStation(
@@ -187,6 +213,8 @@ async def run_simulation(run_id: str, config: dict):
         return build_batch_event(batch_items)
 
     async def flush_pending_batch() -> None:
+        if delivery_mode != "batch":
+            return
         batch_event = pop_ready_batch(force=True)
         if not batch_event:
             return
@@ -197,6 +225,9 @@ async def run_simulation(run_id: str, config: dict):
 
     def on_progress_update(progress_data: dict):
         # Эта функция будет вызываться внутри sim_manager (в фоновом потоке).
+        if delivery_mode == "basic":
+            return
+
         if progress_data.get("type") != "tti_snapshot":
             append_event(run_id, progress_data)
             ws_clients = simulations.get(run_id, {}).get("ws_clients", [])
@@ -248,18 +279,56 @@ async def run_simulation(run_id: str, config: dict):
     if sim_manager.stats_manager and sim_manager.stats_config.enabled:
         stats_len = len(sim_manager.stats_manager.history)
 
+    ws_clients = simulations.get(run_id, {}).get("ws_clients", [])
+
+    if delivery_mode == "basic":
+        full_items = []
+        if sim_manager.stats_manager and sim_manager.stats_config.enabled:
+            full_items = list(sim_manager.stats_manager.history)
+
+        METRICS_DIR.mkdir(parents=True, exist_ok=True)
+        stats_prefix = str(config.get("stats_file_prefix", "sim_stats")).strip() or "sim_stats"
+        metrics_filename = (
+            stats_prefix if stats_prefix.lower().endswith(".json") else f"{stats_prefix}.json"
+        )
+        metrics_path = METRICS_DIR / metrics_filename
+
+        full_json_event = {
+            "type": "full_json",
+            "run_id": run_id,
+            "count": len(full_items),
+            "metrics_file": f"metrics/{metrics_filename}",
+            "items": full_items,
+        }
+
+        with metrics_path.open("w", encoding="utf-8") as metrics_file:
+            json.dump(full_json_event, metrics_file, ensure_ascii=False, indent=2)
+
+        append_event(run_id, full_json_event)
+        if ws_clients:
+            await send_progress(ws_clients, full_json_event)
+
     simulations[run_id]["status"] = "completed"
     simulations[run_id]["stats_history_len"] = stats_len
     simulations[run_id]["tti_total"] = sim_duration
-    append_event(
-        run_id,
-        {
-            "type": "completed",
-            "run_id": run_id,
-            "tti_total": sim_duration,
-            "stats_history_len": stats_len,
-        },
-    )
+    completed_event = {
+        "type": "completed",
+        "run_id": run_id,
+        "tti_total": sim_duration,
+        "stats_history_len": stats_len,
+        "delivery_mode": delivery_mode,
+    }
+    append_event(run_id, completed_event)
+    if ws_clients:
+        await send_completion(
+            ws_clients,
+            {
+                "run_id": run_id,
+                "tti_total": sim_duration,
+                "stats_history_len": stats_len,
+                "delivery_mode": delivery_mode,
+            },
+        )
 
     loop = asyncio.get_running_loop()
     loop.create_task(cleanup_simulation(run_id, delay_seconds=300))

@@ -186,6 +186,7 @@ class SchedulerInterface:
         self._last_tti = -1
         self._last_allocation = None
         self._last_users = None
+        self._last_windowed_users = []
         self._last_priority_list = []
         self._last_prioritized_users = []
 
@@ -233,6 +234,7 @@ class SchedulerInterface:
 
         # ЭТАП 2.5: Window filtering
         windowed_ues = self.filter_by_window(eligible_ues)
+        self._last_windowed_users = list(windowed_ues)
         if not windowed_ues:
             return self.empty_result()
 
@@ -748,6 +750,7 @@ class SchedulerInterface:
         self._update_stats(self._last_tti, 0, 0, 0)
         self._last_allocation = {}
         self._last_users = []
+        self._last_windowed_users = []
 
         return {
             'allocation': {},
