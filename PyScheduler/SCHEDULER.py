@@ -188,6 +188,7 @@ class SchedulerInterface:
         self._last_users = None
         self._last_windowed_users = []
         self._last_priority_list = []
+        self._last_priority_list_full = []
         self._last_prioritized_users = []
 
         self._last_sch_time_us = 0.0
