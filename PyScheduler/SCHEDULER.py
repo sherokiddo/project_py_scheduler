@@ -257,6 +257,7 @@ class SchedulerInterface:
             'FD_BCQI':          FDxBestCQIScheduler,
             'FD_FGS':           FDxFairGreedyScheduler,
             'FD_PF':            FDxProportionalFairScheduler,
+            'BasicQosAware':    BasicQosAwareScheduler,
             }
 
         if algorithm not in schedulers:
@@ -283,6 +284,7 @@ class SchedulerInterface:
                 'FD_BestCQI',
                 'FD_FGS',
                 'FD_FF',
+                'BasicQosAware',
                 ]
 
     def __init__(self, lte_grid, bs,
@@ -2671,6 +2673,262 @@ class FDxProportionalFairScheduler(SchedulerInterface):
                   f"{allocated_ues} UE, {total_rb} RB total")
 
         return allocation
+
+class BasicQosAwareScheduler(SchedulerInterface):
+    """
+    Basic QoS-Aware Scheduler.
+
+    Реализация базового QoS-ориентированный планировщика, предназначенного для 
+    работы с одним потоком (bearer) на абонента. При использовании нескольких
+    потоков для пользователя возможна некорректная работа алгоритма.
+    
+    Алгоритм:
+        1. _calculate_priorities:
+            Вычисление метрики приоритета для упорядочивания PDCCH-очереди.
+            Наибольший приоритет отдаётся абоненту с GBR DRB с большим значением
+            HOL delay.
+        2. _apply_pdsch_estimation:
+            Пропускается. FD per-RBG цикл самостоятельно контролирует
+            использование RB.
+        3. _allocate_pdsch:
+            RBG отдаётся потоку с наивысшей метрикой:
+                metric = hol_delay * gbr_weight * cqa_metric
+            cqa_metric может расчитываться по двум различным способам: Coita 
+            metric и PF metric.
+
+    """
+    def __init__(self, lte_grid, bs, grouping_parameter=50, metric_mode="coita", **kwargs):
+        """
+        Инициализация Basic QoS-Aware Scheduler.
+
+        Args:
+            lte_grid: Экземпляр LTE Grid.
+            bs: Экземпляр Base Station.
+            grouping_parameter: Параметр группировки потоков. По умолчанию 50.
+            metric_mode: Способ расчёта CQA метрики. По умолчанию "coita".
+            max_dl_ue_tti: Максимум UE за TTI По умолчанию None.
+            pcfich: PCFICH значение. По умолчанию 2.
+            max_dl_cce_allowance: Лимит CCE. По умолчанию None.
+            verbose_pdcch: Отладочный вывод для PDCCH. По умолчанию False.
+            enable_window: Включить скользящее окно. По умолчанию True.
+            window_size: Размер окна в TTI. По умолчанию 100.
+            verbose: Отладочный вывод для планировщика. По умолчанию False.
+
+        """
+        super().__init__(
+            lte_grid=lte_grid,
+            bs=bs,
+            **kwargs)
+        
+        self.grouping_parameter = grouping_parameter
+        self.metric_mode = metric_mode
+        
+    def _apply_pdsch_estimation(self, priority_list: List[Dict], tti: int) -> List[Dict]:
+        """
+        Оценка распределения PDSCH. В данном случае не требуется.
+
+        """
+        if self.verbose:
+            print(f"[SCHEDULER TTI {tti}] PDSCH estimation: SKIPPED (FD-QoS per-RBG selection)")
+            print(f"[SCHEDULER TTI {tti}] After estimation: {len(priority_list)} UE selected, 0 UE excluded")
+
+        return priority_list
+    
+    def _calculate_priorities(self, windowed_ues: List[Dict], tti: int) -> List[Dict]:
+        """
+        Вычисление метрики приоритета для упорядочивания PDCCH-очереди.
+
+        Args:
+            windowed_ues (List[Dict]): Список пользователей после filter_by_window.
+            tti (int): Текущий TTI.
+
+        Returns:
+            List[Dict]: Список пользователей с расчитанной метрикой.
+
+        """
+        buffer_manager = self.lte_grid.bs.buffer_manager
+
+        for user in windowed_ues:
+            ue_id = user['UE_ID']
+
+            best_gbr_group = -1
+            best_non_gbr_group = -1
+
+            buffer_status_list = buffer_manager.get_buffer_status(ue_id)
+
+            for buffer_status in buffer_status_list:
+                if buffer_status.buffer_size <= 0:
+                    continue
+
+                group = buffer_status.hol_delay // self.grouping_parameter
+
+                if GLOBALS.is_gbr(buffer_status.qci):
+                    best_gbr_group = max(best_gbr_group, group)
+                else:
+                    best_non_gbr_group = max(best_non_gbr_group, group)
+
+            if best_gbr_group >= 0:
+                user['priority'] = 1_000_000 + best_gbr_group
+            elif best_non_gbr_group >= 0:
+                user['priority'] = best_non_gbr_group
+            else:
+                user['priority'] = 0
+
+        return windowed_ues
+    
+    def _allocate_pdsch(self, tti: int, ues_with_pdcch: List[Dict],
+                        eligible_ues: List[Dict]) -> Dict[int, List[int]]:
+        """
+        Распределение PDSCH ресурсов (RBG) между UE.
+
+        Args:
+            tti (int): Текущий TTI.
+            ues_with_pdcch (List[Dict]): Список пользователей с успешно выделенным 
+            PDCCH.
+            eligible_ues (List[Dict]): Все eligible пользователи.
+
+        Returns:
+            Dict[int, List[int]]: Allocation map (UE_ID -> список freq_idx).
+
+        """
+        allocation = {u['UE_ID']: [] for u in eligible_ues}
+
+        if not ues_with_pdcch:
+            return allocation
+        
+        users_by_id = {u['UE_ID']: u for u in ues_with_pdcch}
+        remaining_buffer = {u['UE_ID']: u.get('bs_buffer_size', 0) * 8 for u in ues_with_pdcch}
+
+        buffer_manager = self.lte_grid.bs.buffer_manager
+
+        GbrHOLgroup = {}
+        nonGbrHOLgroup = {}
+        HOLdelays = {}
+
+        for user in ues_with_pdcch:
+            ue_id = user['UE_ID']
+            buffer_status_list = buffer_manager.get_buffer_status(ue_id)
+
+            for buffer_status in buffer_status_list:
+                if buffer_status.buffer_size <= 0:
+                    continue
+
+                hol_delay = buffer_status.hol_delay
+                group = hol_delay // self.grouping_parameter
+
+                group_ue_qci = (ue_id, buffer_status.qci)
+                target_group = (GbrHOLgroup if GLOBALS.is_gbr(buffer_status.qci) 
+                                else nonGbrHOLgroup)
+                target_group.setdefault(group, []).append(group_ue_qci)
+                HOLdelays[group_ue_qci] = hol_delay
+
+        rbg_size  = self.lte_grid.GET_RBG_SIZE()
+        total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size
+
+        for rbg_idx in range(total_rbg):
+            if all(buf <= 0 for buf in remaining_buffer.values()):
+                break
+
+            rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
+            rbg_width = len(rb_indices)
+            best_metric = -1.0
+            best_flow_user = (0, 0)
+            best_user_cqi = 0
+
+            GbrHOLgroup = {grp: flows for grp, flows in GbrHOLgroup.items() if flows}
+            nonGbrHOLgroup = {grp: flows for grp, flows in nonGbrHOLgroup.items() if flows}
+
+            if GbrHOLgroup:
+                max_group = max(GbrHOLgroup)
+                selected_group_map = GbrHOLgroup
+                selected_group = GbrHOLgroup[max_group]
+            elif nonGbrHOLgroup:
+                max_group = max(nonGbrHOLgroup)
+                selected_group_map = nonGbrHOLgroup
+                selected_group = nonGbrHOLgroup[max_group]
+            else:
+                break
+
+            for ue_id, qci in selected_group:
+                user = users_by_id[ue_id]
+
+                # GBR weight calculation
+                if GLOBALS.is_gbr(qci):
+                    gbr_value = GLOBALS.QCI_PROFILES[qci].get("gbr")
+                    avg_tput = buffer_manager.qci_tput_tracker.get_average_throughput(ue_id, qci)
+                    denom = 1.0 if avg_tput <= 0 else avg_tput
+                    gbr_weight = gbr_value / denom
+                else:
+                    gbr_weight = 1
+
+                sb_cqi_list = self._get_sb_cqi(ue_id)
+
+                if self.metric_mode == "coita":
+                    if (sb_cqi_list and rbg_idx < len(sb_cqi_list)
+                        and sb_cqi_list[rbg_idx] > 0
+                    ):
+                        cqi_sum = sum(sb_cqi_list)
+                        cqi = sb_cqi_list[rbg_idx]
+
+                        if cqi <= 0:
+                            continue
+                    
+                        cqa_metric = cqi / cqi_sum
+
+                    else:
+                        cqi = self._get_wb_cqi(ue_id)
+                        cqa_metric = cqi
+
+                elif self.metric_mode == "pf":
+                    if (sb_cqi_list and rbg_idx < len(sb_cqi_list)
+                        and sb_cqi_list[rbg_idx] > 0
+                    ):
+                        cqi = sb_cqi_list[rbg_idx]
+                    else:
+                        cqi = self._get_wb_cqi(ue_id)
+
+                    if cqi <= 0:
+                        continue
+
+                    bits_per_rb = self.amc.GET_BITS_PER_RB(cqi)
+                    r_j_k = rbg_width * bits_per_rb
+                    avg_tput = buffer_manager.qci_tput_tracker.get_average_throughput(ue_id, qci)
+                    denom = 1.0 if avg_tput <= 0 else (avg_tput / 1000.0)
+                    cqa_metric = r_j_k / denom
+
+                hol_delay = HOLdelays.get((ue_id, qci))
+                if hol_delay == 0:
+                    hol_delay = 1
+
+                metric = hol_delay * gbr_weight * cqa_metric
+
+                if metric > best_metric:
+                    best_metric = metric
+                    best_flow_user = (ue_id, qci)
+                    best_user_cqi = cqi
+
+            best_ue_id, qci = best_flow_user
+            if best_ue_id == 0:
+                continue
+
+            allocate_rbg = self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, best_ue_id)
+            if not allocate_rbg:
+                continue
+            
+            allocation[best_ue_id].extend(rb_indices)
+
+            bits_per_rb = self.amc.GET_BITS_PER_RB(best_user_cqi)
+            allocated_rbs_size = rbg_width * bits_per_rb
+            remaining_buffer[best_ue_id] = max(0, remaining_buffer[best_ue_id] - allocated_rbs_size)
+
+            if remaining_buffer[best_ue_id] <= 0:
+                if best_flow_user in selected_group:
+                    selected_group.remove(best_flow_user)
+                if not selected_group:
+                    selected_group_map.pop(max_group, None)
+        
+        return allocation
+
 
 #TODO: Финальный аккорд модуля. Новая архитектура готова. Теперь можно подумать
 # о развитии. Хочу отметить, что требуется еще много доработок. Вот список:
