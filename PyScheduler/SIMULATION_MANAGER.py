@@ -74,6 +74,7 @@ class LevelsConfig:
     scheduler: MetricLevel = MetricLevel.BASIC
     amc: MetricLevel = MetricLevel.BASIC
     pdcch: MetricLevel = MetricLevel.BASIC
+    qos: MetricLevel = MetricLevel.BASIC
 
 
 @dataclass
@@ -124,6 +125,7 @@ class StatsManager:
         self.config = config or StatisticsConfig()  # Default конфиг если None
         self.history = deque(maxlen=self.config.history_max_len)  # История snapshots
         self.detailed_history = deque(maxlen=self.config.history_max_len)
+        self.qos_history = deque(maxlen=self.config.history_max_len)
 
     def _validate_sched_stats(self, sched_stats: dict, tti: int) -> bool:
         """Валидация что данные sched_stats полноценные и корректные"""
@@ -346,6 +348,18 @@ class StatsManager:
             )
             self.detailed_history.append(detailed)
 
+        if (
+            not self.scheduler.lte_grid.bs.use_simple_buffer 
+            and self.config.levels.qos != MetricLevel.NONE
+        ):
+            buffer_manager = getattr(self.scheduler.lte_grid.bs, "buffer_manager", None)
+            buffer_stats = buffer_manager.get_stats()
+            qos_snapshot = self._collect_qos_metrics(
+                tti=tti, 
+                buffer_stats=buffer_stats
+            )
+            self.qos_history.append(qos_snapshot)
+
     def _collect_detailed_metrics(
         self, tti: int, sched_stats: dict, amc_stats: dict, pdcch_stats: dict
     ) -> dict:
@@ -406,6 +420,67 @@ class StatsManager:
             }
 
         return detailed
+    
+    def _collect_qos_metrics(self, tti: int, buffer_stats: dict) -> dict:
+        """
+        Собрать QoS per-UE-per-QCI статистику.
+
+        Returns:
+            Dict в формате:
+            {
+                "tti": 100,
+                "qos_ue_metrics": {
+                    "1": {
+                    "buffer_size": {"1": 1500, "5": 500, "7": 3200},
+                    "bytes_transmitted": {"1": 1000, "5": 200, "7": 2000},
+                    ...
+                    },
+                    "2": {
+                    "buffer_size": {"7": 0, "8": 5000, "9": 200},
+                    "bytes_transmitted": {"7": 0, "8": 2500, 9": 50},
+                    ...
+                    },
+                }
+            }
+        """
+        qos_snapshot = {"tti": tti, "qos_ue_metrics": {}}
+
+        ue_buffer_size_per_qci = buffer_stats.get("buffer_size_per_ue_per_qci", {})
+        ue_transmitted_bytes_per_qci = buffer_stats.get("extracted_bytes_per_ue_per_qci", {})
+        ue_packets_ext_per_qci = buffer_stats.get("packets_ext_per_ue_per_qci", {})
+        ue_packets_ext_late_per_qci = buffer_stats.get("packets_ext_late_per_ue_per_qci", {})
+        ue_packets_added_per_qci = buffer_stats.get("packets_added_per_ue_per_qci", {})
+        ue_packets_dropped_per_qci = buffer_stats.get("packets_dropped_per_ue_per_qci", {})
+        ue_packets_expired_per_qci = buffer_stats.get("packets_expired_per_ue_per_qci", {})
+        ue_oldest_delay_per_qci = buffer_stats.get("oldest_delay_per_ue_per_qci", {})
+        avg_delay_per_ue_per_qci = buffer_stats.get("avg_delay_per_ue_per_qci", {})
+
+        all_ue_ids = (
+            set(ue_buffer_size_per_qci.keys())
+            | set(ue_transmitted_bytes_per_qci.keys())
+            | set(ue_packets_ext_per_qci.keys())
+            | set(ue_packets_ext_late_per_qci.keys())
+            | set(ue_packets_added_per_qci.keys())
+            | set(ue_packets_dropped_per_qci.keys())
+            | set(ue_packets_expired_per_qci.keys())
+            | set(ue_oldest_delay_per_qci.keys())
+            | set(avg_delay_per_ue_per_qci.keys())
+        )
+
+        for ue_id in all_ue_ids:
+            qos_snapshot["qos_ue_metrics"][str(ue_id)] = {
+                "buffer_size": ue_buffer_size_per_qci.get(ue_id, {}),
+                "bytes_transmitted": ue_transmitted_bytes_per_qci.get(ue_id, {}),
+                "packets_transmitted": ue_packets_ext_per_qci.get(ue_id, {}),
+                "late_packets_transmitted": ue_packets_ext_late_per_qci.get(ue_id, {}),
+                "packets_added": ue_packets_added_per_qci.get(ue_id, {}),
+                "packets_dropped": ue_packets_dropped_per_qci.get(ue_id, {}),
+                "packets_expired": ue_packets_expired_per_qci.get(ue_id, {}),
+                "hol_delay": ue_oldest_delay_per_qci.get(ue_id, {}),
+                "avg_delay": avg_delay_per_ue_per_qci.get(ue_id, {}),
+            }
+
+        return qos_snapshot
 
     def _safe_stats_from_dict(
         self,
@@ -809,6 +884,90 @@ class StatsManager:
             f"to {filename} (per-UE format, locale={locale})"
         )
 
+    def export_qos_csv(self, filename: str = None, locale: str = "ru") -> None:
+        """
+        Экспортировать QoS статистику в CSV (per-UE-per-QCI rows).
+
+        Формат: tti, ue_id, qci, cqi, buffer_size, bits_transmitted и т.д.
+        """
+        if not self.qos_history:
+            print("[StatsManager] No QoS data to export (qos_history is empty)")
+            return
+        
+        if filename is None:
+            filename = f"{self.config.file_prefix}_qos.csv"
+
+        if locale == "ru":
+            delimiter = ";"
+        else:
+            delimiter = ","
+
+        with open(filename, "w", newline="", encoding="utf-8") as f:
+            fieldnames = [
+                "tti",
+                "ue_id",
+                "qci",
+                "buffer_size",
+                "bits_transmitted",
+                "packets_transmitted",
+                "late_packets_transmitted",
+                "packets_added",
+                "packets_dropped",
+                "packets_expired",
+                "hol_delay",
+                "avg_delay",
+            ]
+            writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=delimiter)
+            writer.writeheader()
+
+            for snapshot in self.qos_history:
+                tti = snapshot["tti"]
+                for ue_id, metrics in snapshot["qos_ue_metrics"].items():
+                    buffer_size = metrics.get("buffer_size", {})
+                    bytes_transmitted = metrics.get("bytes_transmitted", {})
+                    packets_transmitted = metrics.get("packets_transmitted", {})
+                    late_packets_transmitted = metrics.get("late_packets_transmitted", {})
+                    packets_added = metrics.get("packets_added", {})
+                    packets_dropped = metrics.get("packets_dropped", {})
+                    packets_expired = metrics.get("packets_expired", {})
+                    hol_delay = metrics.get("hol_delay", {})
+                    avg_delay = metrics.get("avg_delay", {})
+
+                    qci_keys = sorted(
+                        set(buffer_size.keys())
+                        | set(bytes_transmitted.keys())
+                        | set(packets_transmitted.keys())
+                        | set(late_packets_transmitted.keys())
+                        | set(packets_added.keys())
+                        | set(packets_dropped.keys())
+                        | set(packets_expired.keys())
+                        | set(hol_delay.keys())
+                        | set(avg_delay.keys()),
+                        key=str,
+                    )
+
+                    for qci in qci_keys:
+                        row = {
+                            "tti": tti,
+                            "ue_id": ue_id,
+                            "qci": qci,
+                            "buffer_size": buffer_size.get(qci, 0),
+                            "bits_transmitted": GLOBALS.bytes_to_bits(bytes_transmitted.get(qci, 0)),
+                            "packets_transmitted": packets_transmitted.get(qci, 0),
+                            "late_packets_transmitted": late_packets_transmitted.get(qci, 0),
+                            "packets_added": packets_added.get(qci, 0),
+                            "packets_dropped": packets_dropped.get(qci, 0),
+                            "packets_expired": packets_expired.get(qci, 0),
+                            "hol_delay": hol_delay.get(qci, 0),
+                            "avg_delay": avg_delay.get(qci, 0),
+                        }
+                        writer.writerow(row)
+
+        print(
+            f"[StatsManager] Exported {len(self.qos_history)} TTI snapshots "
+            f"to {filename} (per-UE format, locale={locale})"
+        )
+
     def export_detailed_json(self, filename: str = None) -> None:
         """
         Экспортировать детальную статистику в JSON.
@@ -901,6 +1060,7 @@ class StatsManagerConfig:
         scheduler_level (str): Уровень для scheduler ('none'/'basic'/'advanced'/'full')
         amc_level (str): Уровень для AMC
         pdcch_level (str): Уровень для PDCCH
+        qos_level (str): Уровень для QoS статистики
         export_format (str): Формат экспорта ('csv' или 'json')
         file_prefix (str): Префикс файла для экспорта
     """
@@ -910,6 +1070,7 @@ class StatsManagerConfig:
     scheduler_level: str = "basic"
     amc_level: str = "basic"
     pdcch_level: str = "none"
+    qos_level: str = "none"
     export_format: str = "csv"
     export_detailed_format: str = "csv"
     file_prefix: str = "manager_stats"
@@ -1237,6 +1398,7 @@ class SimulationManager:
                         scheduler=level_map[self.stats_config.scheduler_level],
                         amc=level_map[self.stats_config.amc_level],
                         pdcch=level_map[self.stats_config.pdcch_level],
+                        qos=level_map[self.stats_config.qos_level],
                     ),
                     export_format=self.stats_config.export_format,
                     file_prefix=self.stats_config.file_prefix,
@@ -1289,9 +1451,6 @@ class SimulationManager:
                     _ = self.run_tti(current_time=tti)
 
                     pbar.update(1)
-                    if self.stats_manager and (tti % self.stats_manager.config.collect_interval == 0):
-                        self.stats_manager.collect(tti)
-
                     if self.stats_manager and (tti % JFI_INTERVAL_TTI == 0):
                         ue_avg_throughputs = {
                             ue.UE_ID: ue.average_throughput
@@ -1351,6 +1510,13 @@ class SimulationManager:
                         elif self.stats_config.export_detailed_format == "json":
                             detailed_filename = f"{self.stats_config.file_prefix}_detailed.json"
                             self.stats_manager.export_detailed_json(detailed_filename)
+
+                    if (
+                        not self.base_station.use_simple_buffer 
+                        and self.stats_config.qos_level != "none"
+                    ):
+                        qos_stats_filename = f"{self.stats_config.file_prefix}_qos.csv"
+                        self.stats_manager.export_qos_csv(qos_stats_filename, locale="ru")
 
             finally:
                 # Возвращение консольного вывода

@@ -905,6 +905,7 @@ class SchedulerInterface:
             if allocated_rbs == 0:
                 ue.UPD_DL_THROUGHPUT_BPS(0, time_interval_ms)
                 self.last_ue_transmitted_bits[ueid] = 0
+                continue
 
             if not buffer_manager.ue_has_buffer(ueid):
                 self.last_ue_transmitted_bits[ueid] = 0

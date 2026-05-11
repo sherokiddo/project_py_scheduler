@@ -339,6 +339,7 @@ def sim_with_manager_qos():
         scheduler_level="full",
         amc_level="full",
         pdcch_level="basic",
+        qos_level="basic",
         file_prefix="emp_stats",
     )
 

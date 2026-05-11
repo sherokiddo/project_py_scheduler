@@ -102,6 +102,218 @@ class BufferStatus:
             'priority': self.priority,
             'hol_delay': self.hol_delay,
         }
+    
+@dataclass(slots=True)
+class QciThroughputStats:
+    """
+    Статистика пропускной способности для QCI.
+
+    Attributes:
+        current_throughput (float): Текущая пропускная способность (бит/с).
+        average_throughput (float): Средняя пропускная способность (бит/с).
+        
+    """
+    current_throughput: float = 0.0
+    average_throughput: float = 0.0
+
+class QciThroughputTracker:
+    """
+    Класс трекера пропускной способности для QCI.
+    """
+    def __init__(self, alpha: float = 0.002, time_interval_ms: int = 1):
+        """
+        Инициализация трекера пропускной способности для QCI.
+
+        Args:
+            alpha (float, optional): Коэффициент сглаживания EMA. По умолчанию 0.002.
+            time_interval_ms (int, optional): Интервал времени (мс). По умолчанию 1.
+
+        """
+        if not 0 < alpha <= 1:
+            raise ValueError(
+                "Alpha value must be in range (0, 1]"
+            )
+            
+        if time_interval_ms <= 0:
+            raise ValueError(
+                "Time interval value must be greater than 0"
+            )
+        
+        self.alpha = alpha
+        self.time_interval_ms = time_interval_ms
+        self._stats: Dict[int, Dict[int, QciThroughputStats]] = {}
+
+    @staticmethod
+    def _normalize_qci(qci: int | QCI) -> int:
+        """
+        Нормализация значения QCI.
+
+        Args:
+            qci (int | QCI): Значение QCI.
+
+        Returns:
+            int: Целочисленное значение QCI.
+
+        """
+        return qci.value if isinstance(qci, QCI) else int(qci)
+
+    def register_ue(self, ue_id: int, qcis: List[int]) -> None:
+        """
+        Регистрация UE и его QCI для отслеживания пропускной способности.
+
+        Args:
+            ue_id (int): Уникальный идентификатор UE.
+            qcis (List[int]): Список сконфигурированных QCI абонента.
+
+        """
+        if ue_id not in self._stats:
+            self._stats[ue_id] = {}
+
+        for qci in qcis:
+            qci_value = self._normalize_qci(qci)
+
+            if qci_value not in self._stats[ue_id]:
+                self._stats[ue_id][qci_value] = QciThroughputStats()
+
+    def unregister_ue(self, ue_id: int) -> None:
+        """
+        Удаление UE и связанной статистики из трекера.
+
+        Args:
+            ue_id (int): Уникальный идентификатор UE.
+
+        """
+        self._stats.pop(ue_id, None)
+
+    def update_qci(self, ue_id: int, qci: int, bytes_transmitted: int) -> None:
+        """
+        Обновление статистики пропускной способности для одного QCI абонента.
+
+        Args:
+            ue_id (int): Уникальный идентификатор UE.
+            qci (int): Идентификатор класса QoS.
+            bytes_transmitted (int): Количество переданных байт.
+            
+        Raises:
+            ValueError: Если указанный UE или QCI не зарегестрирован в трекере.
+
+        """
+        if ue_id not in self._stats:
+            raise ValueError(
+                f"UE {ue_id} is not registered in QCI throughput tracker"
+            )
+        
+        qci_value = self._normalize_qci(qci)
+        
+        if qci_value not in self._stats[ue_id]:
+            raise ValueError(
+                f"QCI {qci_value} is not registered for UE {ue_id} in QCI "
+                f"throughput tracker"
+            )
+        
+        stats = self._stats[ue_id][qci_value]
+
+        bits_transmitted = GLOBALS.bytes_to_bits(bytes_transmitted)
+        current_throughput = (bits_transmitted * 1000) / self.time_interval_ms
+        average_throughput = (1 - self.alpha) * stats.average_throughput + self.alpha * current_throughput
+
+        stats.current_throughput = current_throughput
+        stats.average_throughput = average_throughput      
+
+    def update_all_qcis(self, ue_id: int, bytes_transmitted_per_qci: Dict[int, int]) -> None:
+        """
+        Обновление статистики пропускной способности для всех QCI абонента.
+
+        Args:
+            ue_id (int): Уникальный идентификатор UE.
+            bytes_transmitted_per_qci (Dict[int, int]): Количество переданных 
+            байт для каждого QCI пользователя.
+            
+        Raises:
+            ValueError: Если указанный UE не зарегестрирован в трекере.
+
+        """
+        if ue_id not in self._stats:
+            raise ValueError(
+                f"UE {ue_id} is not registered in QCI throughput tracker"
+            )
+        
+        normalized = {
+            self._normalize_qci(qci): transmitted_bytes
+            for qci, transmitted_bytes in bytes_transmitted_per_qci.items()
+        }
+        
+        all_qcis = self._stats[ue_id].keys()
+
+        for qci in all_qcis:
+            bytes_transmitted = normalized.get(qci, 0)
+            self.update_qci(
+                ue_id=ue_id, qci=qci, bytes_transmitted=bytes_transmitted
+            )
+
+    def get_current_throughput(self, ue_id: int, qci: int) -> float:
+        """
+        Получение текущей пропускной способности для QCI абонента.
+
+        Args:
+            ue_id (int): Уникальный идентификатор UE.
+            qci (int): Идентификатор класса QoS.
+            
+        Raises:
+            ValueError: Если указанный UE или QCI не зарегестрирован в трекере.
+
+        Returns:
+            float: Текущая пропускная способность (бит/с).
+
+        """
+        if ue_id not in self._stats:
+            raise ValueError(
+                f"UE {ue_id} is not registered in QCI throughput tracker"
+            )
+        
+        qci_value = self._normalize_qci(qci)
+        
+        if qci_value not in self._stats[ue_id]:
+            raise ValueError(
+                f"QCI {qci_value} is not registered for UE {ue_id} in QCI "
+                f"throughput tracker"
+            )
+        
+        stats = self._stats[ue_id][qci_value]
+
+        return stats.current_throughput
+    
+    def get_average_throughput(self, ue_id: int, qci: int) -> float:
+        """
+        Получение средней пропускной способности для QCI абонента.
+
+        Args:
+            ue_id (int): Уникальный идентификатор UE.
+            qci (int): Идентификатор класса QoS.
+            
+        Raises:
+            ValueError: Если указанный UE или QCI не зарегестрирован в трекере.
+
+        Returns:
+            float: Средняя пропускная способность (бит/с).
+
+        """
+        if ue_id not in self._stats:
+            raise ValueError(
+                f"UE {ue_id} is not registered in QCI throughput tracker"
+            )
+        
+        qci_value = self._normalize_qci(qci)
+        
+        if qci_value not in self._stats[ue_id]:
+            raise ValueError(
+                f"QCI {qci_value} is not registered for UE {ue_id} in QCI "
+                f"throughput tracker"
+            )
+        
+        stats = self._stats[ue_id][qci_value]
+
+        return stats.average_throughput
 
 
 class SimpleBuffer:
@@ -727,6 +939,8 @@ class RLCUM(RLCEntity):
         self.packets_dropped = 0
         self.packets_expired = 0
         self.extracted_bytes = 0
+        self.packets_extracted = 0
+        self.packets_extracted_late = 0
 
     def add_packet(self, packet: Packet) -> bool:
         """
@@ -778,12 +992,16 @@ class RLCUM(RLCEntity):
 
             # Сегментация пакета
             if (extracted_bytes + packet_size) > num_bytes_to_extract:
-               segment_size = num_bytes_to_extract - extracted_bytes
-               segment = packet.split_packet(segment_size)
+                segment_size = num_bytes_to_extract - extracted_bytes
+                segment = packet.split_packet(segment_size)
 
-               extracted_packets.append(segment)
-               extracted_bytes += segment_size
-               break
+                extracted_packets.append(segment)
+                extracted_bytes += segment_size
+
+                if segment.age(GLOBALS.CURRENT_TIME) > segment.qci.get_delay_budget():
+                    self.packets_extracted_late += 1
+
+                break
 
             # Полное извлечение пакета
             else:
@@ -791,8 +1009,12 @@ class RLCUM(RLCEntity):
                 extracted_packets.append(extracted_packet)
                 extracted_bytes += packet_size
 
+                if extracted_packet.age(GLOBALS.CURRENT_TIME) > extracted_packet.qci.get_delay_budget():
+                    self.packets_extracted_late += 1
+
         self.current_tx_buffer_size -= extracted_bytes
         self.extracted_bytes = extracted_bytes
+        self.packets_extracted = len(extracted_packets)
 
         return extracted_packets, extracted_bytes
 
@@ -803,6 +1025,8 @@ class RLCUM(RLCEntity):
         Удаляются пакеты, возраст которых превышает значение
         PDCP discard timer (если пакет не был сегментирован).
         """
+        self._clear_stats()
+        
         new_buffer_size = 0
 
         for _ in range(len(self.tx_buffer)):
@@ -854,10 +1078,7 @@ class RLCUM(RLCEntity):
         self.tx_buffer.clear()
         self.current_tx_buffer_size = 0
 
-        self.packets_added = 0
-        self.packets_dropped = 0
-        self.packets_expired = 0
-        self.extracted_bytes = 0
+        self._clear_stats()
 
     def get_stats(self) -> Dict:
         """
@@ -868,6 +1089,8 @@ class RLCUM(RLCEntity):
                 qci: int - Идентификатор класса QoS.
                 buffer_size: int - Текущий размер буфера передачи.
                 extracted_bytes: int - Кол-во извлечённых байт.
+                packets_ext: int - Кол-во извлечённых пакетов.
+                packets_ext_late: int - Кол-во извлечённых пакетов, превысивших PDB.
                 packets_added: int - Кол-во добавленных пакетов.
                 packets_dropped: int - Кол-во отброшенных пакетов.
                 packets_expired: int - Кол-во просроченных пакетов.
@@ -883,6 +1106,8 @@ class RLCUM(RLCEntity):
             "qci": self.qci,
             "buffer_size": self.current_tx_buffer_size,
             "extracted_bytes": self.extracted_bytes,
+            "packets_ext": self.packets_extracted,
+            "packets_ext_late": self.packets_extracted_late,
             "packets_added": self.packets_added,
             "packets_dropped": self.packets_dropped,
             "packets_expired": self.packets_expired,
@@ -891,6 +1116,18 @@ class RLCUM(RLCEntity):
         }
 
         return stats
+    
+    def _clear_stats(self) -> None:
+        """
+        Сброс статистики.
+
+        """
+        self.packets_added = 0
+        self.packets_dropped = 0
+        self.packets_expired = 0
+        self.extracted_bytes = 0
+        self.packets_extracted = 0
+        self.packets_extracted_late = 0
 
 
 class UeProtocolStack:
@@ -1054,6 +1291,8 @@ class UeProtocolStack:
                 ue_packets_expired: int - Общее кол-во просроченных пакетов для UE.
                 buffer_size_per_qci: Dict - Текущий размер буфера для каждого QCI.
                 extracted_bytes_per_qci: Dict - Кол-во извлечённых байт для каждого QCI.
+                packets_ext_per_qci: Dict - Кол-во извлечённых пакетов для каждого QCI.
+                packets_ext_late_per_qci: Dict - Кол-во извлечённых пакетов (прев. PDB) для каждого QCI.
                 packets_added_per_qci: Dict - Кол-во добавленных пакетов для каждого QCI.
                 packets_dropped_per_qci: Dict - Кол-во отброшенных пакетов для каждого QCI.
                 packets_expired_per_qci: Dict - Кол-во просроченных пакетов для каждого QCI.
@@ -1069,6 +1308,8 @@ class UeProtocolStack:
         # Статистика для каждого отдельного QCI
         buffer_size_per_qci = {}
         extracted_bytes_per_qci = {}
+        packets_ext_per_qci = {}
+        packets_ext_late_per_qci = {}
         packets_added_per_qci = {}
         packets_dropped_per_qci = {}
         packets_expired_per_qci = {}
@@ -1083,6 +1324,8 @@ class UeProtocolStack:
 
             buffer_size_per_qci[qci] = rlc_entity_stats.get("buffer_size")
             extracted_bytes_per_qci[qci] = rlc_entity_stats.get("extracted_bytes")
+            packets_ext_per_qci[qci] = rlc_entity_stats.get("packets_ext")
+            packets_ext_late_per_qci[qci] = rlc_entity_stats.get("packets_ext_late")
             packets_added_per_qci[qci] = rlc_entity_stats.get("packets_added")
             packets_dropped_per_qci[qci] = rlc_entity_stats.get("packets_dropped")
             packets_expired_per_qci[qci] = rlc_entity_stats.get("packets_expired")
@@ -1100,6 +1343,8 @@ class UeProtocolStack:
             "ue_packets_expired": ue_packets_expired,
             "buffer_size_per_qci": buffer_size_per_qci,
             "extracted_bytes_per_qci": extracted_bytes_per_qci,
+            "packets_ext_per_qci": packets_ext_per_qci,
+            "packets_ext_late_per_qci": packets_ext_late_per_qci,
             "packets_added_per_qci": packets_added_per_qci,
             "packets_dropped_per_qci": packets_dropped_per_qci,
             "packets_expired_per_qci": packets_expired_per_qci,
@@ -1132,6 +1377,8 @@ class LayeredBufferManager(IBufferManager):
         self.current_total_size = 0
 
         self.global_packets_dropped = 0
+
+        self.qci_tput_tracker = QciThroughputTracker()
 
     def add_packet(self, ue_id: int, packet: Packet) -> bool:
         """
@@ -1228,6 +1475,7 @@ class LayeredBufferManager(IBufferManager):
         
         packets = []
         extracted_bytes = 0
+        extracted_bytes_per_qci = {}
         
         for grant in grants:
             lcid = grant.lcid
@@ -1238,7 +1486,14 @@ class LayeredBufferManager(IBufferManager):
             packets.extend(lc_packets)
             extracted_bytes += lc_extracted_bytes
 
+            if lc_extracted_bytes > 0 and lc_packets:
+                qci = lc_packets[0].qci
+                extracted_bytes_per_qci[qci] = (
+                    extracted_bytes_per_qci.get(qci, 0) + lc_extracted_bytes
+                )
+
         self.current_total_size -= extracted_bytes
+        self.qci_tput_tracker.update_all_qcis(ue_id, extracted_bytes_per_qci)
 
         return packets, extracted_bytes
             
@@ -1294,6 +1549,9 @@ class LayeredBufferManager(IBufferManager):
 
             self.ue_stacks[ue_id].create_entities(lcid, qci, ue_buffer_size)
 
+        qcis = [bearer.qci for bearer in bearers.values()]
+        self.qci_tput_tracker.register_ue(ue_id, qcis)
+
     def remove_ue_buffer(self, ue_id: int) -> None:
         """
         Удаление буферов для соответствующего UE.
@@ -1308,6 +1566,7 @@ class LayeredBufferManager(IBufferManager):
             self.current_total_size -= freed_size
 
             del self.ue_stacks[ue_id]
+            self.qci_tput_tracker.unregister_ue(ue_id)
 
     def get_stats(self) -> Dict:
         """
@@ -1326,6 +1585,8 @@ class LayeredBufferManager(IBufferManager):
                 packets_expired_per_ue: Dict - Кол-во просроченных пакетов для каждого UE.
                 buffer_size_per_ue_per_qci: Dict - Текущий размер буфера для каждого QCI каждого UE.
                 extracted_bytes_per_ue_per_qci: Dict - Кол-во извлечённых байт для каждого QCI каждого UE.
+                packets_ext_per_ue_per_qci: Dict - Кол-во извлечённых пакетов для каждого QCI каждого UE.
+                packets_ext_late_per_ue_per_qci: Dict - Кол-во извлечённых пакетов (прев. PDB) для каждого QCI каждого UE.
                 packets_added_per_ue_per_qci: Dict - Кол-во добавленных пакетов для каждого QCI каждого UE.
                 packets_dropped_per_ue_per_qci: Dict - Кол-во отброшенных пакетов для каждого QCI каждого UE.
                 packets_expired_per_ue_per_qci: Dict - Кол-во просроченных пакетов для каждого QCI каждого UE.
@@ -1346,6 +1607,8 @@ class LayeredBufferManager(IBufferManager):
         # Статистика для каждого отдельного QCI каждого UE
         buffer_size_per_ue_per_qci = {}
         extracted_bytes_per_ue_per_qci = {}
+        packets_ext_per_ue_per_qci = {}
+        packets_ext_late_per_ue_per_qci = {}
         packets_added_per_ue_per_qci = {}
         packets_dropped_per_ue_per_qci = {}
         packets_expired_per_ue_per_qci = {}
@@ -1368,6 +1631,8 @@ class LayeredBufferManager(IBufferManager):
 
             buffer_size_per_ue_per_qci[ue_id] = ue_stack_stats.get("buffer_size_per_qci")
             extracted_bytes_per_ue_per_qci[ue_id] = ue_stack_stats.get("extracted_bytes_per_qci")
+            packets_ext_per_ue_per_qci[ue_id] = ue_stack_stats.get("packets_ext_per_qci")
+            packets_ext_late_per_ue_per_qci[ue_id] = ue_stack_stats.get("packets_ext_late_per_qci")
             packets_added_per_ue_per_qci[ue_id] = ue_stack_stats.get("packets_added_per_qci")
             packets_dropped_per_ue_per_qci[ue_id] = ue_stack_stats.get("packets_dropped_per_qci")
             packets_expired_per_ue_per_qci[ue_id] = ue_stack_stats.get("packets_expired_per_qci")
@@ -1387,6 +1652,8 @@ class LayeredBufferManager(IBufferManager):
             "packets_expired_per_ue": packets_expired_per_ue,
             "buffer_size_per_ue_per_qci": buffer_size_per_ue_per_qci,
             "extracted_bytes_per_ue_per_qci": extracted_bytes_per_ue_per_qci,
+            "packets_ext_per_ue_per_qci": packets_ext_per_ue_per_qci,
+            "packets_ext_late_per_ue_per_qci": packets_ext_late_per_ue_per_qci,
             "packets_added_per_ue_per_qci": packets_added_per_ue_per_qci,
             "packets_dropped_per_ue_per_qci": packets_dropped_per_ue_per_qci,
             "packets_expired_per_ue_per_qci": packets_expired_per_ue_per_qci,
