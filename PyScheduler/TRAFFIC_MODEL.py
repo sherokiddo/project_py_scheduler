@@ -603,7 +603,251 @@ class MMPPModel(ITrafficModel):
             }
         )
         return info
+    
 
+class PereodicModel(ITrafficModel):
+    """
+    Переодическая модель генерации трафика.
+    
+    Генерирует пакеты одинакого размера с фиксированным интервалом между ними.
+    """
+    def __init__(self, packet_interval: int = 1, packet_size: int = 1500):
+        """
+        Инициализация переодической модели генерации трафика.
+
+        Args:
+            packet_interval (int, optional): Интервал между пакетами (мс). 
+                По умолчанию 1.
+            packet_size (int, optional): Размер пакета (байты). По умолчанию 1500.
+
+        """
+        super().__init__(
+            min_packet_size=packet_size, 
+            max_packet_size=packet_size
+        )
+
+        self.packet_interval = packet_interval
+        self.packet_size = packet_size
+
+        self._next_packet_time: Dict[int, int] = {}
+    
+    def generate_traffic(self, ue_id: int, current_time: int, update_interval: int) -> List[Packet]:
+        """
+        Генерация трафика для конкретного устройства за указанный интервал времени.
+
+        Args:
+            ue_id (int): Уникальный идентификатор UE.
+            current_time (int): Текущее время моделирования (мс).
+            update_interval (int): Интервал времени для генерации трафика (мс).
+
+        Returns:
+            List[Packet]: Список сгенерированных пакетов.
+
+        """
+        packets = []
+
+        start_time = current_time - update_interval
+
+        if ue_id not in self._next_packet_time:
+            self._next_packet_time[ue_id] = current_time
+
+        next_packet_time = self._next_packet_time[ue_id]
+
+        while next_packet_time <= current_time:
+
+            if next_packet_time >= start_time:
+                packets.append(
+                    Packet(
+                        size=self.packet_size,
+                        ue_id=ue_id,
+                        creation_time=next_packet_time,
+                    )
+                )
+
+            next_packet_time += self.packet_interval
+
+        self._next_packet_time[ue_id] = next_packet_time
+
+        return packets
+    
+    def clear_state(self, ue_id: int):
+        """
+        Очистка состояния модели для указанного UE.
+
+        Args:
+            ue_id (int): Уникальный идентификатор UE.
+
+        """
+        if ue_id in self._next_packet_time:
+            del self._next_packet_time[ue_id]
+
+    def get_model_name(self) -> str:
+        """
+        Получение названия модели трафика.
+
+        Returns:
+            str: Название модели.
+
+        """
+        return "Periodic"
+    
+    def get_model_info(self) -> Dict:
+        """
+        Получение информации о параметрах модели.
+
+        Returns:
+            Dict: Словарь с параметрами модели.
+
+        """
+        info = super().get_model_info()
+        info.update(
+            {
+                "packet_interval": self.packet_interval,
+                "packet_size": self.packet_size,
+                "active_devices": len(self._next_packet_time),
+            }
+        )
+        return info
+    
+class ConstBitrateModel(ITrafficModel):
+    """
+    Модель генерации трафика с постоянным битрейтом.
+    
+    Генерирует пакеты одинакого размера для обеспечения заданного значения
+    битрейта.
+    """
+    def __init__(self, bitrate: str = "1 Mbps", packet_size: int = 1500):
+        """
+        Инициализация модели генерации трафика с постоянным битрейтом.
+
+        Args:
+            bitrate (str, optional): Битрейт. По умолчанию "1 Mbps".
+            packet_size (int, optional): Размер пакета (байты). По умолчанию 1500.
+
+        """
+        super().__init__(
+            min_packet_size=packet_size, 
+            max_packet_size=packet_size
+        )
+
+        self.bitrate = self._parse_bitrate(bitrate)
+        self.packet_size = packet_size
+
+        self.packet_size_bits = packet_size * 8
+
+        self._bit_buffer: Dict[int, int] = {}
+
+    def _parse_bitrate(self, bitrate: str) -> float:
+        """
+        Преобразование строки с битрейтом в значение бит/с.
+
+        Args:
+            bitrate (str): Строка со значением битрейта.
+
+        Raises:
+            ValueError: Если получен некорректный формат битрейта.
+
+        Returns:
+            float: Значение битрейта (бит/с).
+
+        """
+        bitrate = bitrate.strip()
+        pattern = r"^([\d.]+)\s*([KMG]?bps)$"
+
+        import re
+        match = re.match(pattern, bitrate, re.IGNORECASE)
+
+        if not match:
+            raise ValueError(
+                f"Invalid bitrate format: '{bitrate}'"
+            )
+        
+        value = float(match.group(1))
+        unit = match.group(2).lower()
+
+        multipliers = {
+            "bps": 1,
+            "kbps": 1e3,
+            "mbps": 1e6,
+            "gbps": 1e9,
+        }
+
+        return value * multipliers[unit]
+    
+    def generate_traffic(self, ue_id: int, current_time: int, update_interval: int) -> List[Packet]:
+        """
+        Генерация трафика для конкретного устройства за указанный интервал времени.
+
+        Args:
+            ue_id (int): Уникальный идентификатор UE.
+            current_time (int): Текущее время моделирования (мс).
+            update_interval (int): Интервал времени для генерации трафика (мс).
+
+        Returns:
+            List[Packet]: Список сгенерированных пакетов.
+
+        """
+        packets = []
+
+        if ue_id not in self._bit_buffer:
+            self._bit_buffer[ue_id] = 0.0
+
+        bits_to_add = self.bitrate * update_interval / 1000.0
+
+        self._bit_buffer[ue_id] += bits_to_add
+
+        while self._bit_buffer[ue_id] >= self.packet_size_bits:
+
+            packets.append(
+                Packet(
+                    size=self.packet_size,
+                    ue_id=ue_id,
+                    creation_time=current_time,
+                )
+            )
+
+            self._bit_buffer[ue_id] -= self.packet_size_bits
+
+        return packets
+
+    def clear_state(self, ue_id: int):
+        """
+        Очистка состояния модели для указанного UE.
+
+        Args:
+            ue_id (int): Уникальный идентификатор UE.
+
+        """
+        if ue_id in self._bit_buffer:
+            del self._bit_buffer[ue_id]
+
+    def get_model_name(self) -> str:
+        """
+        Получение названия модели трафика.
+
+        Returns:
+            str: Название модели.
+
+        """
+        return "ConstBitrate"
+
+    def get_model_info(self) -> Dict:
+        """
+        Получение информации о параметрах модели.
+
+        Returns:
+            Dict: Словарь с параметрами модели.
+
+        """
+        info = super().get_model_info()
+        info.update(
+            {
+                "bitrate": self.bitrate,
+                "packet_size": self.packet_size,
+                "active_devices": len(self._bit_buffer),
+            }
+        )
+        return info
 
 class TrafficModelFactory:
     """
@@ -624,6 +868,8 @@ class TrafficModelFactory:
                 - 'Poisson': Пакеты генерируются с постоянной интенсивностью.
                 - 'OnOff': Модель с чередованием фаз активности (ON) и молчания (OFF).
                 - 'MMPP': Марковская модель (2-state Markov Modulated Poisson Process).
+                - 'Pereodic': Переодическая модель генерации трафика.
+                - 'ConstBitrate': Модель генерации трафика с постоянным битрейтом.
 
             **kwargs: Параметры, специфичные для каждой модели:
                 Для 'Poisson':
@@ -645,6 +891,14 @@ class TrafficModelFactory:
                     - q21 (float): Скорость перехода из состояния 2 в 1.
                     - min_packet_size (int): Минимальный размер пакета (байт).
                     - max_packet_size (int): Максимальный размер пакета (байт).
+
+                Для 'Pereodic':
+                    - packet_interval (int): Интервал между пакетами (мс).
+                    - packet_size (int): Размер пакета (байты).
+
+                Для 'ConstBitrate':
+                    - bitrate (str): Значение битрейта.
+                    - packet_size (int): Размер пакета (байты).
 
         Returns:
             ITrafficModel: Экземпляр созданной модели трафика.
@@ -671,6 +925,10 @@ class TrafficModelFactory:
                     [[0, 0.07, 0.03], [0.12, 0, 0.08], [0.4, 0.1, 0]]
                 )
             return MMPPModel(**kwargs)
+        elif model_type == "Pereodic":
+            return PereodicModel(**kwargs)
+        elif model_type == "ConstBitrate":
+            return ConstBitrateModel(**kwargs)
         else:
             available = TrafficModelFactory.get_available_models()
             raise ValueError(f"Unknown model type: '{model_type}'. Available: {available}")
@@ -678,7 +936,7 @@ class TrafficModelFactory:
     @staticmethod
     def get_available_models() -> List[str]:
         """Список доступных моделей"""
-        return ["Poisson", "OnOff", "MMPP"]
+        return ["Poisson", "OnOff", "MMPP", "Pereodic", "ConstBitrate"]
 
     @staticmethod
     def create_poisson_model(packet_rate: float, **kwargs) -> PoissonModel:
@@ -700,6 +958,16 @@ class TrafficModelFactory:
     ) -> MMPPModel:
         """Удобный метод для создания MMPP модели"""
         return MMPPModel(packet_rates=packet_rates, transition_matrix=transition_matrix, **kwargs)
+    
+    @staticmethod
+    def create_pereodic_model(packet_interval: int, packet_size: int) -> PereodicModel:
+        """Удобный метод для создания Pereodic модели"""
+        return PereodicModel(packet_interval=packet_interval, packet_size=packet_size)
+    
+    @staticmethod
+    def create_pereodic_model(bitrate: str, packet_size: int) -> PereodicModel:
+        """Удобный метод для создания ConstBitrate модели"""
+        return ConstBitrateModel(bitrate=bitrate, packet_size=packet_size)
 
 
 class ITrafficGeneratorInterface(ABC):
