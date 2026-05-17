@@ -8,7 +8,7 @@ from TRAFFIC_MODEL  import PoissonModel, OnOffModel, MMPPModel
 import json
 import uuid
 from core.sim_run import run_simulation, simulations, send_completion
-
+from core.test_runs import run_mobility_test, run_buffer_test
 from typing import Optional, Any, Dict, List, Union
 import csv
 import asyncio
@@ -60,6 +60,10 @@ class SimulationConfig(BaseModel):
     realtime_batch_size: int = 50           # размер batched-пакета для WS
 
 
+class BufferTestConfig(BaseModel):
+    scheduler: str = "RoundRobin"
+
+
 available_ue_traffic_pattern = ["PoissonModel", "OnOffModel", "MMPPModel"]
 """ 
 Модели трафика UE:
@@ -83,6 +87,24 @@ available_bs_ch_types = ["UMa", "UMi", "RMa"]
 - UMi: Urban Micro    — ниже крыш (10-20 м), уличные сценарии  
 - RMa: Rural Macro    — сельская местность, большие расстояния (~500-1500 м)
 """
+
+@router_v1.post("/tests/mobility/run")
+async def run_mobility_api_test():
+    res = run_mobility_test()
+    return {
+        "status": "success" if res["passed"] else "error",
+        "code": 200 if res["passed"] else 500,
+        "data": res,
+    }
+
+@router_v1.post("/tests/buffer/run", response_model=basic.BaseScheme_Response)
+async def run_buffer_api_test(param: BufferTestConfig = BufferTestConfig()):
+    res = run_buffer_test(param.scheduler)
+    return {
+        "status": "success" if res["passed"] else "error",
+        "code": 200 if res["passed"] else 500,
+        "data": res,
+    }
 
 @router_v1.post("/sim/run", response_model=basic.BaseScheme_Response)
 async def sim_run(param: SimulationConfig):

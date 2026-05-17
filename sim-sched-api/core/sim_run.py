@@ -8,7 +8,6 @@ from typing import Any, Dict, List
 from SIMULATION_MANAGER import SimulationManager
 from UE_MODULE import UECollection, UserEquipment
 from BS_MODULE import BaseStation
-from TRAFFIC_MODEL import PoissonModel, OnOffModel, MMPPModel
 from MOBILITY_MODEL import MapBorders
 
 simulations: Dict[str, dict] = {}
@@ -159,28 +158,42 @@ async def run_simulation(run_id: str, config: dict):
 
     ue_collection.SET_MOBILITY_MODEL(config["ue_move_pattern"], **mobility_kwargs)
 
-    packet_rate = config.get("sim_packet_rate", 1000)
-    traffic_model = None
-
-    if config["ue_traffic_pattern"] == "PoissonModel":
-        traffic_model = PoissonModel(packet_rate=packet_rate)
-    elif config["ue_traffic_pattern"] == "OnOffModel":
-        traffic_model = OnOffModel(packet_rate=packet_rate)
-    elif config["ue_traffic_pattern"] == "MMPPModel":
-        traffic_model = MMPPModel(packet_rate=packet_rate)
-    else:
-        raise ValueError(
-            f"Неподдерживаемая модель трафика: {config['ue_traffic_pattern']}. "
-            f"Доступные: PoissonModel, OnOffModel, MMPPModel"
-        )
-
-    ue_collection.SET_TRAFFIC_MODEL(traffic_model)
-
     ue_collection.REG_USERS_TO_BS(bs)
 
     sim_manager.set_ue_collection(ue_collection)
 
     sim_manager.set_scheduler(algorithm=config["bs_scheduler"])
+
+    traffic_pattern_map = {
+        "PoissonModel": "Poisson",
+        "OnOffModel": "OnOff",
+        "MMPPModel": "MMPP",
+    }
+    traffic_model_type = traffic_pattern_map.get(config["ue_traffic_pattern"])
+    if traffic_model_type is None:
+        raise ValueError(
+            f"Неподдерживаемая модель трафика: {config['ue_traffic_pattern']}. "
+            f"Доступные: PoissonModel, OnOffModel, MMPPModel"
+        )
+
+    packet_rate = config.get("sim_packet_rate", 1000)
+    traffic_params = {"packet_rate": packet_rate}
+    if traffic_model_type == "OnOff":
+        traffic_params.update({
+            "duration_on": config.get("traffic_duration_on", 1.0),
+            "duration_off": config.get("traffic_duration_off", 1.0),
+        })
+    elif traffic_model_type == "MMPP":
+        traffic_params = {
+            "packet_rates": config.get("traffic_packet_rates", [packet_rate, packet_rate * 2]),
+        }
+
+    for ue_id in config["ue_ids"]:
+        sim_manager.setup_ue_traffic(
+            ue_id=ue_id,
+            model_type=traffic_model_type,
+            **traffic_params,
+        )
 
     # Запускаем симуляцию в отдельном потоке (blocking call)
     loop = asyncio.get_running_loop()
