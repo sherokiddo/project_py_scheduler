@@ -24,6 +24,7 @@ from typing import Dict, List, Tuple, Optional
 import GLOBALS
 import numpy as np
 from TRAFFIC_MODEL import Packet, QCI, UeBearersInfo
+from HARQ_MANAGER import HARQIface
 from UE_MODULE import UserEquipment
 
 @dataclass(slots=True)
@@ -126,6 +127,8 @@ class SimpleBuffer:
         self.packets_added = 0
         self.packets_dropped = 0
         self.packets_expired = 0
+
+        self.harq_manager = HARQIface()
         
     def add_packet(self, packet: Packet) -> bool:
         """
@@ -1534,6 +1537,8 @@ class BaseStation:
         """
         self.registered_ues[ue.UE_ID] = ue
         ue.serving_bs = self
+
+        ue.harq_manager.create_process(ue, ue.UE_ID)
 
         # TODO: сделать метод DEREG_UE и сопутствующие изменения
 

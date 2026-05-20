@@ -73,8 +73,8 @@ from collections import deque
 from typing import Dict, List, Optional, Tuple
 
 import GLOBALS
+import math
 import numpy as np
-from HARQ_MANAGER import HARQIface
 from TRAFFIC_MODEL import MMPPModel, OnOffModel, PoissonModel
 
 
@@ -691,25 +691,26 @@ class UserEquipment:
             "distance": self.dist_to_BS_2D,  # возможно оно тут нафиг не надо я пока не вставлял расчеты SINR
         }
 
-    def SINR_TO_CQI(self, SINR: float) -> int:
-        """
-        Преобразовать SINR в CQI согласно спецификации LTE.
+    def SINR_TO_CQI(self, sinr_db: float) -> int:
 
-        Args:
-            SINR (float): Отношение сигнал/шум+помехи (дБ).
+        sinr_linear = 10 ** (sinr_db / 10)
 
-        Returns:
-            int: Значение CQI (1-15).
+        correction = (-math.log(5 * GLOBALS.TARGET_BER)) / 1.5
 
-        """
-        if SINR <= -6.934:
-            return 1
-        elif SINR >= 22.976:
-            return 15
-        else:
-            # Линейная интерполяция
-            step = (22.976 + 6.934) / 14
-            return int(1 + (SINR + 6.934) / step)
+        spectral_efficiency = math.log2(
+            1 + sinr_linear / correction
+        )
+
+        cqi = 0
+
+        for i in range(1, len(GLOBALS.CQI_TO_SE)):
+
+            if GLOBALS.CQI_TO_SE[i] <= spectral_efficiency:
+                cqi = i
+            else:
+                break
+
+        return cqi
 
     def _calculate_distances_to_BS(self) -> None:
         """
@@ -1028,8 +1029,6 @@ class UECollection:
         """
         for ue in self.users.values():
             bs.REG_UE(ue)
-            HARQIface.create_process(ue, ue.UE_ID)
-
 
 # Далее тесты для проверки работоспособности буфера и примеры работы с ним.
 # Можно удалить или закомментить после того, как будут сделаны генераторы трафика.
