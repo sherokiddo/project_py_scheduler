@@ -11,3 +11,4 @@ PyScheduler/output.txt
 .spyproject/**
 *.log
 logs/
+.idea/

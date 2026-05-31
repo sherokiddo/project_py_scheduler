@@ -154,6 +154,7 @@ class TestBoundaryConditions(unittest.TestCase):
         """RandomWaypoint: destination всегда внутри карты."""
         ue = make_ue()
         model = RandomWaypointModel(ue=ue)
+        model.update(0)
         dest = model.destination
         self.assertTrue(X_MIN <= dest[0] <= X_MAX,
             f"destination.x={dest[0]} вне карты")
@@ -184,6 +185,7 @@ class TestBoundaryConditions(unittest.TestCase):
         """RandomDirection: destination должен лежать на границе карты."""
         ue = make_ue(x=0.0, y=0.0)
         model = RandomDirectionModel(ue=ue, pause_time=0)
+        model.update(0)
         dest = model.destination
         on_x_border = (abs(dest[0] - X_MIN) < 1.0 or abs(dest[0] - X_MAX) < 1.0)
         on_y_border = (abs(dest[1] - Y_MIN) < 1.0 or abs(dest[1] - Y_MAX) < 1.0)
@@ -312,22 +314,25 @@ class TestRandomWaypointSpecific(unittest.TestCase):
         """RandomWaypoint: после достижения цели выбирается новая точка."""
         ue = make_ue(x=0.0, y=0.0, velocity=100.0, v_min=100.0, v_max=100.0)
         model = RandomWaypointModel(ue=ue, pause_time=0)
-        ue.position = (
-            model.destination[0] - 5.0,   # 5м до цели
-            model.destination[1]
-        )
-        first_dest = model.destination
+        model.update(0)
+        first_dest = model.destination.copy()
+        destination_changed = False
         for _ in range(50):
-            pos, vel, d = model.update(100)
-            ue.position = pos; ue.velocity = vel; ue.direction = d
-            if model.destination != first_dest:
-                return  # новая цель выбрана — тест прошёл
-        self.fail("RandomWaypoint: новая цель не была выбрана после 50 шагов")
+            pos, vel, d = model.update(10000)
+            ue.position = pos;
+            ue.velocity = vel;
+            ue.direction = d
+
+            if not np.array_equal(model.destination, first_dest):
+                destination_changed = True
+                break
+        self.assertTrue(destination_changed, "RandomWaypoint: новая цель не была выбрана после 50 шагов")
 
     def test_pause_reduces_velocity_to_zero(self):
         """RandomWaypoint: при pause_time>0 velocity=0 во время паузы."""
         ue = make_ue(x=0.0, y=0.0, velocity=200.0, v_min=200.0, v_max=200.0)
         model = RandomWaypointModel(ue=ue, pause_time=5000)
+        model.update(0)
         ue.position = (model.destination[0] - 5.0, model.destination[1])
         for _ in range(100):
             pos, vel, d = model.update(100)
@@ -348,16 +353,20 @@ class TestGaussMarkovSpecific(unittest.TestCase):
     def tearDown(self):
         reset_borders()
 
-    def test_boundary_threshold_triggers_correction(self):
-        """GaussMarkov: у границы mean_direction корректируется."""
-        # Ставим UE близко к правой границе
-        ue = make_ue(x=X_MAX - 3.0, y=0.0, direction=0.0)
-        model = GaussMarkovModel(ue=ue, boundary_threshold=50.0)
-        # После update mean_direction должен указывать внутрь (≈ π = 180°)
-        model.update(TIME_MS)
-        self.assertAlmostEqual(model.mean_direction, math.pi, places=1,
-            msg="GaussMarkov: у правой границы mean_direction не скорректирован")
+    def test_boundary_triggers_correction(self):
+        """GaussMarkov: при выходе за границы происходит отскок."""
+        ue = make_ue(x=X_MAX + 5.0, y=0.0)
+        model = GaussMarkovModel(ue=ue)
+        model.update(0)
 
+        model.current_pos = np.array([X_MAX + 5.0, 0.0, 0.0])
+        model.mean_direction = 0.0
+        model.direction = 0.0
+        model.velocity = 10.0
+
+        model._start()
+
+        self.assertAlmostEqual(model.mean_direction, math.pi, places=1,msg="GaussMarkov: у правой границы угол mean_direction не скорректирован")
     def test_alpha_zero_memoryless(self):
         """GaussMarkov alpha=0: нет памяти, velocity → mean_velocity."""
         ue = make_ue(x=0.0, y=0.0, velocity=5.0)
@@ -456,13 +465,16 @@ class TestRandomDirectionSpecific(unittest.TestCase):
         """RandomDirection: после достижения границы выбирается новое направление."""
         ue = make_ue(x=0.0, y=0.0, velocity=200.0, v_min=200.0, v_max=200.0)
         model = RandomDirectionModel(ue=ue, pause_time=0)
-        first_dest = model.destination
-        for _ in range(100):
-            pos, vel, d = model.update(TIME_MS)
+        model.update(0)
+        first_dir = model.current_direction
+        direction_changed = False
+        for _ in range(50):
+            pos, vel, d = model.update(10000)
             ue.position = pos; ue.velocity = vel; ue.direction = d
-            if model.destination != first_dest:
-                return
-        self.fail("RandomDirection: новое направление не было выбрано")
+            if abs(model.current_direction - first_dir) > 1e-4:
+                direction_changed = True
+                break
+        self.assertTrue(direction_changed, "RandomDirection: новое направление не было выбрано")
 
 
 # ==============================================================================
