@@ -38,6 +38,8 @@ from SCHEDULER import SchedulerInterface
 from TRAFFIC_MODEL import PacketManager, SimpleGenerator, TrafficType
 from UE_MODULE import UECollection
 from MOBILITY_MODEL import MapBorders
+from MOBILITY_ASYNC import MobilityAsyncProvider
+from CHANNEL_PARALLEL import ChannelParallelProvider
 from tqdm import tqdm
 
 # ==============================================================================
@@ -866,6 +868,22 @@ class SimulationConfig:
     stats_log: bool = False
     verbose: bool = False
 
+    # Async mobility configuration.
+    # По умолчанию выключено, поэтому старое поведение проекта не меняется.
+    async_mobility_enabled: bool = False
+    async_mobility_workers: int = 1  # Сейчас используется один producer-process.
+    async_mobility_prefetch_steps: int = 16
+    async_mobility_cache_steps: int = 64
+    async_mobility_snapshot_timeout_ms: int = 0
+    async_mobility_seed: Optional[int] = None
+
+    # Parallel channel configuration.
+    # По умолчанию выключено, поэтому старое поведение проекта не меняется.
+    parallel_channel_enabled: bool = False
+    parallel_channel_workers: int = 2
+    parallel_channel_timeout_s: float = 30.0
+    parallel_channel_seed: Optional[int] = None
+
 
 @dataclass
 class SchedulerConfig:
@@ -947,6 +965,8 @@ class SimulationManager:
         self.scheduler = None
 
         self.traffic_gen = None
+        self.mobility_provider = None
+        self.channel_provider = None
 
     def set_sim_duration(self, sim_duration: int) -> None:
         """
@@ -1018,6 +1038,139 @@ class SimulationManager:
 
     #TODO: возможно эти интервальные сеттеры можно объединить в один метод
 
+    def set_async_mobility(
+        self,
+        enabled: bool = True,
+        workers: int = 1,
+        prefetch_steps: int = 16,
+        cache_steps: int = 64,
+        snapshot_timeout_ms: int = 0,
+        seed: Optional[int] = None,
+    ) -> None:
+        """
+        Включить/настроить асинхронный расчет мобильности.
+
+        Архитектура:
+            - MOBILITY_MODEL.py считается в отдельном worker-процессе;
+            - worker публикует immutable MobilitySnapshot;
+            - основной процесс применяет snapshots к UE перед расчетом канала.
+
+        Параметр workers оставлен для будущего расширения на несколько producer'ов.
+        В текущей реализации используется один процесс, потому что это самый
+        безопасный MVP без изменения семантики порядка random/update.
+        """
+        if not isinstance(enabled, bool):
+            raise TypeError("enabled должен быть bool")
+        if workers <= 0:
+            raise ValueError("workers должен быть > 0")
+        if prefetch_steps <= 0:
+            raise ValueError("prefetch_steps должен быть > 0")
+        if cache_steps <= 1:
+            raise ValueError("cache_steps должен быть > 1")
+        if snapshot_timeout_ms < 0:
+            raise ValueError("snapshot_timeout_ms должен быть >= 0")
+
+        self.sim_config.async_mobility_enabled = enabled
+        self.sim_config.async_mobility_workers = int(workers)
+        self.sim_config.async_mobility_prefetch_steps = int(prefetch_steps)
+        self.sim_config.async_mobility_cache_steps = int(cache_steps)
+        self.sim_config.async_mobility_snapshot_timeout_ms = int(snapshot_timeout_ms)
+        self.sim_config.async_mobility_seed = seed
+
+    def _start_async_mobility_if_needed(self) -> None:
+        """
+        Создать и запустить MobilityAsyncProvider перед основным циклом.
+
+        Вызывается после _check_required_parameters(), когда уже известны:
+            sim_duration, mobility_update_interval, ue_collection.
+        """
+        if not self.sim_config.async_mobility_enabled:
+            return
+
+        if self.ue_collection is None:
+            raise RuntimeError("Нельзя включить async mobility без ue_collection")
+
+        self.mobility_provider = MobilityAsyncProvider(
+            mobility_interval_ms=self.sim_config.mobility_update_interval,
+            sim_duration_ms=self.sim_config.sim_duration,
+            prefetch_steps=self.sim_config.async_mobility_prefetch_steps,
+            cache_steps=self.sim_config.async_mobility_cache_steps,
+            snapshot_timeout_ms=self.sim_config.async_mobility_snapshot_timeout_ms,
+            seed=self.sim_config.async_mobility_seed,
+            verbose=self.sim_config.verbose,
+        )
+        self.mobility_provider.start(self.ue_collection.GET_ALL_USERS())
+        self.ue_collection.SET_MOBILITY_PROVIDER(self.mobility_provider)
+
+    def _shutdown_async_mobility(self) -> None:
+        """
+        Остановить worker-процесс async mobility.
+        """
+        if self.mobility_provider is not None:
+            self.mobility_provider.shutdown()
+            self.mobility_provider = None
+
+        if self.ue_collection is not None:
+            self.ue_collection.SET_MOBILITY_PROVIDER(None)
+
+    def set_parallel_channel(
+        self,
+        enabled: bool = True,
+        workers: int = 2,
+        timeout_s: float = 30.0,
+        seed: Optional[int] = None,
+    ) -> None:
+        """
+        Включить/настроить параллельный batch-расчёт качества канала.
+
+        Архитектура:
+            - несколько worker-процессов держат свои копии channel_model;
+            - UE закрепляются за worker по ue_id % workers;
+            - основной процесс отправляет batch ChannelInput на channel-step;
+            - worker возвращает immutable ChannelSnapshot;
+            - живые UE мутируются только в основном процессе.
+        """
+        if not isinstance(enabled, bool):
+            raise TypeError("enabled должен быть bool")
+        if workers <= 0:
+            raise ValueError("workers должен быть > 0")
+        if timeout_s <= 0:
+            raise ValueError("timeout_s должен быть > 0")
+
+        self.sim_config.parallel_channel_enabled = enabled
+        self.sim_config.parallel_channel_workers = int(workers)
+        self.sim_config.parallel_channel_timeout_s = float(timeout_s)
+        self.sim_config.parallel_channel_seed = seed
+
+    def _start_parallel_channel_if_needed(self) -> None:
+        """Создать и запустить ChannelParallelProvider перед основным циклом."""
+        if not self.sim_config.parallel_channel_enabled:
+            return
+
+        if self.ue_collection is None:
+            raise RuntimeError("Нельзя включить parallel channel без ue_collection")
+        if self.base_station is None or self.base_station.channel_model is None:
+            raise RuntimeError("Нельзя включить parallel channel без channel_model у BaseStation")
+
+        self.channel_provider = ChannelParallelProvider(
+            channel_model=self.base_station.channel_model,
+            workers=self.sim_config.parallel_channel_workers,
+            timeout_s=self.sim_config.parallel_channel_timeout_s,
+            seed=self.sim_config.parallel_channel_seed,
+            verbose=self.sim_config.verbose,
+        )
+        self.channel_provider.start()
+        self.ue_collection.SET_CHANNEL_PROVIDER(self.channel_provider)
+
+    def _shutdown_parallel_channel(self) -> None:
+        """Остановить worker-процессы parallel channel."""
+        if self.channel_provider is not None:
+            self.channel_provider.shutdown()
+            self.channel_provider = None
+
+        if self.ue_collection is not None:
+            self.ue_collection.SET_CHANNEL_PROVIDER(None)
+
     def set_map_borders(self, x_min: float, x_max: float,
                         y_min: float, y_max: float) -> None:
         """
@@ -1050,6 +1203,11 @@ class SimulationManager:
             )
 
         self.ue_collection = ue_collection
+
+        if self.mobility_provider is not None:
+            self.ue_collection.SET_MOBILITY_PROVIDER(self.mobility_provider)
+        if self.channel_provider is not None:
+            self.ue_collection.SET_CHANNEL_PROVIDER(self.channel_provider)
 
     def set_base_station(self, base_station: BaseStation) -> None:
         """
@@ -1178,6 +1336,12 @@ class SimulationManager:
 
             # Проверка обязательных параметров симуляции
             self._check_required_parameters()
+
+            # Запуск асинхронного расчета мобильности, если включен
+            self._start_async_mobility_if_needed()
+
+            # Запуск параллельного расчета канала, если включен
+            self._start_parallel_channel_if_needed()
 
             # Создание ресурсной сетки
             lte_grid = RES_GRID_LTE_CACHED(
@@ -1336,6 +1500,12 @@ class SimulationManager:
                             self.stats_manager.export_detailed_json(detailed_filename)
 
             finally:
+                # Остановка worker-процессов параллельного канала
+                self._shutdown_parallel_channel()
+
+                # Остановка worker-процесса асинхронной мобильности
+                self._shutdown_async_mobility()
+
                 # Возвращение консольного вывода
                 if pbar is not None:
                     pbar.close()

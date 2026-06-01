@@ -448,14 +448,21 @@ class UserEquipment:
         # @IvanNoritsin: Нужен базовый класс для моделей трафика для более
         # корректной валидации.
 
-    def UPD_POSITION(self, update_interval: int) -> None:
-        """Обновить позицию пользователя согласно модели передвижения."""
+    def APPLY_MOBILITY_SNAPSHOT(self, snapshot) -> None:
+        """
+        Применить заранее рассчитанный snapshot мобильности к UE.
 
-        new_pos, new_vel, new_dir = self.mobility_model.update(time_ms=update_interval)
+        Метод нужен для асинхронного режима, где MOBILITY_MODEL.py считается
+        в отдельном процессе. Worker-процесс не должен менять живой объект UE,
+        поэтому он возвращает только снимок состояния:
+            position, velocity, direction.
 
-        self.position = new_pos
-        self.velocity = new_vel
-        self.direction = new_dir
+        Основной процесс симуляции остается единственным владельцем UserEquipment
+        и барьерно применяет snapshot перед расчетом канала.
+        """
+        self.position = tuple(snapshot.position)
+        self.velocity = float(snapshot.velocity)
+        self.direction = float(snapshot.direction)
         self.coordinates.append(self.position)
 
         # Обновление 2D и 3D расстояний до базовой станции
@@ -473,6 +480,26 @@ class UserEquipment:
             self.dist_to_BS_3D = np.hypot(
                 self.dist_to_BS_2D, self.serving_bs.height - self.UE_height
             )
+
+    def UPD_POSITION(self, update_interval: int) -> None:
+        """
+        Обновить позицию пользователя согласно модели передвижения.
+
+        Старый синхронный путь оставлен как fallback. Внутри он также приводит
+        результат к snapshot-like объекту и применяет через APPLY_MOBILITY_SNAPSHOT,
+        чтобы синхронный и async режимы обновляли UE одинаково.
+        """
+        from types import SimpleNamespace
+
+        new_pos, new_vel, new_dir = self.mobility_model.update(time_ms=update_interval)
+
+        self.APPLY_MOBILITY_SNAPSHOT(
+            SimpleNamespace(
+                position=new_pos,
+                velocity=new_vel,
+                direction=new_dir,
+            )
+        )
 
     def UPD_CH_QUALITY(self, channel_update_interval: int = 1) -> None:
         """
@@ -551,6 +578,27 @@ class UserEquipment:
             for i in range(0, len(SINR_on_RB), subband_size):
                 sinr_subband = np.mean(SINR_on_RB[i : i + subband_size])
                 self.cqi_subband.append(self.SINR_TO_CQI(sinr_subband))
+
+        self.SINR_values.append(self.SINR)
+        self.CQI_values.append(self.cqi)
+
+    def APPLY_CHANNEL_SNAPSHOT(self, snapshot) -> None:
+        """
+        Применить готовый результат расчёта канала к живому UE-объекту.
+
+        Parallel channel worker не мутирует UserEquipment напрямую. Он отдаёт
+        immutable ChannelSnapshot, а основной процесс симуляции применяет его
+        здесь. Так исключаются гонки данных и "рваные" состояния UE.
+        """
+        self.UE_height = float(snapshot.ue_height)
+        self.dist_to_BS_2D = float(snapshot.dist_to_bs_2d)
+        self.dist_to_BS_2D_in = float(snapshot.dist_to_bs_2d_in)
+        self.dist_to_BS_2D_out = float(snapshot.dist_to_bs_2d_out)
+        self.dist_to_BS_3D = float(snapshot.dist_to_bs_3d)
+
+        self.SINR = float(snapshot.sinr)
+        self.cqi = int(snapshot.cqi)
+        self.cqi_subband = list(snapshot.cqi_subband)
 
         self.SINR_values.append(self.SINR)
         self.CQI_values.append(self.cqi)
@@ -804,6 +852,30 @@ class UECollection:
 
         """
         self.users = {}  # Словарь {UE_ID: UserEquipment}
+        self.mobility_provider = None  # Асинхронный provider mobility snapshots
+        self.channel_provider = None   # Параллельный provider channel snapshots
+
+    def SET_MOBILITY_PROVIDER(self, mobility_provider) -> None:
+        """
+        Подключить provider асинхронной мобильности.
+
+        mobility_provider должен иметь метод:
+            get_snapshot(ue_id: int, step_idx: int)
+
+        Если передать None, коллекция вернется к старому синхронному режиму.
+        """
+        self.mobility_provider = mobility_provider
+
+    def SET_CHANNEL_PROVIDER(self, channel_provider) -> None:
+        """
+        Подключить provider параллельного batch-расчёта канала.
+
+        channel_provider должен иметь метод:
+            calculate_batch(users, step_idx=..., channel_update_interval=...)
+
+        Если передать None, коллекция вернется к старому синхронному UPD_CH_QUALITY().
+        """
+        self.channel_provider = channel_provider
 
     def ADD_USER(self, ue: UserEquipment) -> bool:
         """
@@ -870,24 +942,72 @@ class UECollection:
         """
         Обновить состояние всех пользователей в коллекции.
 
-        Args:
-            current_time (int): Текущее время симуляции (мс).
-            update_interval (int): Интервал обновления состояния UE (мс).
+        Логика разделена на фазы:
+            1. mobility-фаза для всех UE;
+            2. channel-фаза для всех UE;
+            3. traffic-фаза для всех UE.
 
+        Это важно для async mobility: сначала барьерно применяем готовые
+        mobility snapshots, и только потом канал читает position/velocity.
+        Так канал не увидит "рваное" состояние UE.
         """
         # Если отдельные интервалы не заданы — старое поведение
         mob_interval = mobility_update_interval or update_interval
         ch_interval = channel_update_interval or update_interval
 
+        do_mobility = current_time % mob_interval == 0
+        do_channel = current_time % ch_interval == 0
+
+        # 1. Mobility phase
+        if do_mobility:
+            step_idx = current_time // mob_interval
+
+            # Важно для производительности: обращаться к async-provider нужно
+            # один раз на mobility-step, а не по одному разу на каждого UE.
+            # Иначе на 100 UE получаем 100 вызовов Queue/cache lookup вместо одного.
+            snapshot_batch = None
+            if self.mobility_provider is not None:
+                snapshot_batch = self.mobility_provider.get_batch(step_idx)
+
+            if snapshot_batch is not None:
+                for ue in self.users.values():
+                    snapshot = snapshot_batch.get(ue.UE_ID)
+                    if snapshot is not None:
+                        ue.APPLY_MOBILITY_SNAPSHOT(snapshot)
+                    else:
+                        # Точечный fallback только если в батче нет конкретного UE.
+                        ue.UPD_POSITION(mob_interval)
+            else:
+                # Fallback: старый синхронный режим, если async выключен
+                # или worker не успел подготовить весь mobility-step.
+                for ue in self.users.values():
+                    ue.UPD_POSITION(mob_interval)
+
+        # 2. Channel phase
+        if do_channel:
+            step_idx = current_time // ch_interval
+            channel_batch = None
+
+            if self.channel_provider is not None:
+                channel_batch = self.channel_provider.calculate_batch(
+                    self.users.values(),
+                    step_idx=step_idx,
+                    channel_update_interval=ch_interval,
+                )
+
+            if channel_batch is not None:
+                for ue in self.users.values():
+                    snapshot = channel_batch.get(ue.UE_ID)
+                    if snapshot is not None:
+                        ue.APPLY_CHANNEL_SNAPSHOT(snapshot)
+                    else:
+                        ue.UPD_CH_QUALITY(ch_interval)
+            else:
+                for ue in self.users.values():
+                    ue.UPD_CH_QUALITY(ch_interval)
+
+        # 3. Traffic phase
         for ue in self.users.values():
-            # Обновление позиции
-            if current_time % mob_interval == 0:
-                ue.UPD_POSITION(mob_interval)
-
-            # Обновление качества канала
-            if current_time % ch_interval == 0:
-                ue.UPD_CH_QUALITY(ch_interval)
-
             # Генерация DL трафика, если задана модель
             if ue.traffic_model is not None:
                 ue.serving_bs.GEN_TRFFC(

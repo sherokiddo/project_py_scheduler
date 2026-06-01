@@ -199,6 +199,21 @@ def sim_with_manager():
     sim.set_mobility_interval(500)
     sim.set_channel_interval(10)
 
+    sim.set_parallel_channel(
+    enabled=True,
+    workers=6,
+    timeout_s=30.0,
+    seed=42,
+)
+    # Включение асинхронного расчёта мобильности
+    sim.set_async_mobility(
+        enabled=True,
+        workers=1,
+        prefetch_steps=16,
+        cache_steps=64,
+        snapshot_timeout_ms=2,
+        seed=42,
+    )
     # Включение verbose логирования. Для вывода всех логов в файл нужно
     # поставить флаг to_file=True.
     sim.enable_verbose_log(to_file=True)
