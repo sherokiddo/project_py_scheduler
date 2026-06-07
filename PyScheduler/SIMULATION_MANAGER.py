@@ -1282,7 +1282,12 @@ class SimulationManager:
 
         if self.channel_provider is not None:
             print("\n--- Parallel channel provider ---")
-            print(f"workers                 : {getattr(self.channel_provider, 'num_workers', 'N/A')}")
+            channel_workers = (
+                getattr(self.channel_provider, "num_workers", None)
+                or getattr(self.channel_provider, "workers", None)
+                or getattr(self.sim_config, "parallel_channel_workers", "N/A")
+            )
+            print(f"workers                 : {channel_workers}")
             print(f"steps_processed         : {getattr(self.channel_provider, 'steps_processed', 'N/A')}")
             print(f"ue_snapshots_processed  : {getattr(self.channel_provider, 'ue_snapshots_processed', 'N/A')}")
             print(f"fallback_steps          : {getattr(self.channel_provider, 'fallback_steps', 'N/A')}")
@@ -2284,18 +2289,24 @@ class SimulationManager:
 
             else:
                 # Sync legacy path: старое поведение без worker-процессов.
+                # Небольшой fast-path: здесь мы уже знаем, что используем
+                # SimpleGenerator, поэтому берём model один раз и не делаем
+                # второй lookup внутри SimpleGenerator.generate_packets().
+                traffic_models = getattr(self.traffic_gen, "models", {})
+                traffic_stats_total = getattr(self.traffic_gen, "_total_packets_generated", 0)
+                traffic_stats_per_ue = getattr(self.traffic_gen, "_packets_per_ue", None)
+                add_packet = self.base_station.buffer_manager.add_packet
+
                 for ue in all_users:
                     ue_id = ue.UE_ID
 
-                    # Пропускаем UE без модели
                     if profile_enabled:
                         _lookup_t = time.perf_counter()
-                        has_model = ue_id in self.traffic_gen.models
+                    model = traffic_models.get(ue_id)
+                    if profile_enabled:
                         traffic_model_lookup_s += time.perf_counter() - _lookup_t
-                    else:
-                        has_model = ue_id in self.traffic_gen.models
 
-                    if not has_model:
+                    if model is None:
                         continue
 
                     users_with_traffic_model += 1
@@ -2303,24 +2314,31 @@ class SimulationManager:
                     # Генерируем пакеты по одному юзеру
                     if profile_enabled:
                         _gen_t = time.perf_counter()
-                    packets = self.traffic_gen.generate_packets(
+                    packets = model.generate_traffic(
                         ue_id=ue_id,
                         current_time=current_time,
                         update_interval=self.sim_config.update_interval,
                     )
                     traffic_generate_calls += 1
+                    packet_count = len(packets)
+                    traffic_stats_total += packet_count
+                    if traffic_stats_per_ue is not None:
+                        traffic_stats_per_ue[ue_id] = traffic_stats_per_ue.get(ue_id, 0) + packet_count
                     if profile_enabled:
                         traffic_generate_call_s += time.perf_counter() - _gen_t
 
                     # Кладем пакеты в буфер
                     if packets:
-                        generated_packets += len(packets)
+                        generated_packets += packet_count
                         if profile_enabled:
                             _add_t = time.perf_counter()
                         for pkt in packets:
-                            self.base_station.buffer_manager.add_packet(ue_id, pkt)
+                            add_packet(ue_id, pkt)
                         if profile_enabled:
                             traffic_buffer_add_s += time.perf_counter() - _add_t
+
+                if hasattr(self.traffic_gen, "_total_packets_generated"):
+                    self.traffic_gen._total_packets_generated = traffic_stats_total
 
                 self._profile_add("traffic_packet_generation", _t)
 

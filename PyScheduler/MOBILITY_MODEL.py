@@ -460,19 +460,30 @@ class RandomDirectionModel(MobilityInterface):
             is_first_move: Обновленный флаг, указывающий, завершено ли первое движение.
         """
         if is_first_move:
-            new_direction = np.random.uniform(0, 2 * np.pi)
+            direction_high = 2 * np.pi
             is_first_move = False
         else:
-            new_direction = np.random.uniform(0, np.pi)
+            direction_high = np.pi
 
+        new_direction = np.random.uniform(0, direction_high)
         new_destination = self._calculate_boundary_point(current_position, new_direction)
 
-        # Жесточайший костыль, но что поделать, пока будет так
+        # Если из-за численных погрешностей точка немного вышла за границы,
+        # перегенерируем направление в том же допустимом диапазоне. Для
+        # повторных ходов это важно: тесты и модель ожидают направление [0, pi],
+        # а не полный круг.
+        attempts = 0
         while not (
             self.x_min <= new_destination[0] <= self.x_max
             and self.y_min <= new_destination[1] <= self.y_max
         ):
-            new_direction = np.random.uniform(0, 2 * np.pi)
+            attempts += 1
+            # В редких крайних случаях на самой границе карты допустимого
+            # направления в [0, pi] может долго не находиться. Чтобы не словить
+            # бесконечный цикл в стресс-тестах, после нескольких попыток
+            # расширяем диапазон до полного круга.
+            retry_high = direction_high if attempts < 64 else 2 * np.pi
+            new_direction = np.random.uniform(0, retry_high)
             new_destination = self._calculate_boundary_point(current_position, new_direction)
 
         new_velocity = np.random.uniform(velocity_min, velocity_max)
@@ -644,7 +655,15 @@ class GaussMarkovModel(MobilityInterface):
             + (1 - self.alpha) * mean_direction
             + np.sqrt(1 - self.alpha**2) * np.random.normal(0, 1)
         )
-        #FIXME: при определенных условиях vel\dir может стать отрицательной
+
+        # Защита от физически некорректного состояния: шум Гаусса может
+        # увести скорость ниже нуля. Отрицательная скорость эквивалентна
+        # движению в противоположную сторону и ломает инварианты UE/тестов,
+        # поэтому используем нижнюю границу 0 м/с. Направление нормализуем
+        # в [0, 2π), чтобы downstream-код всегда получал конечный угол.
+        new_velocity = max(0.0, float(new_velocity))
+        new_direction = float(new_direction % (2 * np.pi))
+
         new_x = x + new_velocity * np.cos(new_direction) * time_s
         new_y = y + new_velocity * np.sin(new_direction) * time_s
 
@@ -652,7 +671,7 @@ class GaussMarkovModel(MobilityInterface):
         if new_x < self.x_min or new_x > self.x_max or \
            new_y < self.y_min or new_y > self.y_max:
             new_x, new_y = self._apply_boundary_reflection(new_x, new_y)
-            new_direction = np.pi - new_direction
+            new_direction = float((np.pi - new_direction) % (2 * np.pi))
 
         new_position = (new_x, new_y)
 

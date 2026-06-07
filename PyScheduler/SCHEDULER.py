@@ -255,6 +255,9 @@ class SchedulerInterface:
             'ProportionalFair': ProportionalFairScheduler,
             'RoundRobin':       RoundRobinScheduler,
             'FD_BCQI':          FDxBestCQIScheduler,
+            # Историческое имя из документации и старых tests: FD_RR.
+            # FD_FGS оставлен как alias для обратной совместимости.
+            'FD_RR':            FDxFairGreedyScheduler,
             'FD_FGS':           FDxFairGreedyScheduler,
             'FD_PF':            FDxProportionalFairScheduler,
             }
@@ -2621,7 +2624,14 @@ class FDxProportionalFairScheduler(SchedulerInterface):
                 denom    = 1.0 if avg_tput <= 0 else (avg_tput / 1000.0)
                 metric   = r_j_k / denom
 
-                if metric > best_metric:
+                if (
+                    metric > best_metric
+                    or (
+                        metric == best_metric
+                        and best_user is not None
+                        and len(allocation[ue_id]) < len(allocation[best_user['UE_ID']])
+                    )
+                ):
                     best_metric     = metric
                     best_user       = user
                     best_rbg_bits   = r_j_k

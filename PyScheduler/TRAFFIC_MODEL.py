@@ -96,7 +96,7 @@ class TrafficType(Enum):
         return delay_mapping[self]
 
 
-@dataclass
+@dataclass(slots=True)
 class Packet:
     """
     Пакет данных в LTE сети.
@@ -274,30 +274,32 @@ class PoissonModel(ITrafficModel):
     def generate_traffic(self, ue_id: int, current_time: int, update_interval: int) -> List[Packet]:
         """
         Генерация пуассоновского трафика.
+
+        Быстрый вариант использует свойство пуассоновского процесса: число
+        событий в интервале длиной dt распределено как Poisson(lambda*dt),
+        а времена событий при условии их количества равномерны внутри
+        интервала. Это эквивалентно старой генерации через exponential
+        inter-arrivals по распределению, но заметно быстрее при больших
+        packet_rate и миллионах вызовов generate_traffic().
         """
-        packets = []
-        generate_time = current_time - update_interval
-        end_generate = current_time
+        if self.packet_rate <= 0 or update_interval <= 0:
+            return []
 
-        mean_interval_ms = 1000.0 / self.packet_rate
+        mean_packets = self.packet_rate * (update_interval / 1000.0)
+        packet_count = int(np.random.poisson(mean_packets))
+        if packet_count <= 0:
+            return []
 
-        while generate_time < end_generate:
-            interval = np.random.exponential(mean_interval_ms)
-            generate_time += interval
+        start_time = current_time - update_interval
+        # Сохраняем FIFO-порядок по времени создания пакетов.
+        creation_times = start_time + np.random.random(packet_count) * update_interval
+        creation_times.sort()
+        sizes = np.random.randint(self.min_packet_size, self.max_packet_size, size=packet_count)
 
-            if generate_time > end_generate:
-                break
-
-            packet_size = np.random.randint(self.min_packet_size, self.max_packet_size)
-            packet = Packet(
-                size=packet_size,
-                ue_id=ue_id,
-                creation_time=generate_time,
-                priority=0,
-            )
-            packets.append(packet)
-
-        return packets
+        return [
+            Packet(size=int(size), ue_id=ue_id, creation_time=float(creation_time), priority=0)
+            for size, creation_time in zip(sizes, creation_times)
+        ]
 
     def get_model_name(self) -> str:
         return "Poisson"

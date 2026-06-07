@@ -202,7 +202,7 @@ def sim_with_manager():
 
     sim.set_parallel_channel(
     enabled=True,
-    workers=4,
+    workers=6,
     timeout_s=30.0,
     seed=42,
 )

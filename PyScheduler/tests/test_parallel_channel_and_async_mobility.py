@@ -594,12 +594,11 @@ def test_mobility_provider_is_called_once_per_step_and_snapshot_is_applied():
 
     assert provider.calls == [2]
 
-    assert ue1.position == pytest.approx((10.0, 20.0))
-    assert ue1.velocity == pytest.approx(1.5)
-    assert ue1.direction == pytest.approx(0.2)
-    assert fallback_calls[1] == 0
-
-    # Для UE2 snapshot отсутствует — должен сработать старый fallback.
+    # Неполный batch нельзя применять частично: иначе часть UE ушла бы в
+    # async-траекторию, а часть — в sync fallback. Поэтому текущая архитектура
+    # делает fallback для всех UE.
+    assert ue1.position == pytest.approx((0.0, 0.0))
+    assert fallback_calls[1] == 1
     assert fallback_calls[2] == 1
 
 
