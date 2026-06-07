@@ -14,6 +14,19 @@
 #   - при промахе кэша нет скрытого расхождения траекторий: strict mode падает,
 #     non-strict mode требует shutdown/restart provider'а из live UE state;
 #   - изменения в проекте локальны: UE_MODULE.py + SIMULATION_MANAGER.py.
+#
+# Версия: 1.0.0
+# Дата последнего изменения: 2026-06-07
+# Автор: Македон Никита
+# Версия Python Kernel: 3.12.9
+#
+# v1.0.0 - 2026-06-07:
+# Автор изменений: Македон Никита
+# - Новый модуль асинхронного расчёта моделей мобильности в отдельном worker-процессе.
+# - Добавлен ahead-cache immutable MobilitySnapshot с привязкой к step_idx.
+# - Реализованы strict/non-strict режимы; non-strict fallback выполняется через
+#  shutdown/restart provider из live UE state.
+# - Живые UserEquipment не передаются в worker, что исключает гонки данных по состоянию UE.
 #------------------------------------------------------------------------------
 """
 
