@@ -14,6 +14,10 @@
 #------------------------------------------------------------------------------
 """
 
+import copy
+import pickle
+from typing import Any, Dict
+
 import GLOBALS
 import numpy as np
 from BS_MODULE import BaseStation
@@ -208,6 +212,34 @@ class ChannelModel:
         self.freq_fading = TDLModel(
             bs, freq_fad_nlos_model, freq_fad_los_model, ds_profile, los_arrival_angle
         )
+
+    def export_worker_state(self) -> Dict[str, Any]:
+        """
+        Явный контракт сериализации channel model для worker-процессов.
+
+        По умолчанию сохраняет pickle/deepcopy-совместимое состояние модели,
+        включая легковесную копию BaseStation внутри self.bs. Это безопаснее,
+        чем передавать live-объект симуляции: worker получает собственную копию
+        и не может менять main process.
+        """
+        state: Dict[str, Any] = {}
+        for key, value in self.__dict__.items():
+            try:
+                state[key] = copy.deepcopy(value)
+            except Exception:
+                try:
+                    pickle.dumps(value)
+                    state[key] = value
+                except Exception:
+                    continue
+        return state
+
+    @classmethod
+    def import_worker_state(cls, state: Dict[str, Any]):
+        """Восстановить channel model в worker без повторного __init__/random side effects."""
+        model = cls.__new__(cls)
+        model.__dict__.update(copy.deepcopy(state))
+        return model
 
     def _get_sigma_sf(
         self, channel_condition: str, d_2D: float = None, UE_height: float = None

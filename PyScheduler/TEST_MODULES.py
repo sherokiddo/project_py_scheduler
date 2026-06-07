@@ -146,7 +146,7 @@ def sim_with_manager():
         np.random.seed(GLOBALS.SEED)   # покрывает numpy
 
     # Генерация заданного числа UE в коллекцию
-    ue_collection.ADD_RANDOM_USERS(num_ue=5,
+    ue_collection.ADD_RANDOM_USERS(num_ue=100,
                                    x_min=x_min,
                                    x_max=x_max,
                                    y_min=y_min,
@@ -197,11 +197,12 @@ def sim_with_manager():
     # Установка длительности симуляции
     sim.set_sim_duration(50000)
     sim.set_mobility_interval(500)
+    sim.set_buffer_interval(30)
     sim.set_channel_interval(10)
 
     sim.set_parallel_channel(
     enabled=True,
-    workers=6,
+    workers=4,
     timeout_s=30.0,
     seed=42,
 )
@@ -213,6 +214,28 @@ def sim_with_manager():
         cache_steps=64,
         snapshot_timeout_ms=2,
         seed=42,
+    )
+    sim.set_async_traffic(
+    enabled=False,
+    workers=1,
+    prefetch_steps=32,
+    cache_steps=128,
+    snapshot_timeout_ms=2,
+    strict=False,
+    seed=42,
+    )
+    sim.set_stats_export(
+    export_csv=False,
+    export_detailed=False,
+    collect_duplicate_for_csv=False,
+    )
+    sim.set_runtime_smoothing(
+    progress_update_interval=50,
+    stats_refresh_interval_tti=500,
+    disable_gc_during_run=True,
+    gc_collect_at_end=True,
+    gc_collect_interval_tti=0,
+    slow_tti_threshold_ms=250,
     )
     # Включение verbose логирования. Для вывода всех логов в файл нужно
     # поставить флаг to_file=True.
@@ -228,6 +251,8 @@ def sim_with_manager():
         pdcch_level="full",  # PDCCH: отключен (можно включить "basic")
         file_prefix="emp_stats",  # Префикс файла: lte_stats.csv
     )
+
+    sim.set_profiling(enabled=True, print_summary=True)
 
     # Запуск симуляции
     sim.start_simulation()

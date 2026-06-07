@@ -22,6 +22,7 @@
 """
 
 import csv
+import gc
 import sys
 import warnings
 import time
@@ -40,6 +41,7 @@ from UE_MODULE import UECollection
 from MOBILITY_MODEL import MapBorders
 from MOBILITY_ASYNC import MobilityAsyncProvider
 from CHANNEL_PARALLEL import ChannelParallelProvider
+from TRAFFIC_ASYNC import TrafficAsyncProvider
 from tqdm import tqdm
 
 # ==============================================================================
@@ -114,18 +116,26 @@ class StatsManager:
     хранит историю и экспортирует в CSV/JSON.
     """
 
-    def __init__(self, scheduler, config: StatisticsConfig = None):
+    def __init__(self, scheduler, config: StatisticsConfig = None, profiler=None):
         """
         Инициализация менеджера статистики.
 
         Args:
             scheduler (SchedulerInterface): Планировщик для опроса
             config (StatisticsConfig): Конфигурация (если None, используется default)
+            profiler: необязательный PhaseProfiler для детального профилирования collect().
         """
         self.scheduler = scheduler  # Ссылка на scheduler (для вызова get_stats())
         self.config = config or StatisticsConfig()  # Default конфиг если None
         self.history = deque(maxlen=self.config.history_max_len)  # История snapshots
         self.detailed_history = deque(maxlen=self.config.history_max_len)
+        self.profiler = profiler
+
+    def _profile_add(self, phase: str, started_at: float) -> None:
+        """Добавить замер во внешний PhaseProfiler, если он включён."""
+        profiler = getattr(self, "profiler", None)
+        if profiler is not None and getattr(profiler, "enabled", False):
+            profiler.add(phase, time.perf_counter() - started_at)
 
     def _validate_sched_stats(self, sched_stats: dict, tti: int) -> bool:
         """Валидация что данные sched_stats полноценные и корректные"""
@@ -166,18 +176,30 @@ class StatsManager:
             tti (int): Номер текущего TTI (для timestamp)
         """
 
+        _collect_start = time.perf_counter()
+
         # Получить метрики из источников
+        _t = time.perf_counter()
         sched_stats = (
             self.scheduler.get_stats() if self.config.levels.scheduler != MetricLevel.NONE else {}
         )
+        self._profile_add("stats_collect_scheduler_get_stats", _t)
+
+        _t = time.perf_counter()
         amc_stats = (
             self.scheduler.amc.get_stats() if self.config.levels.amc != MetricLevel.NONE else {}
         )
+        self._profile_add("stats_collect_amc_get_stats", _t)
+
+        _t = time.perf_counter()
         pdcch_stats = (
             self.scheduler.pdcch_manager.get_stats()
             if self.config.levels.pdcch != MetricLevel.NONE
             else {}
         )
+        self._profile_add("stats_collect_pdcch_get_stats", _t)
+
+        _t = time.perf_counter()
 
         # TTI validation
         if sched_stats and "tti" in sched_stats:
@@ -198,8 +220,10 @@ class StatsManager:
 
         if sched_stats and not self._validate_sched_stats(sched_stats, tti):
             return  # Skip
+        self._profile_add("stats_collect_validation", _t)
 
         # Continue with snapshot creation
+        _t = time.perf_counter()
         snapshot = {
             "tti": tti,
             # BASIC метрики
@@ -226,6 +250,7 @@ class StatsManager:
             "pdcch_cce_total_count": pdcch_stats.get("pdcch_cce_total_count", 0),
             "pdcch_cce_allocated_count": pdcch_stats.get("pdcch_cce_allocated_count", 0),
         }
+        self._profile_add("stats_collect_snapshot_basic", _t)
 
         if self.config.levels.pdcch >= MetricLevel.ADVANCED:
             snapshot.update(
@@ -233,6 +258,7 @@ class StatsManager:
             )
 
         if self.config.levels.scheduler >= MetricLevel.ADVANCED:
+            _t = time.perf_counter()
             snapshot.update(
                 {
                     # Timing детализация
@@ -248,7 +274,9 @@ class StatsManager:
                     ),
                 }
             )
+            self._profile_add("stats_collect_scheduler_advanced", _t)
 
+        _t = time.perf_counter()
         priority_list = sched_stats.get("sch_priority_list", [])
         if priority_list:
             priority_values = [u.get("priority", 0) for u in priority_list]
@@ -267,8 +295,10 @@ class StatsManager:
                     "sch_priority_std": 0.0,
                 }
             )
+        self._profile_add("stats_collect_priority_stats", _t)
 
         if self.config.levels.amc >= MetricLevel.ADVANCED:
+            _t = time.perf_counter()
             snapshot.update(
                 {
                     "dl_capacity_bits_sum_tti": amc_stats.get("dl_capacity_bits_sum_tti", 0),
@@ -333,20 +363,29 @@ class StatsManager:
             # Fairness
             fairness_metrics = self._calculate_fairness(ue_throughputs)
             snapshot.update(fairness_metrics)
+            self._profile_add("stats_collect_amc_advanced", _t)
 
+        _t = time.perf_counter()
         self.history.append(snapshot)
+        self._profile_add("stats_collect_history_append", _t)
+        self._profile_add("stats_collect_internal_total", _collect_start)
 
         if (
             self.config.levels.scheduler >= MetricLevel.FULL
             or self.config.levels.amc >= MetricLevel.FULL
         ):
+            _t = time.perf_counter()
             detailed = self._collect_detailed_metrics(
                 tti=tti,
                 pdcch_stats=pdcch_stats,
                 sched_stats=sched_stats,
                 amc_stats=amc_stats,
             )
+            self._profile_add("stats_collect_detailed_metrics", _t)
+
+            _t = time.perf_counter()
             self.detailed_history.append(detailed)
+            self._profile_add("stats_collect_detailed_append", _t)
 
     def _collect_detailed_metrics(
         self, tti: int, sched_stats: dict, amc_stats: dict, pdcch_stats: dict
@@ -860,6 +899,7 @@ class SimulationConfig:
     update_interval: int = 1
     mobility_update_interval: int = 500
     channel_update_interval: int = 1
+    buffer_update_interval: int = 10          # НОВОЕ
     use_legacy_traffic: bool = True
     map_x_min: float = -500
     map_x_max: float = 500
@@ -871,10 +911,12 @@ class SimulationConfig:
     # Async mobility configuration.
     # По умолчанию выключено, поэтому старое поведение проекта не меняется.
     async_mobility_enabled: bool = False
-    async_mobility_workers: int = 1  # Сейчас используется один producer-process.
+    async_mobility_workers: int = 1  # reserved: сейчас поддерживается только 1 producer-process
     async_mobility_prefetch_steps: int = 16
     async_mobility_cache_steps: int = 64
     async_mobility_snapshot_timeout_ms: int = 0
+    strict_async_mobility: bool = False
+    async_mobility_restart_on_fallback: bool = True
     async_mobility_seed: Optional[int] = None
 
     # Parallel channel configuration.
@@ -883,6 +925,36 @@ class SimulationConfig:
     parallel_channel_workers: int = 2
     parallel_channel_timeout_s: float = 30.0
     parallel_channel_seed: Optional[int] = None
+
+    # Async traffic configuration.
+    # Worker-процессы заранее генерируют legacy SimpleGenerator packets и
+    # main process только применяет TrafficSnapshot к буферам BS.
+    async_traffic_enabled: bool = False
+    async_traffic_workers: int = 2
+    async_traffic_prefetch_steps: int = 16
+    async_traffic_cache_steps: int = 64
+    async_traffic_snapshot_timeout_ms: int = 2
+    strict_async_traffic: bool = False
+    async_traffic_seed: Optional[int] = None
+
+    # Lightweight phase profiler. Disabled by default to avoid overhead.
+    profiling_enabled: bool = False
+    profiling_print_summary: bool = True
+
+    # Runtime smoothing / UI tuning. Defaults preserve old behavior.
+    # progress_update_interval > 1 reduces tqdm rendering/check overhead.
+    progress_update_interval: int = 1
+    stats_refresh_interval_tti: int = 100
+
+    # CPython cyclic GC can cause visible multi-second stalls on long runs with
+    # many short-lived Packet/stat objects. Refcounting still frees non-cyclic
+    # objects while GC is disabled; a full collect is done after the loop.
+    disable_gc_during_run: bool = False
+    gc_collect_at_end: bool = True
+    gc_collect_interval_tti: int = 0
+
+    # Optional stall detector. 0 = disabled.
+    slow_tti_threshold_ms: float = 0.0
 
 
 @dataclass
@@ -932,6 +1004,67 @@ class StatsManagerConfig:
     export_detailed_format: str = "csv"
     file_prefix: str = "manager_stats"
     history_max_len: int = 10000
+    export_csv_enabled: bool = True
+    export_detailed_enabled: bool = True
+    collect_duplicate_for_csv: bool = False
+
+
+
+
+class PhaseProfiler:
+    """
+    Лёгкий профилировщик фаз симуляции.
+
+    Использует time.perf_counter(), не требует внешних библиотек и почти не
+    влияет на производительность, когда disabled.
+    """
+
+    def __init__(self, enabled: bool = False):
+        self.enabled = bool(enabled)
+        self.reset()
+
+    def reset(self) -> None:
+        self.started_at = time.perf_counter()
+        self.totals = {}
+        self.counts = {}
+        self.max_times = {}
+        # Счётчики без времени: пакеты, UE-итерации, cache misses и т.п.
+        # Держим отдельно от counts, чтобы не смешивать их с количеством
+        # замеров phase timings.
+        self.extra_counts = {}
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled = bool(enabled)
+        self.reset()
+
+    def add(self, phase: str, seconds: float) -> None:
+        if not self.enabled:
+            return
+        seconds = float(seconds)
+        self.totals[phase] = self.totals.get(phase, 0.0) + seconds
+        self.counts[phase] = self.counts.get(phase, 0) + 1
+        self.max_times[phase] = max(self.max_times.get(phase, 0.0), seconds)
+
+    def increment(self, name: str, value: int = 1) -> None:
+        """Увеличить счётчик без привязки ко времени."""
+        if not self.enabled:
+            return
+        self.extra_counts[name] = self.extra_counts.get(name, 0) + int(value)
+
+    def snapshot(self):
+        total_wall = max(time.perf_counter() - self.started_at, 1e-12)
+        rows = []
+        for phase, total_s in sorted(self.totals.items(), key=lambda item: item[1], reverse=True):
+            count = self.counts.get(phase, 0)
+            rows.append({
+                "phase": phase,
+                "total_s": total_s,
+                "count": count,
+                "avg_ms": (total_s / count * 1000.0) if count else 0.0,
+                "max_ms": self.max_times.get(phase, 0.0) * 1000.0,
+                "share_pct": total_s / total_wall * 100.0,
+            })
+        return total_wall, rows
 
 
 class SimulationManager:
@@ -967,6 +1100,8 @@ class SimulationManager:
         self.traffic_gen = None
         self.mobility_provider = None
         self.channel_provider = None
+        self.traffic_provider = None
+        self.phase_profiler = PhaseProfiler(enabled=False)
 
     def set_sim_duration(self, sim_duration: int) -> None:
         """
@@ -1022,6 +1157,21 @@ class SimulationManager:
             )
         self.sim_config.mobility_update_interval = mobility_update_interval
 
+    def set_buffer_interval(self, buffer_update_interval: int) -> None:
+        """
+        Установить интервал обновления буферов (удаления просроченных пакетов).
+
+        Args:
+            buffer_update_interval (int): Интервал в мс. Рекомендуется 10–100 мс.
+        """
+        if not isinstance(buffer_update_interval, int) or buffer_update_interval <= 0:
+            raise ValueError(
+                f"Интервал обновления буферов должен быть положительным целым числом. "
+                f"Получено: {buffer_update_interval}"
+            )
+
+        self.sim_config.buffer_update_interval = buffer_update_interval
+
     def set_channel_interval(self, channel_update_interval: int) -> None:
         """
         Установить интервал обновления качества канала (SINR/CQI).
@@ -1038,6 +1188,123 @@ class SimulationManager:
 
     #TODO: возможно эти интервальные сеттеры можно объединить в один метод
 
+    def set_profiling(self, enabled: bool = True, print_summary: bool = True) -> None:
+        """
+        Включить/выключить лёгкое профилирование фаз симуляции.
+
+        Args:
+            enabled: True — собирать времена фаз.
+            print_summary: True — печатать summary в конце start_simulation().
+        """
+        self.sim_config.profiling_enabled = bool(enabled)
+        self.sim_config.profiling_print_summary = bool(print_summary)
+        self.phase_profiler.set_enabled(enabled)
+
+    def set_runtime_smoothing(
+        self,
+        *,
+        progress_update_interval: int = 50,
+        stats_refresh_interval_tti: int = 500,
+        disable_gc_during_run: bool = True,
+        gc_collect_at_end: bool = True,
+        gc_collect_interval_tti: int = 0,
+        slow_tti_threshold_ms: float = 0.0,
+    ) -> None:
+        """
+        Настроить сглаживание долгих запусков симуляции.
+
+        Это не меняет математику LTE-модели: только реже обновляет tqdm/status
+        и, опционально, отключает циклический GC внутри горячего TTI-loop.
+
+        Args:
+            progress_update_interval: как часто обновлять progress bar, в TTI.
+            stats_refresh_interval_tti: как часто обновлять строку Stats, в TTI.
+            disable_gc_during_run: отключить cyclic GC на время основного loop.
+            gc_collect_at_end: выполнить gc.collect() после основного loop.
+            gc_collect_interval_tti: если >0, делать ручной gc.collect(0) раз в N TTI.
+            slow_tti_threshold_ms: если >0, считать TTI медленным при превышении порога.
+        """
+        if progress_update_interval <= 0:
+            raise ValueError("progress_update_interval должен быть > 0")
+        if stats_refresh_interval_tti <= 0:
+            raise ValueError("stats_refresh_interval_tti должен быть > 0")
+        if gc_collect_interval_tti < 0:
+            raise ValueError("gc_collect_interval_tti должен быть >= 0")
+        if slow_tti_threshold_ms < 0:
+            raise ValueError("slow_tti_threshold_ms должен быть >= 0")
+
+        self.sim_config.progress_update_interval = int(progress_update_interval)
+        self.sim_config.stats_refresh_interval_tti = int(stats_refresh_interval_tti)
+        self.sim_config.disable_gc_during_run = bool(disable_gc_during_run)
+        self.sim_config.gc_collect_at_end = bool(gc_collect_at_end)
+        self.sim_config.gc_collect_interval_tti = int(gc_collect_interval_tti)
+        self.sim_config.slow_tti_threshold_ms = float(slow_tti_threshold_ms)
+
+    def _profile_add(self, phase: str, started_at: float) -> None:
+        """Добавить замер фазы, если profiling включён."""
+        if self.phase_profiler.enabled:
+            self.phase_profiler.add(phase, time.perf_counter() - started_at)
+
+    def _print_profiling_summary(self) -> None:
+        """Вывести итоговый отчёт профилирования."""
+        if not self.phase_profiler.enabled:
+            return
+
+        total_wall, rows = self.phase_profiler.snapshot()
+        print("\n=== SIMULATION PHASE PROFILING ===")
+        print(f"Wall time measured: {total_wall:.3f} s")
+        print(f"{'phase':34s} {'total_s':>10s} {'count':>10s} {'avg_ms':>10s} {'max_ms':>10s} {'share':>8s}")
+        print("-" * 90)
+        for row in rows:
+            print(
+                f"{row['phase']:34s} "
+                f"{row['total_s']:10.3f} "
+                f"{row['count']:10d} "
+                f"{row['avg_ms']:10.3f} "
+                f"{row['max_ms']:10.3f} "
+                f"{row['share_pct']:7.2f}%"
+            )
+
+        extra_counts = getattr(self.phase_profiler, "extra_counts", {})
+        if extra_counts:
+            print("\n--- Profiler counters ---")
+            for name, value in sorted(extra_counts.items()):
+                print(f"{name:<30}: {value}")
+
+        if self.mobility_provider is not None:
+            print("\n--- Async mobility provider ---")
+            print(f"steps_received      : {getattr(self.mobility_provider, 'steps_received', 'N/A')}")
+            print(f"cache_hits          : {getattr(self.mobility_provider, 'cache_hits', 'N/A')}")
+            print(f"cache_misses        : {getattr(self.mobility_provider, 'cache_misses', 'N/A')}")
+            print(f"late_steps          : {getattr(self.mobility_provider, 'late_steps', 'N/A')}")
+            print(f"fallback_steps      : {getattr(self.mobility_provider, 'fallback_steps', 'N/A')}")
+            print(f"provider_restarts   : {getattr(self.mobility_provider, 'provider_restarts', 'N/A')}")
+
+        if self.channel_provider is not None:
+            print("\n--- Parallel channel provider ---")
+            print(f"workers                 : {getattr(self.channel_provider, 'num_workers', 'N/A')}")
+            print(f"steps_processed         : {getattr(self.channel_provider, 'steps_processed', 'N/A')}")
+            print(f"ue_snapshots_processed  : {getattr(self.channel_provider, 'ue_snapshots_processed', 'N/A')}")
+            print(f"fallback_steps          : {getattr(self.channel_provider, 'fallback_steps', 'N/A')}")
+            print(f"stale_results_discarded : {getattr(self.channel_provider, 'stale_results_discarded', 'N/A')}")
+            print(f"pending_results_used    : {getattr(self.channel_provider, 'pending_results_used', 'N/A')}")
+
+        if self.traffic_provider is not None:
+            print("\n--- Async traffic provider ---")
+            print(f"workers             : {getattr(self.traffic_provider, 'num_workers', 'N/A')}")
+            print(f"steps_received      : {getattr(self.traffic_provider, 'steps_received', 'N/A')}")
+            print(f"cache_hits          : {getattr(self.traffic_provider, 'cache_hits', 'N/A')}")
+            print(f"cache_misses        : {getattr(self.traffic_provider, 'cache_misses', 'N/A')}")
+            print(f"blocking_waits      : {getattr(self.traffic_provider, 'blocking_waits', 'N/A')}")
+            print(f"blocking_wait_s     : {getattr(self.traffic_provider, 'blocking_wait_s', 0.0):.3f}")
+            print(f"snapshots_processed : {getattr(self.traffic_provider, 'snapshots_processed', 'N/A')}")
+            print(f"packets_generated   : {getattr(self.traffic_provider, 'packets_generated', 'N/A')}")
+            print(f"late_steps          : {getattr(self.traffic_provider, 'late_steps', 'N/A')}")
+            print(f"queue_drained_msgs  : {getattr(self.traffic_provider, 'queue_messages_drained', 'N/A')}")
+            print(f"queue_drain_calls   : {getattr(self.traffic_provider, 'queue_drain_calls', 'N/A')}")
+            print(f"max_ready_step_seen : {getattr(self.traffic_provider, 'max_ready_step_seen', 'N/A')}")
+        print("=== END PROFILING ===\n")
+
     def set_async_mobility(
         self,
         enabled: bool = True,
@@ -1045,6 +1312,8 @@ class SimulationManager:
         prefetch_steps: int = 16,
         cache_steps: int = 64,
         snapshot_timeout_ms: int = 0,
+        strict: bool = False,
+        restart_on_fallback: bool = True,
         seed: Optional[int] = None,
     ) -> None:
         """
@@ -1055,26 +1324,46 @@ class SimulationManager:
             - worker публикует immutable MobilitySnapshot;
             - основной процесс применяет snapshots к UE перед расчетом канала.
 
-        Параметр workers оставлен для будущего расширения на несколько producer'ов.
-        В текущей реализации используется один процесс, потому что это самый
-        безопасный MVP без изменения семантики порядка random/update.
+        workers пока зарезервирован и должен быть равен 1. Один producer-process
+        уже выносит mobility из main simulation и считает trajectory вперед.
+        Разделение mobility на несколько producer'ов лучше делать отдельным
+        этапом после стабильных benchmark'ов и проверки порядка random/update.
+
+        strict=False — безопасный default для обычных запусков: при промахе async-cache
+        provider останавливается, выполняется sync fallback, затем provider
+        перезапускается из актуального live UE state. Это не смешивает две
+        траектории и не роняет длинные симуляции из-за короткого timeout.
+
+        strict=True полезен для отладки/benchmark'ов: он запрещает fallback и
+        сразу падает при промахе snapshot'а.
         """
         if not isinstance(enabled, bool):
             raise TypeError("enabled должен быть bool")
         if workers <= 0:
             raise ValueError("workers должен быть > 0")
+        if workers != 1:
+            raise ValueError(
+                "async_mobility_workers > 1 пока зарезервирован: используйте workers=1. "
+                "Параллелизм по ядрам уже включается для channel через set_parallel_channel()."
+            )
         if prefetch_steps <= 0:
             raise ValueError("prefetch_steps должен быть > 0")
         if cache_steps <= 1:
             raise ValueError("cache_steps должен быть > 1")
         if snapshot_timeout_ms < 0:
             raise ValueError("snapshot_timeout_ms должен быть >= 0")
+        if not isinstance(strict, bool):
+            raise TypeError("strict должен быть bool")
+        if not isinstance(restart_on_fallback, bool):
+            raise TypeError("restart_on_fallback должен быть bool")
 
         self.sim_config.async_mobility_enabled = enabled
         self.sim_config.async_mobility_workers = int(workers)
         self.sim_config.async_mobility_prefetch_steps = int(prefetch_steps)
         self.sim_config.async_mobility_cache_steps = int(cache_steps)
         self.sim_config.async_mobility_snapshot_timeout_ms = int(snapshot_timeout_ms)
+        self.sim_config.strict_async_mobility = bool(strict)
+        self.sim_config.async_mobility_restart_on_fallback = bool(restart_on_fallback)
         self.sim_config.async_mobility_seed = seed
 
     def _start_async_mobility_if_needed(self) -> None:
@@ -1093,9 +1382,12 @@ class SimulationManager:
         self.mobility_provider = MobilityAsyncProvider(
             mobility_interval_ms=self.sim_config.mobility_update_interval,
             sim_duration_ms=self.sim_config.sim_duration,
+            workers=self.sim_config.async_mobility_workers,
             prefetch_steps=self.sim_config.async_mobility_prefetch_steps,
             cache_steps=self.sim_config.async_mobility_cache_steps,
             snapshot_timeout_ms=self.sim_config.async_mobility_snapshot_timeout_ms,
+            strict_snapshots=self.sim_config.strict_async_mobility,
+            restart_on_fallback=self.sim_config.async_mobility_restart_on_fallback,
             seed=self.sim_config.async_mobility_seed,
             verbose=self.sim_config.verbose,
         )
@@ -1170,6 +1462,101 @@ class SimulationManager:
 
         if self.ue_collection is not None:
             self.ue_collection.SET_CHANNEL_PROVIDER(None)
+
+    def set_async_traffic(
+        self,
+        enabled: bool = True,
+        workers: int = 2,
+        prefetch_steps: int = 16,
+        cache_steps: int = 64,
+        snapshot_timeout_ms: int = 2,
+        strict: bool = False,
+        seed: Optional[int] = None,
+    ) -> None:
+        """
+        Включить/настроить асинхронную генерацию legacy-трафика.
+
+        Архитектура:
+            - worker-процессы владеют копиями SimpleGenerator для своих UE;
+            - main process владеет буферами BS и применяет TrafficSnapshot;
+            - UE закрепляются за worker по ue_id % workers, поэтому stateful
+              traffic-модели не мигрируют между процессами.
+
+        strict=False — безопасный default: при промахе cache main не делает
+        sync fallback, а ждет worker, чтобы не рассинхронизировать состояние
+        traffic-моделей. strict=True полезен для диагностики timeout'ов.
+        """
+        if not isinstance(enabled, bool):
+            raise TypeError("enabled должен быть bool")
+        if workers <= 0:
+            raise ValueError("workers должен быть > 0")
+        if prefetch_steps <= 0:
+            raise ValueError("prefetch_steps должен быть > 0")
+        if cache_steps <= 1:
+            raise ValueError("cache_steps должен быть > 1")
+        if snapshot_timeout_ms < 0:
+            raise ValueError("snapshot_timeout_ms должен быть >= 0")
+        if not isinstance(strict, bool):
+            raise TypeError("strict должен быть bool")
+
+        self.sim_config.async_traffic_enabled = enabled
+        self.sim_config.async_traffic_workers = int(workers)
+        self.sim_config.async_traffic_prefetch_steps = int(prefetch_steps)
+        self.sim_config.async_traffic_cache_steps = int(cache_steps)
+        self.sim_config.async_traffic_snapshot_timeout_ms = int(snapshot_timeout_ms)
+        self.sim_config.strict_async_traffic = bool(strict)
+        self.sim_config.async_traffic_seed = seed
+
+    def _start_async_traffic_if_needed(self) -> None:
+        """Создать и запустить TrafficAsyncProvider перед основным циклом."""
+        if not self.sim_config.async_traffic_enabled:
+            return
+
+        if not self.sim_config.use_legacy_traffic:
+            raise RuntimeError("async traffic пока поддерживает только legacy SimpleGenerator mode")
+        if self.traffic_gen is None:
+            raise RuntimeError("Нельзя включить async traffic без traffic_gen")
+        if self.ue_collection is None:
+            raise RuntimeError("Нельзя включить async traffic без ue_collection")
+
+        self.traffic_provider = TrafficAsyncProvider(
+            update_interval_ms=self.sim_config.update_interval,
+            sim_duration_ms=self.sim_config.sim_duration,
+            workers=self.sim_config.async_traffic_workers,
+            prefetch_steps=self.sim_config.async_traffic_prefetch_steps,
+            cache_steps=self.sim_config.async_traffic_cache_steps,
+            snapshot_timeout_ms=self.sim_config.async_traffic_snapshot_timeout_ms,
+            strict_snapshots=self.sim_config.strict_async_traffic,
+            seed=self.sim_config.async_traffic_seed,
+            verbose=self.sim_config.verbose,
+        )
+        self.traffic_provider.start(
+            self.traffic_gen,
+            [ue.UE_ID for ue in self.ue_collection.GET_ALL_USERS()],
+            start_step=0,
+        )
+
+    def _shutdown_async_traffic(self) -> None:
+        """Остановить worker-процессы async traffic."""
+        if self.traffic_provider is not None:
+            self.traffic_provider.shutdown()
+            self.traffic_provider = None
+
+    def set_stats_export(
+        self,
+        export_csv: bool = True,
+        export_detailed: bool = True,
+        collect_duplicate_for_csv: bool = False,
+    ) -> None:
+        """
+        Настроить тяжелый финальный экспорт статистики и legacy duplicate collect.
+
+        Для benchmark обычно полезно:
+            sim.set_stats_export(export_csv=False, export_detailed=False)
+        """
+        self.stats_config.export_csv_enabled = bool(export_csv)
+        self.stats_config.export_detailed_enabled = bool(export_detailed)
+        self.stats_config.collect_duplicate_for_csv = bool(collect_duplicate_for_csv)
 
     def set_map_borders(self, x_min: float, x_max: float,
                         y_min: float, y_max: float) -> None:
@@ -1318,12 +1705,15 @@ class SimulationManager:
 
         """
         JFI_INTERVAL_TTI    = 500
-        STATS_REFRESH_TTI   = 100
+        STATS_REFRESH_TTI   = max(1, int(self.sim_config.stats_refresh_interval_tti))
+        PROGRESS_UPDATE_TTI = max(1, int(self.sim_config.progress_update_interval))
 
         progress_stream = getattr(sys, "__stderr__", sys.stderr)
 
         pbar        = None
+        sbar        = None
         jfi_cached  = None
+        _gc_was_enabled = None
 
         # Перевод консольного вывода в текстовый файл
         if self._to_file:
@@ -1334,187 +1724,339 @@ class SimulationManager:
             sys.stderr = self._log_file
             self._return_stdout = True
 
-            # Проверка обязательных параметров симуляции
-            self._check_required_parameters()
+        # Проверка обязательных параметров симуляции
+        self._check_required_parameters()
 
-            # Запуск асинхронного расчета мобильности, если включен
-            self._start_async_mobility_if_needed()
+        # Сброс/запуск фазового профилирования для этого запуска.
+        self.phase_profiler.set_enabled(self.sim_config.profiling_enabled)
+        _simulation_total_start = time.perf_counter()
 
-            # Запуск параллельного расчета канала, если включен
-            self._start_parallel_channel_if_needed()
+        _t = time.perf_counter()
+        # Повторно профилируем проверку только после reset profiler.
+        self._check_required_parameters()
+        self._profile_add("setup_check_required_parameters", _t)
 
-            # Создание ресурсной сетки
-            lte_grid = RES_GRID_LTE_CACHED(
-                bandwidth=self.base_station.bandwidth,
-                window_size=50
+        # Запуск асинхронного расчета мобильности, если включен
+        _t = time.perf_counter()
+        self._start_async_mobility_if_needed()
+        self._profile_add("setup_start_async_mobility", _t)
+
+        # Запуск параллельного расчета канала, если включен
+        _t = time.perf_counter()
+        self._start_parallel_channel_if_needed()
+        self._profile_add("setup_start_parallel_channel", _t)
+
+        # Запуск асинхронной генерации трафика, если включена
+        _t = time.perf_counter()
+        self._start_async_traffic_if_needed()
+        self._profile_add("setup_start_async_traffic", _t)
+
+        # Создание ресурсной сетки
+        _t = time.perf_counter()
+        lte_grid = RES_GRID_LTE_CACHED(
+            bandwidth=self.base_station.bandwidth,
+            window_size=50
+        )
+        self._profile_add("setup_resource_grid", _t)
+        if self.sim_config.verbose and lte_grid:
+            print(
+                f"[SIMULATION] The resource grid has been initialized. "
+                f"Bandwidth={lte_grid.bandwidth} MHz. RBs={lte_grid.rb_per_slot}"
             )
-            if self.sim_config.verbose and lte_grid:
+
+        # Создание планировщика
+        _t = time.perf_counter()
+        self.scheduler = SchedulerInterface.create(
+            algorithm=self.sched_config.algorithm,
+            lte_grid=lte_grid,
+            bs=self.base_station,
+            max_dl_ue_tti=self.sched_config.max_dl_ue_tti,
+            pcfich=self.sched_config.pcfich,
+            max_dl_cce_allowance=self.sched_config.max_dl_cce_allowance,
+            verbose_pdcch=self.sim_config.verbose,
+            window_size=self.sched_config.window_size,
+            enable_window=self.sched_config.enable_window,
+            verbose=self.sim_config.verbose,
+        )
+        self._profile_add("setup_scheduler", _t)
+
+        # Инициализация менеджера статистики
+        if self.stats_config.enabled:
+            _t_stats_setup = time.perf_counter()
+            level_map = {
+                "none": MetricLevel.NONE,
+                "basic": MetricLevel.BASIC,
+                "advanced": MetricLevel.ADVANCED,
+                "full": MetricLevel.FULL,
+            }
+
+            # Создание конфига для StatsManager
+            stats_config = StatisticsConfig(
+                collect_interval=self.stats_config.collect_interval,
+                levels=LevelsConfig(
+                    scheduler=level_map[self.stats_config.scheduler_level],
+                    amc=level_map[self.stats_config.amc_level],
+                    pdcch=level_map[self.stats_config.pdcch_level],
+                ),
+                export_format=self.stats_config.export_format,
+                export_detailed_format=self.stats_config.export_detailed_format,
+                file_prefix=self.stats_config.file_prefix,
+                history_max_len=self.stats_config.history_max_len,
+            )
+
+            self.stats_manager = StatsManager(self.scheduler, stats_config, profiler=self.phase_profiler)
+
+            if self.sim_config.verbose:
                 print(
-                    f"[SIMULATION] The resource grid has been initialized. "
-                    f"Bandwidth={lte_grid.bandwidth} MHz. RBs={lte_grid.rb_per_slot}"
+                    f"[SIMULATION] StatsManager enabled "
+                    f"(interval={self.stats_config.collect_interval} TTI, "
+                    f"scheduler={self.stats_config.scheduler_level}, "
+                    f"amc={self.stats_config.amc_level})"
                 )
+            self._profile_add("setup_stats_manager", _t_stats_setup)
 
-            # Создание планировщика
-            self.scheduler = SchedulerInterface.create(
-                algorithm=self.sched_config.algorithm,
-                lte_grid=lte_grid,
-                bs=self.base_station,
-                max_dl_ue_tti=self.sched_config.max_dl_ue_tti,
-                pcfich=self.sched_config.pcfich,
-                max_dl_cce_allowance=self.sched_config.max_dl_cce_allowance,
-                verbose_pdcch=self.sim_config.verbose,
-                window_size=self.sched_config.window_size,
-                enable_window=self.sched_config.enable_window,
-                verbose=self.sim_config.verbose,
+        try:
+            _t_tqdm_init = time.perf_counter()
+            pbar = tqdm(
+                total=self.sim_config.sim_duration,
+                desc="Simulation Progress",
+                unit="TTI",
+                dynamic_ncols=True,
+                colour='cyan',
+                bar_format=(
+                    "{desc}: {percentage:3.0f}%|{bar}| "
+                    "{n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
+                ),
+                file=progress_stream,
+                position = 0,
+                leave = True,
             )
 
-            # Инициализация менеджера статистики
-            if self.stats_config.enabled:
-                level_map = {
-                    "none": MetricLevel.NONE,
-                    "basic": MetricLevel.BASIC,
-                    "advanced": MetricLevel.ADVANCED,
-                    "full": MetricLevel.FULL,
-                }
-
-                # Создание конфига для StatsManager
-                stats_config = StatisticsConfig(
-                    collect_interval=self.stats_config.collect_interval,
-                    levels=LevelsConfig(
-                        scheduler=level_map[self.stats_config.scheduler_level],
-                        amc=level_map[self.stats_config.amc_level],
-                        pdcch=level_map[self.stats_config.pdcch_level],
-                    ),
-                    export_format=self.stats_config.export_format,
-                    file_prefix=self.stats_config.file_prefix,
-                    history_max_len=self.stats_config.history_max_len,
+            sbar = tqdm(
+                total=0,
+                desc="Stats",
+                bar_format="{desc}",
+                dynamic_ncols=True,
+                file=progress_stream,
+                position=1,
+                leave=True,
                 )
+            self._profile_add("setup_tqdm_init", _t_tqdm_init)
 
-                self.stats_manager = StatsManager(self.scheduler, stats_config)
+            # Основной цикл симуляции
+            _gc_was_enabled = gc.isenabled()
+            if self.sim_config.disable_gc_during_run and _gc_was_enabled:
+                _t = time.perf_counter()
+                gc.disable()
+                self._profile_add("runtime_gc_disable", _t)
 
+            _tti_loop_start = time.perf_counter()
+            for tti in range(self.sim_config.sim_duration):
+                _tti_outer_start = time.perf_counter()
                 if self.sim_config.verbose:
-                    print(
-                        f"[SIMULATION] StatsManager enabled "
-                        f"(interval={self.stats_config.collect_interval} TTI, "
-                        f"scheduler={self.stats_config.scheduler_level}, "
-                        f"amc={self.stats_config.amc_level})"
-                    )
+                    print(f"\n[SIMULATION] Start TTI {tti}...")
 
-            try:
-                pbar = tqdm(
-                    total=self.sim_config.sim_duration,
-                    desc="Simulation Progress",
-                    unit="TTI",
-                    dynamic_ncols=True,
-                    colour='cyan',
-                    bar_format=(
-                        "{desc}: {percentage:3.0f}%|{bar}| "
-                        "{n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
-                    ),
-                    file=progress_stream,
-                    position = 0,
-                    leave = True,
-                )
+                _t = time.perf_counter()
+                GLOBALS.CURRENT_TIME = tti
+                self._profile_add("outer_set_global_time", _t)
 
-                sbar = tqdm(
-                    total=0,
-                    desc="Stats",
-                    bar_format="{desc}",
-                    dynamic_ncols=True,
-                    file=progress_stream,
-                    position=1,
-                    leave=True,
-                    )
+                _t = time.perf_counter()
+                _ = self.run_tti(current_time=tti)
+                self._profile_add("outer_run_tti_call", _t)
 
-                # Основной цикл симуляции
-                for tti in range(self.sim_config.sim_duration):
-                    if self.sim_config.verbose:
-                        print(f"\n[SIMULATION] Start TTI {tti}...")
+                if (tti + 1) % PROGRESS_UPDATE_TTI == 0:
+                    _t = time.perf_counter()
+                    pbar.update(PROGRESS_UPDATE_TTI)
+                    self._profile_add("progress_bar_update", _t)
 
-                    GLOBALS.CURRENT_TIME = tti
+                if self.stats_manager and (tti % self.stats_manager.config.collect_interval == 0):
+                    _t = time.perf_counter()
+                    self.stats_manager.collect(tti)
+                    self._profile_add("stats_collect_primary", _t)
 
-                    _ = self.run_tti(current_time=tti)
-
-                    pbar.update(1)
-                    if self.stats_manager and (tti % self.stats_manager.config.collect_interval == 0):
-                        self.stats_manager.collect(tti)
-
-                    if self.stats_manager and (tti % JFI_INTERVAL_TTI == 0):
-                        ue_avg_throughputs = {
-                            ue.UE_ID: ue.average_throughput
-                            for ue in self.ue_collection.GET_ALL_USERS()
-                        }
-                        longterm_fairness_metrics = self.stats_manager._calculate_fairness(
-                            ue_throughputs=ue_avg_throughputs
-                        )
-                        jfi_cached = longterm_fairness_metrics.get("dl_fairness_jain_index", None)
-
-                    if (tti % STATS_REFRESH_TTI == 0) and self.scheduler:
-                        s = self.scheduler.get_stats()
-                        a = self.scheduler.amc.get_stats()
-
-                        tput = a.get('dl_throughput_sum_kbps', 0)
-                        prb = s.get("dl_prb_utilization_pct", 0.0)
-                        ue_cnt = s.get("sch_active_ue_count", 0)
-                        us = s.get("sch_total_time_us", 0.0)
-                        jfi_str = f"{jfi_cached:.4f}" if jfi_cached is not None else "N/A"
-
-                        sbar.set_description_str(
-                            f"TTI={tti} | UE={ue_cnt} | "
-                            f"Tput={tput:.0f} kbps | PRB={prb:.1f}% | "
-                            f"JFI(long)={jfi_str} | sch_total_time_us={us:.1f}"
-                        )
-                        sbar.refresh()
-
-                    # Вывод статистики в CSV файл
-                    if self.stats_manager and tti % self.stats_manager.config.collect_interval == 0:
-                        self.stats_manager.collect(tti)
-
-                if self.stats_manager:
-                    # Экспорт в CSV
-                    output_filename = f"{self.stats_config.file_prefix}.csv"
-                    self.stats_manager.export_csv(output_filename, locale="ru")
-
-                    # Отладочный момент для глобального JI (Fairness)
-                    ue_avg_throughputs = {}
-                    for ue in self.ue_collection.GET_ALL_USERS():
-                        ue_avg_throughputs[ue.UE_ID] = ue.average_throughput
-
+                if self.stats_manager and (tti % JFI_INTERVAL_TTI == 0):
+                    _t = time.perf_counter()
+                    ue_avg_throughputs = {
+                        ue.UE_ID: ue.average_throughput
+                        for ue in self.ue_collection.GET_ALL_USERS()
+                    }
                     longterm_fairness_metrics = self.stats_manager._calculate_fairness(
                         ue_throughputs=ue_avg_throughputs
                     )
-                    jfi = longterm_fairness_metrics["dl_fairness_jain_index"]
-                    jfi_str = f"{jfi:.4f}" if jfi is not None else "N/A (no throughput data)"
-                    print(f"[SIMULATION] Jain's Fairness Index: {jfi_str}")
+                    jfi_cached = longterm_fairness_metrics.get("dl_fairness_jain_index", None)
+                    self._profile_add("stats_fairness_jfi", _t)
 
-                    # Вывод summary (если verbose включен)
-                    if (
+                if (tti % STATS_REFRESH_TTI == 0) and self.scheduler:
+                    _t_refresh = time.perf_counter()
+
+                    _t = time.perf_counter()
+                    s = self.scheduler.get_stats()
+                    self._profile_add("stats_refresh_scheduler_get_stats", _t)
+
+                    _t = time.perf_counter()
+                    a = self.scheduler.amc.get_stats()
+                    self._profile_add("stats_refresh_amc_get_stats", _t)
+
+                    tput = a.get('dl_throughput_sum_kbps', 0)
+                    prb = s.get("dl_prb_utilization_pct", 0.0)
+                    ue_cnt = s.get("sch_active_ue_count", 0)
+                    us = s.get("sch_total_time_us", 0.0)
+                    jfi_str = f"{jfi_cached:.4f}" if jfi_cached is not None else "N/A"
+
+                    _t = time.perf_counter()
+                    sbar.set_description_str(
+                        f"TTI={tti} | UE={ue_cnt} | "
+                        f"Tput={tput:.0f} kbps | PRB={prb:.1f}% | "
+                        f"JFI(long)={jfi_str} | sch_total_time_us={us:.1f}"
+                    )
+                    sbar.refresh()
+                    self._profile_add("stats_refresh_sbar", _t)
+                    self._profile_add("stats_refresh_total", _t_refresh)
+
+                # Legacy duplicate collect for CSV/debug compatibility. По умолчанию
+                # выключен: повторный collect на том же TTI удваивал часть overhead.
+                if (
+                    self.stats_config.collect_duplicate_for_csv
+                    and self.stats_manager
+                    and tti % self.stats_manager.config.collect_interval == 0
+                ):
+                    _t = time.perf_counter()
+                    self.stats_manager.collect(tti)
+                    self._profile_add("stats_collect_csv_duplicate", _t)
+
+                if (
+                    self.sim_config.disable_gc_during_run
+                    and self.sim_config.gc_collect_interval_tti > 0
+                    and tti > 0
+                    and tti % self.sim_config.gc_collect_interval_tti == 0
+                ):
+                    _t = time.perf_counter()
+                    gc.collect(0)
+                    self._profile_add("runtime_gc_collect_gen0", _t)
+
+                _tti_elapsed = time.perf_counter() - _tti_outer_start
+                if (
+                    self.sim_config.slow_tti_threshold_ms > 0
+                    and _tti_elapsed * 1000.0 >= self.sim_config.slow_tti_threshold_ms
+                ):
+                    self.phase_profiler.increment("slow_tti_count", 1)
+                    self.phase_profiler.increment("slow_tti_total_ms", int(_tti_elapsed * 1000.0))
+
+                self._profile_add("outer_tti_iteration_total", _tti_outer_start)
+
+            if self.sim_config.disable_gc_during_run and _gc_was_enabled:
+                _t = time.perf_counter()
+                gc.enable()
+                self._profile_add("runtime_gc_enable", _t)
+                if self.sim_config.gc_collect_at_end:
+                    _t = time.perf_counter()
+                    gc.collect()
+                    self._profile_add("runtime_gc_collect_at_end", _t)
+
+            # Дорисовать остаток progress bar, если обновляли его пачками.
+            _remaining_progress = self.sim_config.sim_duration % PROGRESS_UPDATE_TTI
+            if _remaining_progress:
+                _t = time.perf_counter()
+                pbar.update(_remaining_progress)
+                self._profile_add("progress_bar_update", _t)
+
+            self._profile_add("outer_tti_loop_total", _tti_loop_start)
+
+            if self.stats_manager:
+                # Экспорт в CSV. Для benchmark можно отключить через
+                # set_stats_export(export_csv=False, export_detailed=False).
+                _t_final_stats = time.perf_counter()
+                if self.stats_config.export_csv_enabled:
+                    _t = time.perf_counter()
+                    output_filename = f"{self.stats_config.file_prefix}.csv"
+                    self.stats_manager.export_csv(output_filename, locale="ru")
+                    self._profile_add("final_stats_export_csv", _t)
+
+                # Отладочный момент для глобального JI (Fairness)
+                _t = time.perf_counter()
+                ue_avg_throughputs = {}
+                for ue in self.ue_collection.GET_ALL_USERS():
+                    ue_avg_throughputs[ue.UE_ID] = ue.average_throughput
+                self._profile_add("final_stats_collect_ue_avg", _t)
+
+                _t = time.perf_counter()
+                longterm_fairness_metrics = self.stats_manager._calculate_fairness(
+                    ue_throughputs=ue_avg_throughputs
+                )
+                self._profile_add("final_stats_fairness", _t)
+                jfi = longterm_fairness_metrics["dl_fairness_jain_index"]
+                jfi_str = f"{jfi:.4f}" if jfi is not None else "N/A (no throughput data)"
+                print(f"[SIMULATION] Jain's Fairness Index: {jfi_str}")
+
+                # Вывод summary (если verbose включен)
+                if (
+                    self.stats_config.export_detailed_enabled
+                    and (
                         self.stats_config.scheduler_level == "full"
                         or self.stats_config.amc_level == "full"
-                    ):
-                        if self.stats_config.export_detailed_format == "csv":
-                            detailed_filename = f"{self.stats_config.file_prefix}_detailed.csv"
-                            self.stats_manager.export_detailed_csv(detailed_filename, locale="ru")
-                        elif self.stats_config.export_detailed_format == "json":
-                            detailed_filename = f"{self.stats_config.file_prefix}_detailed.json"
-                            self.stats_manager.export_detailed_json(detailed_filename)
+                    )
+                ):
+                    if self.stats_config.export_detailed_format == "csv":
+                        detailed_filename = f"{self.stats_config.file_prefix}_detailed.csv"
+                        _t = time.perf_counter()
+                        self.stats_manager.export_detailed_csv(detailed_filename, locale="ru")
+                        self._profile_add("final_stats_export_detailed_csv", _t)
+                    elif self.stats_config.export_detailed_format == "json":
+                        _t = time.perf_counter()
+                        detailed_filename = f"{self.stats_config.file_prefix}_detailed.json"
+                        self.stats_manager.export_detailed_json(detailed_filename)
+                        self._profile_add("final_stats_export_detailed_json", _t)
+                self._profile_add("final_stats_total", _t_final_stats)
 
-            finally:
-                # Остановка worker-процессов параллельного канала
-                self._shutdown_parallel_channel()
+        finally:
+            # Если во время основного цикла случилось исключение, важно вернуть
+            # cyclic GC обратно, иначе интерактивная сессия Python останется без GC.
+            if (
+                self.sim_config.disable_gc_during_run
+                and _gc_was_enabled
+                and not gc.isenabled()
+            ):
+                _t = time.perf_counter()
+                gc.enable()
+                self._profile_add("runtime_gc_enable_on_exception", _t)
+                if self.sim_config.gc_collect_at_end:
+                    _t = time.perf_counter()
+                    gc.collect()
+                    self._profile_add("runtime_gc_collect_on_exception", _t)
 
-                # Остановка worker-процесса асинхронной мобильности
-                self._shutdown_async_mobility()
+            # Сначала закрываем tqdm, чтобы profiling summary не смешивался с progress bar.
+            if pbar is not None:
+                pbar.close()
+            if sbar is not None:
+                sbar.close()
 
-                # Возвращение консольного вывода
-                if pbar is not None:
-                    pbar.close()
-                if sbar is not None:
-                    sbar.close()
-                if self._to_file:
-                    sys.stdout = self._original_stdout
-                    sys.stderr = self._original_stderr
-                    self._log_file.close()
+            self._profile_add("start_simulation_total_until_summary", _simulation_total_start)
+
+            if self.sim_config.profiling_print_summary:
+                self._print_profiling_summary()
+
+            # Остановка worker-процессов параллельного канала
+            _t = time.perf_counter()
+            self._shutdown_parallel_channel()
+            # phase_profiler может быть отключён внутри shutdown; поэтому эта строка
+            # попадёт в summary только если shutdown не сбросил profiler раньше.
+            self._profile_add("shutdown_parallel_channel", _t)
+
+            # Остановка worker-процессов асинхронного трафика
+            _t = time.perf_counter()
+            self._shutdown_async_traffic()
+            self._profile_add("shutdown_async_traffic", _t)
+
+            # Остановка worker-процесса асинхронной мобильности
+            _t = time.perf_counter()
+            self._shutdown_async_mobility()
+            self._profile_add("shutdown_async_mobility", _t)
+
+            # Возвращение консольного вывода
+            if self._to_file:
+                sys.stdout = self._original_stdout
+                sys.stderr = self._original_stderr
+                self._log_file.close()
 
     def _check_required_parameters(self) -> None:
         """
@@ -1647,43 +2189,150 @@ class SimulationManager:
     def run_tti(self, current_time: int):
         """
         Выполнение одного TTI с поддержкой обоих режимов генерации трафика.
+        При включённом profiling собирает времена крупных фаз.
         """
-        # Обновление физики и позиций UE
+        _tti_start = time.perf_counter()
+
+        # 1. Обновление физики/позиций/канала/UE traffic phase
         if current_time % self.sim_config.update_interval == 0:
             if self.sim_config.verbose:
                 print("[SIMULATION] Update UEs states")
 
+            _t = time.perf_counter()
             self.ue_collection.UPDATE_ALL_USERS(
                 current_time=current_time,
                 update_interval=self.sim_config.update_interval,
                 mobility_update_interval=self.sim_config.mobility_update_interval,
                 channel_update_interval=self.sim_config.channel_update_interval,
+                profiler=self.phase_profiler,
             )
+            self._profile_add("ue_update_total", _t)
 
-        # Блок обновления буферов и генерации трафика
+        # 2. Блок обновления буферов и генерации трафика
         # Legacy mode (Simple Buffer + Simple Generator)
         if self.sim_config.use_legacy_traffic:
+            _traffic_total_start = time.perf_counter()
 
             # Обновляем буферы всех пользователей
-            self.base_station.buffer_manager.upd_buffers_all()
+            # Обновление буферов (TTL/очистка) раз в buffer_update_interval мс
+            _t = time.perf_counter()
+            buf_interval = self.sim_config.buffer_update_interval
+            if buf_interval > 0 and current_time % buf_interval == 0:
+                self.base_station.buffer_manager.upd_buffers_all()
+            self._profile_add("traffic_buffer_update", _t)
 
+            _t = time.perf_counter()
             all_users = self.ue_collection.GET_ALL_USERS()
-            for ue in all_users:
-                ue_id = ue.UE_ID
+            self._profile_add("get_all_users_for_traffic", _t)
 
-                # Пропускаем UE без модели
-                if ue_id not in self.traffic_gen.models:
-                    continue
+            _t = time.perf_counter()
+            generated_packets = 0
+            users_with_traffic_model = 0
+            traffic_generate_calls = 0
+            traffic_generate_call_s = 0.0
+            traffic_buffer_add_s = 0.0
+            traffic_model_lookup_s = 0.0
+            profile_enabled = self.phase_profiler.enabled
 
-                # Генерируем пакеты по одному юзеру
-                packets = self.traffic_gen.generate_packets(
-                    ue_id=ue_id, current_time=current_time, update_interval=self.sim_config.update_interval
-                )
+            if self.sim_config.async_traffic_enabled and self.traffic_provider is not None:
+                # Async path: worker'ы заранее генерируют Packet objects, main
+                # только применяет snapshots к буферам BS. Sync fallback здесь
+                # специально не используется, чтобы не разъехалось состояние
+                # stateful traffic models в worker'ах.
+                if profile_enabled:
+                    _gen_t = time.perf_counter()
+                traffic_batch = self.traffic_provider.get_batch(int(current_time))
+                if profile_enabled:
+                    traffic_generate_call_s += time.perf_counter() - _gen_t
 
-                # Кладем пакеты в буфер
-                if packets:
-                    for pkt in packets:
-                        self.base_station.buffer_manager.add_packet(ue_id, pkt)
+                if traffic_batch is None:
+                    raise RuntimeError(
+                        f"Async traffic snapshot batch for step {current_time} is not ready. "
+                        "Increase async_traffic_snapshot_timeout_ms, set strict=False, "
+                        "or disable async traffic."
+                    )
+
+                users_with_traffic_model = len(getattr(self.traffic_gen, "models", {}))
+                traffic_generate_calls = users_with_traffic_model
+
+                if traffic_batch:
+                    if profile_enabled:
+                        _add_t = time.perf_counter()
+                    for ue_id, snap in traffic_batch.items():
+                        packets = snap.packets
+                        if not packets:
+                            continue
+                        packet_count = len(packets)
+                        generated_packets += packet_count
+
+                        # Поддерживаем legacy statistics SimpleGenerator в main
+                        # process, хотя генерация фактически произошла в worker.
+                        if hasattr(self.traffic_gen, "_total_packets_generated"):
+                            self.traffic_gen._total_packets_generated += packet_count
+                        if hasattr(self.traffic_gen, "_packets_per_ue"):
+                            self.traffic_gen._packets_per_ue[int(ue_id)] = (
+                                self.traffic_gen._packets_per_ue.get(int(ue_id), 0)
+                                + packet_count
+                            )
+
+                        for pkt in packets:
+                            self.base_station.buffer_manager.add_packet(int(ue_id), pkt)
+                    if profile_enabled:
+                        traffic_buffer_add_s += time.perf_counter() - _add_t
+
+                self._profile_add("traffic_async_packet_generation", _t)
+
+            else:
+                # Sync legacy path: старое поведение без worker-процессов.
+                for ue in all_users:
+                    ue_id = ue.UE_ID
+
+                    # Пропускаем UE без модели
+                    if profile_enabled:
+                        _lookup_t = time.perf_counter()
+                        has_model = ue_id in self.traffic_gen.models
+                        traffic_model_lookup_s += time.perf_counter() - _lookup_t
+                    else:
+                        has_model = ue_id in self.traffic_gen.models
+
+                    if not has_model:
+                        continue
+
+                    users_with_traffic_model += 1
+
+                    # Генерируем пакеты по одному юзеру
+                    if profile_enabled:
+                        _gen_t = time.perf_counter()
+                    packets = self.traffic_gen.generate_packets(
+                        ue_id=ue_id,
+                        current_time=current_time,
+                        update_interval=self.sim_config.update_interval,
+                    )
+                    traffic_generate_calls += 1
+                    if profile_enabled:
+                        traffic_generate_call_s += time.perf_counter() - _gen_t
+
+                    # Кладем пакеты в буфер
+                    if packets:
+                        generated_packets += len(packets)
+                        if profile_enabled:
+                            _add_t = time.perf_counter()
+                        for pkt in packets:
+                            self.base_station.buffer_manager.add_packet(ue_id, pkt)
+                        if profile_enabled:
+                            traffic_buffer_add_s += time.perf_counter() - _add_t
+
+                self._profile_add("traffic_packet_generation", _t)
+
+            if profile_enabled:
+                self.phase_profiler.add("traffic_model_lookup", traffic_model_lookup_s)
+                self.phase_profiler.add("traffic_generate_packets_calls", traffic_generate_call_s)
+                self.phase_profiler.add("traffic_buffer_add_packets", traffic_buffer_add_s)
+                self.phase_profiler.increment("traffic_users_seen", len(all_users))
+                self.phase_profiler.increment("traffic_users_with_model", users_with_traffic_model)
+                self.phase_profiler.increment("traffic_generate_calls", traffic_generate_calls)
+                self.phase_profiler.increment("traffic_generated_packets", generated_packets)
+            self._profile_add("traffic_legacy_total", _traffic_total_start)
 
         # Bearers mode (Layered Buffer + Packet Manager)
         else:
@@ -1695,8 +2344,14 @@ class SimulationManager:
             # @IvanNoritsin: Пока что доступен только один режим работы (Simple Buffer + Simple Generator).
             # Данный блок будет реализован при добавлении новых буферов (Layered Buffer)
 
-        # 3. Планировщик
+        # 3. Планировщик + RES_GRID внутри scheduler.schedule()
+        _t = time.perf_counter()
         users = self.ue_collection.GET_USERS_FOR_SCHEDULER()
-        sched_result = self.scheduler.schedule(current_time, users)
+        self._profile_add("get_users_for_scheduler", _t)
 
+        _t = time.perf_counter()
+        sched_result = self.scheduler.schedule(current_time, users)
+        self._profile_add("scheduler_and_res_grid", _t)
+
+        self._profile_add("run_tti_total", _tti_start)
         return sched_result

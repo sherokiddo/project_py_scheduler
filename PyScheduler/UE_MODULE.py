@@ -72,6 +72,8 @@
 from collections import deque
 from typing import Dict, List, Optional, Tuple
 
+import time
+
 import GLOBALS
 import numpy as np
 from TRAFFIC_MODEL import MMPPModel, OnOffModel, PoissonModel
@@ -938,6 +940,7 @@ class UECollection:
                          update_interval: int,
                          mobility_update_interval: int = None,
                          channel_update_interval: int = None,
+                         profiler=None,
                          ):
         """
         Обновить состояние всех пользователей в коллекции.
@@ -958,55 +961,145 @@ class UECollection:
         do_mobility = current_time % mob_interval == 0
         do_channel = current_time % ch_interval == 0
 
+        def _profile_add(phase: str, started_at: float) -> None:
+            if profiler is not None and getattr(profiler, "enabled", False):
+                profiler.add(phase, time.perf_counter() - started_at)
+
         # 1. Mobility phase
         if do_mobility:
+            _mobility_phase_start = time.perf_counter()
             step_idx = current_time // mob_interval
 
             # Важно для производительности: обращаться к async-provider нужно
             # один раз на mobility-step, а не по одному разу на каждого UE.
             # Иначе на 100 UE получаем 100 вызовов Queue/cache lookup вместо одного.
             snapshot_batch = None
-            if self.mobility_provider is not None:
-                snapshot_batch = self.mobility_provider.get_batch(step_idx)
+            provider = self.mobility_provider
+            if provider is not None:
+                _t = time.perf_counter()
+                snapshot_batch = provider.get_batch(step_idx)
+                _profile_add("mobility_provider_get_batch", _t)
 
             if snapshot_batch is not None:
-                for ue in self.users.values():
-                    snapshot = snapshot_batch.get(ue.UE_ID)
-                    if snapshot is not None:
-                        ue.APPLY_MOBILITY_SNAPSHOT(snapshot)
-                    else:
-                        # Точечный fallback только если в батче нет конкретного UE.
+                missing_ue_ids = [
+                    ue.UE_ID for ue in self.users.values() if ue.UE_ID not in snapshot_batch
+                ]
+
+                if missing_ue_ids:
+                    # Частичный mobility batch опасен так же, как полный miss:
+                    # часть UE ушла бы в async-траекторию, часть — в sync.
+                    # Поэтому сначала проверяем полноту batch и только потом
+                    # применяем snapshots.
+                    if getattr(provider, "strict_snapshots", False):
+                        raise RuntimeError(
+                            f"Async mobility batch for step {step_idx} is incomplete: "
+                            f"missing UE IDs {missing_ue_ids}"
+                        )
+
+                    if provider is not None:
+                        if hasattr(provider, "shutdown"):
+                            provider.shutdown()
+                        if hasattr(provider, "fallback_steps"):
+                            provider.fallback_steps += 1
+
+                    _t = time.perf_counter()
+                    for ue in self.users.values():
                         ue.UPD_POSITION(mob_interval)
+                    _profile_add("mobility_sync_fallback_update", _t)
+
+                    if (
+                        provider is not None
+                        and getattr(provider, "restart_on_fallback", False)
+                        and hasattr(provider, "restart_from_users")
+                    ):
+                        provider.restart_from_users(self.users.values(), start_step=step_idx + 1)
+                else:
+                    _t = time.perf_counter()
+                    for ue in self.users.values():
+                        ue.APPLY_MOBILITY_SNAPSHOT(snapshot_batch[ue.UE_ID])
+                    _profile_add("mobility_apply_snapshots", _t)
             else:
-                # Fallback: старый синхронный режим, если async выключен
-                # или worker не успел подготовить весь mobility-step.
-                for ue in self.users.values():
-                    ue.UPD_POSITION(mob_interval)
+                if provider is None:
+                    # Старый синхронный режим: async mobility выключен.
+                    _t = time.perf_counter()
+                    for ue in self.users.values():
+                        ue.UPD_POSITION(mob_interval)
+                    _profile_add("mobility_sync_update", _t)
+                else:
+                    if getattr(provider, "strict_snapshots", False):
+                        last_error = getattr(provider, "last_error", None)
+                        details = f" Worker error: {last_error.get('error')}" if last_error else ""
+                        raise RuntimeError(
+                            f"Async mobility snapshot batch for step {step_idx} is not ready."
+                            f" Increase async_mobility_snapshot_timeout_ms or disable "
+                            f"strict_async_mobility.{details}"
+                        )
+
+                    # Non-strict fallback без расхождения траекторий:
+                    # 1) останавливаем provider, чтобы он не продолжал считать
+                    #    старую параллельную траекторию;
+                    # 2) синхронно обновляем все UE;
+                    # 3) рестартуем provider из live UE state с step_idx + 1.
+                    if hasattr(provider, "shutdown"):
+                        provider.shutdown()
+                    if hasattr(provider, "fallback_steps"):
+                        provider.fallback_steps += 1
+
+                    _t = time.perf_counter()
+                    for ue in self.users.values():
+                        ue.UPD_POSITION(mob_interval)
+                    _profile_add("mobility_sync_fallback_update", _t)
+
+                    if (
+                        getattr(provider, "restart_on_fallback", False)
+                        and hasattr(provider, "restart_from_users")
+                    ):
+                        _t = time.perf_counter()
+                        provider.restart_from_users(self.users.values(), start_step=step_idx + 1)
+                        _profile_add("mobility_provider_restart", _t)
+
+            _profile_add("mobility_phase_total", _mobility_phase_start)
 
         # 2. Channel phase
         if do_channel:
+            _channel_phase_start = time.perf_counter()
             step_idx = current_time // ch_interval
             channel_batch = None
 
             if self.channel_provider is not None:
+                _t = time.perf_counter()
                 channel_batch = self.channel_provider.calculate_batch(
                     self.users.values(),
                     step_idx=step_idx,
                     channel_update_interval=ch_interval,
                 )
+                _profile_add("channel_provider_calculate_batch", _t)
 
             if channel_batch is not None:
+                _t = time.perf_counter()
+                missing_channel_snapshots = 0
                 for ue in self.users.values():
                     snapshot = channel_batch.get(ue.UE_ID)
                     if snapshot is not None:
                         ue.APPLY_CHANNEL_SNAPSHOT(snapshot)
                     else:
+                        missing_channel_snapshots += 1
                         ue.UPD_CH_QUALITY(ch_interval)
+                _profile_add("channel_apply_snapshots", _t)
+                if profiler is not None and getattr(profiler, "enabled", False) and missing_channel_snapshots:
+                    profiler.counts["channel_missing_snapshots"] = (
+                        profiler.counts.get("channel_missing_snapshots", 0) + missing_channel_snapshots
+                    )
             else:
+                _t = time.perf_counter()
                 for ue in self.users.values():
                     ue.UPD_CH_QUALITY(ch_interval)
+                _profile_add("channel_sync_update", _t)
+
+            _profile_add("channel_phase_total", _channel_phase_start)
 
         # 3. Traffic phase
+        _traffic_ue_phase_start = time.perf_counter()
         for ue in self.users.values():
             # Генерация DL трафика, если задана модель
             if ue.traffic_model is not None:
@@ -1015,6 +1108,7 @@ class UECollection:
                     update_interval=update_interval,
                     ue_id=ue.UE_ID,
                 )
+        _profile_add("ue_traffic_phase", _traffic_ue_phase_start)
 
     #TODO: Привязать и вывести ручки для управления временным интервалом
     # обновления каналов

@@ -26,8 +26,10 @@
 #------------------------------------------------------------------------------
 """
 
+import copy
 import inspect
-from typing import Tuple
+import pickle
+from typing import Any, Dict, Tuple
 
 import numpy as np
 from BS_MODULE import BaseStation
@@ -137,6 +139,44 @@ class MobilityInterface:
         Обязательный метод для всех моделей.
         """
         raise NotImplementedError("Модель обязательно должна иметь метод update()")
+
+    def export_worker_state(self) -> Dict[str, Any]:
+        """
+        Явный контракт сериализации состояния модели для worker-процессов.
+
+        В state попадает только внутреннее состояние модели мобильности. Ссылка
+        на живой UserEquipment намеренно исключается: worker получает отдельный
+        легковесный ue_proxy и не может мутировать UE из main process.
+        """
+        state: Dict[str, Any] = {}
+        for key, value in self.__dict__.items():
+            if key == "ue":
+                continue
+            try:
+                state[key] = copy.deepcopy(value)
+            except Exception:
+                # Явно проверяем, можно ли безопасно передать объект через Queue/spawn.
+                try:
+                    pickle.dumps(value)
+                    state[key] = value
+                except Exception:
+                    continue
+        return state
+
+    @classmethod
+    def import_worker_state(cls, ue: UserEquipment, state: Dict[str, Any]):
+        """
+        Восстановить модель в worker-процессе из export_worker_state().
+
+        __init__ здесь намеренно не вызывается: большинство моделей при
+        инициализации потребляют np.random и выбирают начальное направление /
+        destination. Повторный __init__ в worker нарушил бы equivalence со
+        старым синхронным путем.
+        """
+        model = cls.__new__(cls)
+        model.__dict__.update(copy.deepcopy(state))
+        model.ue = ue
+        return model
 
     def _apply_boundary_reflection(
         self, x: float, y: float

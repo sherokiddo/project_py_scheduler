@@ -12,18 +12,21 @@
 #   - worker получает только сериализуемый ChannelInput;
 #   - состояние channel_model хранится внутри worker-процесса;
 #   - UE закрепляются за worker по ue_id % workers, чтобы состояние канала
-#     конкретного UE не прыгало между процессами.
+#     конкретного UE не прыгало между процессами;
+#   - late/stale результаты не применяются к новому step_idx.
 #------------------------------------------------------------------------------
 """
 
 from __future__ import annotations
 
 import copy
+import importlib
 import multiprocessing as mp
 import queue
+import time
 import traceback
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -56,6 +59,53 @@ class ChannelSnapshot:
     dist_to_bs_2d_in: float
     dist_to_bs_2d_out: float
     dist_to_bs_3d: float
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelModelSpec:
+    """
+    Сериализуемое описание channel_model для worker-процесса.
+
+    Для штатных моделей используется явный контракт ChannelModel.export_worker_state()
+    / import_worker_state(). Для тестовых или внешних моделей оставлен fallback:
+    deepcopy-template, но он изолирован внутри spec и не смешан с live BS/UE state.
+    """
+
+    module_name: str
+    class_name: str
+    model_state: Optional[Dict[str, Any]] = None
+    fallback_template: Optional[Any] = None
+
+
+def build_channel_model_spec(channel_model: Any) -> ChannelModelSpec:
+    """Собрать ChannelModelSpec без передачи live-ссылки на модель в worker."""
+    cls = channel_model.__class__
+    if hasattr(channel_model, "export_worker_state") and hasattr(cls, "import_worker_state"):
+        return ChannelModelSpec(
+            module_name=cls.__module__,
+            class_name=cls.__name__,
+            model_state=channel_model.export_worker_state(),
+            fallback_template=None,
+        )
+
+    # Fallback для тестовых моделей, не наследующихся от ChannelModel.
+    return ChannelModelSpec(
+        module_name=cls.__module__,
+        class_name=cls.__name__,
+        model_state=None,
+        fallback_template=copy.deepcopy(channel_model),
+    )
+
+
+def _rebuild_channel_model_from_spec(spec: ChannelModelSpec) -> Any:
+    """Восстановить channel_model внутри worker-процесса."""
+    if spec.model_state is not None:
+        module = importlib.import_module(spec.module_name)
+        cls = getattr(module, spec.class_name)
+        if hasattr(cls, "import_worker_state"):
+            return cls.import_worker_state(spec.model_state)
+
+    return copy.deepcopy(spec.fallback_template)
 
 
 def _sinr_to_cqi(sinr: float) -> int:
@@ -206,7 +256,7 @@ def _calculate_one_channel_snapshot(
 
 def _channel_worker_loop(
     worker_id: int,
-    channel_model_template: Any,
+    channel_model_spec: ChannelModelSpec,
     in_queue: mp.Queue,
     out_queue: mp.Queue,
     stop_event: mp.Event,
@@ -217,7 +267,7 @@ def _channel_worker_loop(
         if seed is not None:
             np.random.seed(seed + worker_id)
 
-        channel_model = copy.deepcopy(channel_model_template)
+        channel_model = _rebuild_channel_model_from_spec(channel_model_spec)
 
         while not stop_event.is_set():
             try:
@@ -281,7 +331,7 @@ class ChannelParallelProvider:
         if channel_model is None:
             raise ValueError("channel_model не должен быть None")
 
-        self.channel_model_template = copy.deepcopy(channel_model)
+        self.channel_model_spec = build_channel_model_spec(channel_model)
         self.workers = int(workers)
         self.timeout_s = float(timeout_s)
         self.seed = seed
@@ -294,13 +344,24 @@ class ChannelParallelProvider:
         self._processes: List[mp.Process] = []
         self._started = False
 
+        # step_idx -> worker_id -> snapshots
+        self._pending_results: Dict[int, Dict[int, List[ChannelSnapshot]]] = {}
+        self._last_error: Optional[Dict[str, str]] = None
+
         self.steps_processed = 0
         self.fallback_steps = 0
         self.ue_snapshots_processed = 0
+        self.stale_results_discarded = 0
+        self.pending_results_used = 0
+        self.worker_errors = 0
 
     @property
     def started(self) -> bool:
         return self._started
+
+    @property
+    def last_error(self) -> Optional[Dict[str, str]]:
+        return self._last_error
 
     def start(self) -> None:
         if self._started:
@@ -315,7 +376,7 @@ class ChannelParallelProvider:
                 target=_channel_worker_loop,
                 args=(
                     worker_id,
-                    self.channel_model_template,
+                    self.channel_model_spec,
                     self._in_queues[worker_id],
                     self._out_queue,
                     self._stop_event,
@@ -348,6 +409,65 @@ class ChannelParallelProvider:
             )
         return inputs
 
+    def _store_worker_payload(self, worker_id: int, returned_step: int, payload: List[ChannelSnapshot]) -> None:
+        step_payloads = self._pending_results.setdefault(int(returned_step), {})
+        step_payloads[int(worker_id)] = payload
+
+    def _drain_completed_results(self, *, drop_before_step: Optional[int] = None) -> None:
+        """Забрать все уже готовые worker-ответы без блокировки."""
+        if self._out_queue is None:
+            return
+
+        while True:
+            try:
+                worker_id, returned_step, payload = self._out_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            if returned_step == "__error__":
+                self._last_error = payload
+                self.worker_errors += 1
+                continue
+
+            returned_step = int(returned_step)
+            if drop_before_step is not None and returned_step < int(drop_before_step):
+                self.stale_results_discarded += 1
+                continue
+
+            self._store_worker_payload(int(worker_id), returned_step, payload)
+
+    def _collect_pending_for_step(
+        self,
+        step_idx: int,
+        expected_workers: Set[int],
+    ) -> Tuple[Dict[int, ChannelSnapshot], Set[int]]:
+        """Собрать уже сохраненные payloads по step_idx."""
+        results: Dict[int, ChannelSnapshot] = {}
+        received_workers: Set[int] = set()
+        step_payloads = self._pending_results.get(int(step_idx), {})
+
+        for worker_id in list(expected_workers):
+            payload = step_payloads.get(worker_id)
+            if payload is None:
+                continue
+            for snap in payload:
+                results[int(snap.ue_id)] = snap
+            received_workers.add(worker_id)
+            self.pending_results_used += 1
+
+        if received_workers:
+            remaining = {
+                worker_id: payload
+                for worker_id, payload in step_payloads.items()
+                if worker_id not in received_workers
+            }
+            if remaining:
+                self._pending_results[int(step_idx)] = remaining
+            else:
+                self._pending_results.pop(int(step_idx), None)
+
+        return results, received_workers
+
     def calculate_batch(
         self,
         users: Iterable[Any],
@@ -363,44 +483,73 @@ class ChannelParallelProvider:
         if self._out_queue is None:
             return None
 
+        step_idx = int(step_idx)
         inputs = self._build_inputs(users, step_idx)
         if not inputs:
             return {}
+
+        # Забираем поздние ответы с прошлых вызовов. Всё, что старше текущего
+        # step_idx, уже нельзя применять к live UE state.
+        self._drain_completed_results(drop_before_step=step_idx)
+        if self._last_error is not None:
+            self.fallback_steps += 1
+            if self.verbose:
+                print("[CHANNEL_PARALLEL] Worker error:", self._last_error.get("error"))
+                print(self._last_error.get("traceback"))
+            return None
 
         # Стабильное закрепление UE за worker: состояние канала UE не прыгает между процессами.
         buckets: List[List[ChannelInput]] = [[] for _ in range(self.workers)]
         for item in inputs:
             buckets[item.ue_id % self.workers].append(item)
 
-        active_workers = 0
+        expected_workers: Set[int] = {worker_id for worker_id, bucket in enumerate(buckets) if bucket}
+        results, received_workers = self._collect_pending_for_step(step_idx, expected_workers)
+
+        deadline = time.monotonic() + self.timeout_s
         try:
             for worker_id, bucket in enumerate(buckets):
-                if not bucket:
+                if not bucket or worker_id in received_workers:
                     continue
+                remaining = max(0.0, deadline - time.monotonic())
                 self._in_queues[worker_id].put(
-                    (int(step_idx), int(channel_update_interval), bucket),
-                    timeout=self.timeout_s,
+                    (step_idx, int(channel_update_interval), bucket),
+                    timeout=remaining,
                 )
-                active_workers += 1
 
-            results: Dict[int, ChannelSnapshot] = {}
-            received = 0
-            while received < active_workers:
-                worker_id, returned_step, payload = self._out_queue.get(timeout=self.timeout_s)
+            while received_workers < expected_workers:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"timeout waiting for channel workers "
+                        f"{sorted(expected_workers - received_workers)} on step {step_idx}"
+                    )
+
+                worker_id, returned_step, payload = self._out_queue.get(timeout=remaining)
                 if returned_step == "__error__":
+                    self._last_error = payload
+                    self.worker_errors += 1
                     self.fallback_steps += 1
                     if self.verbose:
                         print("[CHANNEL_PARALLEL] Worker error:", payload.get("error"))
                         print(payload.get("traceback"))
                     return None
 
-                if int(returned_step) != int(step_idx):
-                    # Старый/чужой ответ. Для простоты MVP пропускаем.
+                worker_id = int(worker_id)
+                returned_step = int(returned_step)
+
+                if returned_step < step_idx:
+                    self.stale_results_discarded += 1
+                    continue
+
+                if returned_step != step_idx or worker_id not in expected_workers:
+                    # Future/out-of-order или ответ worker'а, который в этом step не нужен.
+                    self._store_worker_payload(worker_id, returned_step, payload)
                     continue
 
                 for snap in payload:
                     results[int(snap.ue_id)] = snap
-                received += 1
+                received_workers.add(worker_id)
 
             self.steps_processed += 1
             self.ue_snapshots_processed += len(results)
@@ -429,13 +578,31 @@ class ChannelParallelProvider:
                     proc.terminate()
                     proc.join(timeout=1.0)
 
+        for q in self._in_queues:
+            try:
+                q.close()
+                q.join_thread()
+            except Exception:
+                pass
+
+        if self._out_queue is not None:
+            try:
+                self._out_queue.close()
+                self._out_queue.join_thread()
+            except Exception:
+                pass
+
         self._started = False
         self._processes.clear()
         self._in_queues.clear()
+        self._out_queue = None
+        self._stop_event = None
+        self._pending_results.clear()
 
         if self.verbose:
             print(
                 f"[CHANNEL_PARALLEL] Stopped. steps_processed={self.steps_processed}, "
                 f"ue_snapshots_processed={self.ue_snapshots_processed}, "
-                f"fallback_steps={self.fallback_steps}"
+                f"fallback_steps={self.fallback_steps}, "
+                f"stale_results_discarded={self.stale_results_discarded}"
             )
