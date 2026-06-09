@@ -1581,8 +1581,12 @@ class TDLModel:
 
         """
         H_f = self._calculate_freq_response(UE_ID, channel_cond, channel_model, ue_class)
-
-        return 10 * np.log10(np.abs(H_f) ** 2)
+        #@sherokiddo: я осмелился добавить сюда нормализацию значений
+        #аналогично той, что есть в MATLAB
+        gain_lin = np.abs(H_f) ** 2
+        gain_lin_norm = gain_lin / np.mean(gain_lin)
+        gain_dB = 10 * np.log10(gain_lin_norm)
+        return gain_dB
 
 
 class RMaModel_SC(ChannelModel):

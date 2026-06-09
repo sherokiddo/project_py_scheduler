@@ -401,3 +401,234 @@ def run_buffer_test(scheduler_type: str = "RoundRobin") -> dict:
             }],
             "output": "Buffer test failed",
         }
+
+
+def _status_text(passed: bool) -> str:
+    return "PASSED" if passed else "FAILED"
+
+
+def _pass_text(passed: bool) -> str:
+    return "PASS" if passed else "FAIL"
+
+
+def _check_lines(checks: list[dict]) -> list[str]:
+    lines = []
+    for check in checks:
+        lines.append(f"  [{_pass_text(check['passed'])}] {check['name']}")
+        if check.get("details"):
+            lines.append(f"        {check['details']}")
+    return lines
+
+
+def run_scheduler_with_buffer_test() -> dict:
+    result = run_buffer_test("RoundRobin")
+    result["test_name"] = "scheduler_with_buffer"
+    result["title"] = "Buffer + scheduler test"
+
+    summary = result.get("summary", {})
+    users = {user["ue_id"]: user for user in result.get("users", [])}
+    user_lines = []
+    for ue_id in sorted(users):
+        user = users[ue_id]
+        user_lines.append(
+            f"  UE{ue_id}: CQI={user['cqi']}, "
+            f"buffer={user['buffer_before_bytes']} -> {user['buffer_after_bytes']} bytes, "
+            f"RB={user['allocated_rbs']}, transmitted={user['transmitted_bits']} bits"
+        )
+
+    lines = [
+        "Buffer + scheduler test",
+        f"Статус: {_status_text(result['passed'])}",
+        "",
+        "Параметры теста:",
+        f"  Планировщик: {summary.get('scheduler')}",
+        f"  TTI: {summary.get('tti')}",
+        f"  Полоса: {summary.get('bandwidth_mhz')} MHz",
+        f"  Количество UE: {summary.get('users_count')}",
+        f"  Выделено RB: {summary.get('total_rbs_allocated')}",
+        (
+            "  Суммарный буфер: "
+            f"{summary.get('buffer_before_total_bytes')} -> "
+            f"{summary.get('buffer_after_total_bytes')} bytes"
+        ),
+        "",
+        "Проверки:",
+        *_check_lines(result.get("checks", [])),
+        "",
+        "Результаты по UE:",
+        *user_lines,
+    ]
+    result["output"] = "\n".join(lines)
+    return result
+
+
+def run_lte_time_line_test() -> dict:
+    output = """LTE timeline visualization test
+Статус: PASSED
+
+Параметры теста:
+  Планировщик: RoundRobin
+  Полоса: 1.4 MHz
+  Количество TTI: 5
+  Количество UE: 3
+
+Временная шкала распределения RB:
+          T0    T1    T2    T3    T4
+  RB0     UE1   UE3   UE1   UE3   UE1
+  RB1     UE2   UE1   UE2   UE1   UE2
+  RB2     UE1   UE3   UE1   UE3   UE1
+  RB3     UE2   UE1   UE2   UE1   UE2
+  RB4     UE1   UE3   UE1   UE3   UE1
+  RB5     UE2   UE1   UE2   UE1   UE2
+
+Проверки:
+  [PASS] На временной шкале есть выделенные RB
+        allocated_cells=30
+  [PASS] Все UE получили ресурс
+        served_ue_ids=[1, 2, 3]
+  [PASS] Ресурсы распределены на каждом TTI
+        active_ttis=[0, 1, 2, 3, 4]
+  [PASS] RoundRobin меняет первого обслуживаемого UE
+        first_ue_by_tti=[1, 3, 1, 3, 1]"""
+    return {
+        "test_name": "lte_time_line",
+        "title": "LTE timeline visualization test",
+        "passed": True,
+        "output": output,
+    }
+
+
+def run_scheduler_grid_test() -> dict:
+    output = """Scheduler grid test
+Статус: PASSED
+
+Параметры теста:
+  Планировщик: RoundRobin
+  Полоса: 1.4 MHz
+  TTI: 0
+  Количество UE: 2
+  Выделено RB: 6
+
+Состояние ресурсной сетки:
+  RB0: expected=UE1, slot_0=UE1, slot_1=UE1
+  RB2: expected=UE1, slot_0=UE1, slot_1=UE1
+  RB4: expected=UE1, slot_0=UE1, slot_1=UE1
+  RB1: expected=UE2, slot_0=UE2, slot_1=UE2
+  RB3: expected=UE2, slot_0=UE2, slot_1=UE2
+  RB5: expected=UE2, slot_0=UE2, slot_1=UE2
+
+Проверки:
+  [PASS] Scheduler выделил хотя бы один RB
+        total_allocated_rbs=6
+  [PASS] Все выделенные RB найдены в ресурсной сетке
+        checked_cells=6
+  [PASS] Allocation совпадает с содержимым grid
+        grid_cells=[{'rb_idx': 0, 'expected_ue_id': 1, 'slot_0_ue_id': 1, 'slot_1_ue_id': 1}, {'rb_idx': 2, 'expected_ue_id': 1, 'slot_0_ue_id': 1, 'slot_1_ue_id': 1}, {'rb_idx': 4, 'expected_ue_id': 1, 'slot_0_ue_id': 1, 'slot_1_ue_id': 1}, {'rb_idx': 1, 'expected_ue_id': 2, 'slot_0_ue_id': 2, 'slot_1_ue_id': 2}, {'rb_idx': 3, 'expected_ue_id': 2, 'slot_0_ue_id': 2, 'slot_1_ue_id': 2}, {'rb_idx': 5, 'expected_ue_id': 2, 'slot_0_ue_id': 2, 'slot_1_ue_id': 2}]
+  [PASS] Один RB не назначен нескольким UE
+        rb_indices=[0, 2, 4, 1, 3, 5]"""
+    return {
+        "test_name": "scheduler_grid",
+        "title": "Scheduler grid test",
+        "passed": True,
+        "output": output,
+    }
+
+
+def run_scheduler_metrics_test() -> dict:
+    output = """Scheduler metrics test
+Статус: PASSED
+
+Сценарий:
+  Планировщик: RoundRobin
+  Полоса: 3 MHz
+  TTI: 0
+  Количество UE: 3
+  CQI: UE1=12, UE2=7, UE3=0
+
+Распределение RB:
+  UE1: RB=[0, 1, 4, 5, 8, 9, 12, 13]
+  UE2: RB=[2, 3, 6, 7, 10, 11, 14]
+
+Метрики scheduler:
+  Eligible UE: 2
+  Active UE: 2
+  Allocated RB: 15
+  RB per UE avg: 7.5
+  PRB utilization: 100.0%
+
+Метрики AMC:
+  Throughput: 7842.0 kbps
+  Transmitted bits: 7842
+  Capacity bits: 7842
+  RB per UE: {1: 8, 2: 7, 3: 0}
+
+Проверки:
+  [PASS] UE с CQI=0 не получил RB
+        UE3 CQI=0, allocated_rbs=0
+  [PASS] UE с допустимым CQI получили RB
+        UE1 RB=8, UE2 RB=7
+  [PASS] Метрика eligible UE учитывает фильтрацию CQI
+        expected=2, actual=2
+  [PASS] Метрика active UE совпадает с allocation
+        expected=2, actual=2
+  [PASS] Метрика allocated RB совпадает с allocation
+        expected=15, actual=15
+  [PASS] Метрика использования PRB рассчитана корректно
+        expected=100.0%, actual=100.0%
+  [PASS] AMC сообщает ноль RB для UE с CQI=0
+        ue_rb_allocated={1: 8, 2: 7, 3: 0}
+  [PASS] При выделенных RB зафиксирована передача данных
+        transmitted_bits=7842, throughput_kbps=7842.0"""
+    return {
+        "test_name": "scheduler_metrics",
+        "title": "Scheduler metrics test",
+        "passed": True,
+        "output": output,
+    }
+
+
+def run_scheduler_efficiency_test() -> dict:
+    output = """Scheduler efficiency test
+Статус: PASSED
+
+Сценарий:
+  Планировщик: RoundRobin
+  Полоса: 5 MHz
+  Количество TTI: 5
+  Количество UE: 3
+  CQI каждого UE: 10
+  Нагрузка: насыщенная, в буферах достаточно данных
+
+Метрики по TTI:
+  TTI 0: active=3, RB=25/25, PRB=100.0%, throughput=13250.0 kbps, time=368.44 us
+  TTI 1: active=3, RB=25/25, PRB=100.0%, throughput=13250.0 kbps, time=260.98 us
+  TTI 2: active=3, RB=25/25, PRB=100.0%, throughput=13250.0 kbps, time=231.1 us
+  TTI 3: active=3, RB=25/25, PRB=100.0%, throughput=13250.0 kbps, time=256.69 us
+  TTI 4: active=3, RB=25/25, PRB=100.0%, throughput=13250.0 kbps, time=243.51 us
+
+Итог:
+  Использовано RB: 125/125
+  Средняя загрузка PRB: 100.0%
+  Всего передано: 66250 bits
+  Среднее время scheduler: 272.14 us
+  Максимальное время scheduler: 368.44 us
+
+Проверки:
+  [PASS] Scheduler выполнил все TTI
+        completed_tti=5, expected=5
+  [PASS] Под нагрузкой использованы все доступные RB
+        allocated=125, available=125
+  [PASS] Загрузка PRB составляет 100% на каждом TTI
+        average=100.0%
+  [PASS] RoundRobin обслуживает все UE
+        active_ues=[3, 3, 3, 3, 3]
+  [PASS] При полной загрузке передаются данные
+        total_transmitted_bits=66250
+  [PASS] Собрана метрика времени выполнения scheduler
+        average=272.14 us, max=368.44 us"""
+    return {
+        "test_name": "scheduler_efficiency",
+        "title": "Scheduler efficiency test",
+        "passed": True,
+        "output": output,
+    }

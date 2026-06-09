@@ -12,9 +12,13 @@ fastapi = "^0.125.0"
 uvicorn = {extras = ["standard"], version = "^0.38.0"}
 numpy = "^2.4.1"
 pydantic = "^2.12.5"
+tqdm = "^4.68.1"
 
 [tool.poetry.scripts]
 start = "uvicorn app:app --reload --host 0.0.0.0 --port 8000"
+
+[tool.poetry.group.dev.dependencies]
+httpx = "^0.28.1"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

@@ -1,5 +1,4 @@
 import GLOBALS
-import math
 import matplotlib.pyplot as plt
 import numpy as np
 from BS_MODULE import BaseStation
@@ -120,82 +119,7 @@ def print_users_stats(ue_collection: UECollection, tti: int, bs: BaseStation, sc
         print(f"\tСмещение            : {displacement} m")
         print("-" * 40)
 
-
 def sim_with_manager():
-    """
-    Пример запуска симуляции с использованием менеджера.
-
-    """
-    # =============================================================================
-    #             НАСТРОЙКА БАЗОВОЙ СТАНЦИИ И КОЛЛЕКЦИИ ПОЛЬЗОВАТЕЛЕЙ
-    # =============================================================================
-
-    # Создание и настройка базовой станции
-    bs = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMa")
-
-    # Создание коллекции пользовательских устройств
-    ue_collection = UECollection()
-
-    # Установка сида
-    GLOBALS.SEED = 42
-
-    # Генерация заданного числа UE в коллекцию
-    ue_collection.ADD_RANDOM_USERS(num_ue=3)
-
-    MapBorders(-1000, 1000, -1000, 1000)
-
-    # Установка модели передвижения для всех пользователей коллекции
-    ue_collection.SET_MOBILITY_MODEL("RandomWaypoint")
-
-    # Создание модели генерации трафика
-    poisson = PoissonModel(packet_rate=1000)
-
-    # Установка модели генерации трафика для всех пользователей коллекции
-    ue_collection.SET_TRAFFIC_MODEL(poisson)
-
-    # Регистрация всех пользователей коллекции в базовой станции
-    ue_collection.REG_USERS_TO_BS(bs)
-
-    # =============================================================================
-    #                        НАСТРОЙКА МЕНЕДЖЕРА СИМУЛЯЦИИ
-    # =============================================================================
-
-    # Создание менеджера симуляции
-    sim = SimulationManager()
-
-    # Установка базовой станции
-    sim.set_base_station(bs)
-
-    # Установка коллекции пользователей
-    sim.set_ue_collection(ue_collection)
-
-    # Установка планировщика. Можно передвать параметры, которые
-    # поддерживает SchedulerInterface.
-    sim.set_scheduler(algorithm="RoundRobin")
-
-    # Установка длительности симуляции
-    sim.set_sim_duration(5000)
-
-    # Включение verbose логирования. Для вывода всех логов в файл нужно
-    # поставить флаг to_file=True.
-    sim.enable_verbose_log()
-
-    # Установка менеджера статистики
-    sim.set_stats_manager(
-        enabled=True,                # Включить сбор
-        collect_interval=1,         # Собирать каждые 10 TTI
-        history_max_len = 5000,
-        scheduler_level="full",     # Scheduler: только агрегированные метрики
-        amc_level="full",           # AMC: total throughput + avg bits/RB
-        pdcch_level="basic",          # PDCCH: отключен (можно включить "basic")
-        file_prefix="emp_stats"      # Префикс файла: lte_stats.csv
-    )
-
-    # Запуск симуляции
-    sim.start_simulation()
-
-
-def chmdl_test():
     """
     Тестовый стенд для проверки работоспособности моделей канала
 
@@ -204,6 +128,11 @@ def chmdl_test():
     #             НАСТРОЙКА БАЗОВОЙ СТАНЦИИ И КОЛЛЕКЦИИ ПОЛЬЗОВАТЕЛЕЙ
     # =============================================================================
 
+    # Сброс и создание карты
+    MapBorders._instance = None
+    MapBorders(-500, 500, -500, 500)
+    x_min, x_max, y_min, y_max = MapBorders().get_borders()
+
     # Создание и настройка базовой станции
     bs1 = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMa", enable_tdl=True)
 
@@ -211,21 +140,23 @@ def chmdl_test():
     ue_collection = UECollection()
 
     # Установка сида
-    GLOBALS.SEED = 24
+    GLOBALS.SEED = 42
+
+    if GLOBALS.SEED is not None:
+        np.random.seed(GLOBALS.SEED)   # покрывает numpy
 
     # Генерация заданного числа UE в коллекцию
-    ue_collection.ADD_RANDOM_USERS(num_ue=8)
+    ue_collection.ADD_RANDOM_USERS(num_ue=5,
+                                   x_min=x_min,
+                                   x_max=x_max,
+                                   y_min=y_min,
+                                   y_max=y_max,
+                                   ue_class="random")
 
-    MapBorders(-1000, 1000, -1000, 1000)
+    #TODO: Объединить MapBorders c рандомизацией UE
 
     # Установка модели передвижения для всех пользователей коллекции
-    ue_collection.SET_MOBILITY_MODEL("DiagonalWalk", bs=bs1, pause_time=0)
-
-    # Создание модели генерации трафика
-    poisson = PoissonModel(packet_rate=5000)
-
-    # Установка модели генерации трафика для всех пользователей коллекции
-    ue_collection.SET_TRAFFIC_MODEL(poisson)
+    ue_collection.SET_MOBILITY_MODEL("RandomWaypoint", bs=bs1, pause_time = 0)
 
     # Регистрация всех пользователей коллекции в базовой станции
     ue_collection.REG_USERS_TO_BS(bs1)
@@ -245,12 +176,153 @@ def chmdl_test():
 
     # Установка планировщика. Можно передвать параметры, которые
     # поддерживает SchedulerInterface.
-    sim.set_scheduler(algorithm="ProportionalFair",
-                      max_dl_ue_tti=None,
-                      pcfich=2,
-                      enable_window = False,
-                      window_size=4,
-                      max_dl_cce_allowance=None)
+    sim.set_scheduler(
+        algorithm="RoundRobin",
+        max_dl_ue_tti=None,
+        pcfich=2,
+        enable_window=False,
+        window_size=4,
+        max_dl_cce_allowance=None,
+    )
+
+    # Настраиваем модели для каждого UE
+    for ue in ue_collection.GET_ALL_USERS():
+        #print(f"Setup UE: {ue.UE_ID} traffic (SimpleGenerator)")
+        sim.setup_ue_traffic(
+            ue_id=ue.UE_ID,
+            model_type="Poisson",
+            packet_rate=5000,
+        )
+
+    # Установка длительности симуляции
+    sim.set_sim_duration(50000)
+    sim.set_mobility_interval(500)
+    sim.set_channel_interval(10)
+
+    # Включение verbose логирования. Для вывода всех логов в файл нужно
+    # поставить флаг to_file=True.
+    sim.enable_verbose_log(to_file=True)
+
+    # Установка менеджера статистики
+    sim.set_stats_manager(
+        enabled=True,  # Включить сбор
+        collect_interval=1,  # Собирать каждые n TTI
+        history_max_len=50000,
+        scheduler_level="full",  # Scheduler: только агрегированные метрики
+        amc_level="full",  # AMC: total throughput + avg bits/RB
+        pdcch_level="full",  # PDCCH: отключен (можно включить "basic")
+        file_prefix="emp_stats",  # Префикс файла: lte_stats.csv
+    )
+
+    # Запуск симуляции
+    sim.start_simulation()
+
+    # Визуализация передвижения пользователей
+    visualize_users_mobility(
+        ue_collection=ue_collection,
+        bs=bs1,
+        x_min=x_min,
+        x_max=x_max,
+        y_min=x_min,
+        y_max=y_max)
+    # Визуализация SINR пользователей во времени
+    visualize_users_sinr(
+        ue_collection=ue_collection, sim_duration=sim.sim_config.sim_duration, update_interval=10
+    )
+
+
+def sim_with_manager_qos():
+    """
+    Пример запуска симуляции с использованием менеджера и QoS трафиком.
+
+    """
+    # =============================================================================
+    #             НАСТРОЙКА БАЗОВОЙ СТАНЦИИ И КОЛЛЕКЦИИ ПОЛЬЗОВАТЕЛЕЙ
+    # =============================================================================
+    
+    # Сброс и создание карты
+    MapBorders._instance = None
+    MapBorders(-1000, 1000, -1000, 1000)
+    x_min, x_max, y_min, y_max = MapBorders().get_borders()
+
+    # Создание и настройка базовой станции
+    bs = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMa", use_simple_buffer=False)
+
+    # Создание коллекции пользовательских устройств
+    ue_collection = UECollection()
+
+    # Установка сида
+    GLOBALS.SEED = 42
+    
+    if GLOBALS.SEED is not None:
+        np.random.seed(GLOBALS.SEED)
+
+    # Генерация заданного числа UE в коллекцию
+    ue_collection.ADD_RANDOM_USERS(num_ue=5,
+                                   x_min=x_min,
+                                   x_max=x_max,
+                                   y_min=y_min,
+                                   y_max=y_max,
+                                   ue_class="random")
+
+    # Установка модели передвижения для всех пользователей коллекции
+    ue_collection.SET_MOBILITY_MODEL("RandomWaypoint")
+
+    # Регистрация всех пользователей коллекции в базовой станции
+    ue_collection.REG_USERS_TO_BS(bs)
+
+    # =============================================================================
+    #                        НАСТРОЙКА МЕНЕДЖЕРА СИМУЛЯЦИИ
+    # =============================================================================
+
+    # Создание менеджера симуляции
+    sim = SimulationManager()
+
+    # Установка базовой станции
+    sim.set_base_station(bs)
+
+    # Установка коллекции пользователей
+    sim.set_ue_collection(ue_collection)
+
+    # Установка планировщика. Можно передвать параметры, которые
+    # поддерживает SchedulerInterface.
+    sim.set_scheduler(algorithm="ProportionalFair")
+
+    # Настраиваем модели для каждого UE
+    config = [
+        {
+        "ue_id": 1,
+        "bearers": [
+            {"model_type": "Poisson", "qci": 1, "packet_rate": 100},
+            {"model_type": "Poisson", "qci": 5, "packet_rate": 200},
+            {"model_type": "Poisson", "qci": 7, "packet_rate": 1500}]
+        },
+        {
+        "ue_id": 2,
+        "bearers": [
+            {"model_type": "Poisson", "qci": 4, "packet_rate": 500},
+            {"model_type": "Poisson", "qci": 8, "packet_rate": 1000}]
+        },
+        {
+        "ue_id": 3,
+        "bearers": [
+            {"model_type": "Poisson", "packet_rate": 1000}]
+        },
+        {
+        "ue_id": 4,
+        "bearers": [
+            {"model_type": "Poisson", "qci": 6, "packet_rate": 1000},
+            {"model_type": "Poisson", "qci": 7, "packet_rate": 1500},
+            {"model_type": "Poisson", "qci": 8, "packet_rate": 1200}]
+        },
+        {
+        "ue_id": 5,
+        "bearers": [
+            {"model_type": "Poisson", "qci": 1, "packet_rate": 100}]
+        },
+    ]
+    
+    sim.setup_traffic_profiles(config)
 
     # Установка длительности симуляции
     sim.set_sim_duration(5000)
@@ -259,32 +331,21 @@ def chmdl_test():
     # поставить флаг to_file=True.
     sim.enable_verbose_log(to_file=True)
 
-        # Установка менеджера статистики
+    # Установка менеджера статистики
     sim.set_stats_manager(
-        enabled=True,                # Включить сбор
-        collect_interval=1,         # Собирать каждые n TTI
-        history_max_len = 5000,
-        scheduler_level="advanced",     # Scheduler: только агрегированные метрики
-        amc_level="advanced",           # AMC: total throughput + avg bits/RB
-        pdcch_level="advanced",          # PDCCH: отключен (можно включить "basic")
-        file_prefix="emp_stats"      # Префикс файла: lte_stats.csv
+        enabled=True,
+        collect_interval=1,
+        history_max_len=5000,
+        scheduler_level="full",
+        amc_level="full",
+        pdcch_level="basic",
+        file_prefix="emp_stats",
     )
 
     # Запуск симуляции
     sim.start_simulation()
 
-    # Визуализация передвижения пользователей
-    visualize_users_mobility(
-        ue_collection=ue_collection, bs=bs1, x_min=-1000, x_max=1000, y_min=-1000, y_max=1000
-    )
-    # Визуализация SINR пользователей во времени
-    visualize_users_sinr(
-        ue_collection=ue_collection, sim_duration=sim.sim_config.sim_duration, update_interval=100
-    )
-
 
 if __name__ == "__main__":
-    # debug_simulation()
-    # sim_with_ue_collection()
     # sim_with_manager()
-    chmdl_test()
+    sim_with_manager_qos()

@@ -72,12 +72,146 @@ async def send_failure(ws_clients: list, run_id: str, error: str):
                 ws_clients.remove(ws)
 
 
+def build_users_payload(snapshot: dict) -> list[dict]:
+    ue_throughputs = snapshot.get("dl_ue_throughputs", {})
+    users = []
+
+    for ue_id, throughput_bps in ue_throughputs.items():
+        users.append({
+            "ue_id": int(ue_id),
+            "throughput_kbps": round(float(throughput_bps) / 1000.0, 2),
+        })
+
+    return users
+
+
+def build_resource_grid_payload(snapshot: dict) -> list[dict]:
+    allocation = snapshot.get("resource_grid", [])
+    resource_grid = []
+
+    for item in allocation:
+        resource_grid.append({
+            "rb": int(item.get("rb", 0)),
+            "ue_id": item.get("ue_id"),
+        })
+
+    return resource_grid
+
+
+def build_tti_event(run_id: str, snapshot: dict) -> dict:
+    return {
+        "type": "tti",
+        "run_id": run_id,
+        "data": {
+            "tti": int(snapshot.get("tti", 0)),
+            "cell": {
+                "throughput_kbps": snapshot.get("dl_throughput_sum_kbps", 0.0),
+                "fairness_jain": snapshot.get("dl_fairness_jain_index", 0.0),
+                "sinr_avg_db": snapshot.get("dl_sinr_avg", 0.0),
+                "spectral_efficiency_bps_hz": snapshot.get(
+                    "dl_spectral_efficiency_avg_ue",
+                    0.0,
+                ),
+                "rb_utilization_pct": snapshot.get("dl_rb_utilization_pct", 0.0),
+            },
+            "users": build_users_payload(snapshot),
+            "resource_grid": build_resource_grid_payload(snapshot),
+        },
+    }
+
+
+def build_json_filename(prefix: str) -> str:
+    clean_prefix = str(prefix).strip() or "sim_stats"
+    if clean_prefix.lower().endswith(".json"):
+        return clean_prefix
+    return f"{clean_prefix}.json"
+
+
+def build_positions_filename(stats_prefix: str) -> str:
+    clean_prefix = str(stats_prefix).strip() or "sim_stats"
+    if clean_prefix.lower().endswith(".json"):
+        clean_prefix = clean_prefix[:-5]
+
+    if clean_prefix.endswith("_stats"):
+        clean_prefix = f"{clean_prefix[:-6]}_positions"
+    else:
+        clean_prefix = f"{clean_prefix}_positions"
+
+    return f"{clean_prefix}.json"
+
+
+def build_position_item(
+        tti: int,
+        base_station: BaseStation,
+        ue_collection: UECollection,
+        bounds: dict,
+        coordinate_step: int,
+) -> dict:
+    users = []
+
+    for ue in ue_collection.GET_ALL_USERS():
+        coordinates = getattr(ue, "coordinates", [])
+        if coordinates:
+            coord_idx = min(coordinate_step, len(coordinates) - 1)
+            x, y = coordinates[coord_idx]
+        else:
+            x, y = ue.position
+
+        users.append({
+            "ue_id": int(ue.UE_ID),
+            "x": float(x),
+            "y": float(y),
+        })
+
+    return {
+        "tti": int(tti),
+        "positions": {
+            "base_station": {
+                "x": float(base_station.position[0]),
+                "y": float(base_station.position[1]),
+            },
+            "users": users,
+            "bounds": {
+                "x_min": float(bounds["x_min"]),
+                "x_max": float(bounds["x_max"]),
+                "y_min": float(bounds["y_min"]),
+                "y_max": float(bounds["y_max"]),
+            },
+        },
+    }
+
+
+def build_positions_history(
+        base_station: BaseStation,
+        ue_collection: UECollection,
+        bounds: dict,
+        sim_duration: int,
+        update_interval: int,
+) -> list[dict]:
+    safe_update_interval = max(int(update_interval), 1)
+
+    return [
+        build_position_item(
+            tti=tti,
+            base_station=base_station,
+            ue_collection=ue_collection,
+            bounds=bounds,
+            coordinate_step=(tti // safe_update_interval) + 1,
+        )
+        for tti in range(sim_duration)
+    ]
+
+
 async def run_simulation(run_id: str, config: dict):
     """Запуск симуляции в background thread pool."""
     sim_data = simulations.setdefault(run_id, {})
     sim_data.setdefault("events", deque(maxlen=EVENT_QUEUE_MAXLEN))
     sim_data.setdefault("latest_event", None)
     sim_data.setdefault("ws_clients", [])
+    sim_data.setdefault("stats_ws_clients", [])
+    sim_data.setdefault("positions_ws_clients", [])
+    sim_data.setdefault("latest_stats_event", None)
+    sim_data.setdefault("latest_positions_event", None)
 
     delivery_mode = (DELIVERY_MODE or "").strip().lower()
     if not mode_valid(delivery_mode):
@@ -293,33 +427,68 @@ async def run_simulation(run_id: str, config: dict):
         stats_len = len(sim_manager.stats_manager.history)
 
     ws_clients = simulations.get(run_id, {}).get("ws_clients", [])
+    stats_ws_clients = simulations.get(run_id, {}).get("stats_ws_clients", [])
+    positions_ws_clients = simulations.get(run_id, {}).get("positions_ws_clients", [])
 
     if delivery_mode == "basic":
         full_items = []
         if sim_manager.stats_manager and sim_manager.stats_config.enabled:
-            full_items = list(sim_manager.stats_manager.history)
+            raw_items = list(sim_manager.stats_manager.history)
+            full_items = [
+                build_tti_event(run_id, snapshot)
+                for snapshot in raw_items
+            ]
 
         METRICS_DIR.mkdir(parents=True, exist_ok=True)
         stats_prefix = str(config.get("stats_file_prefix", "sim_stats")).strip() or "sim_stats"
-        metrics_filename = (
-            stats_prefix if stats_prefix.lower().endswith(".json") else f"{stats_prefix}.json"
-        )
+        metrics_filename = build_json_filename(stats_prefix)
+        positions_filename = build_positions_filename(stats_prefix)
         metrics_path = METRICS_DIR / metrics_filename
+        positions_path = METRICS_DIR / positions_filename
+
+        positions_items = build_positions_history(
+            base_station=sim_manager.base_station,
+            ue_collection=sim_manager.ue_collection,
+            bounds=config["ue_coords"],
+            sim_duration=sim_duration,
+            update_interval=update_interval,
+        )
 
         full_json_event = {
             "type": "full_json",
             "run_id": run_id,
             "count": len(full_items),
             "metrics_file": f"metrics/{metrics_filename}",
+            "positions_file": f"metrics/{positions_filename}",
             "items": full_items,
+        }
+
+        positions_json_event = {
+            "type": "positions_history",
+            "run_id": run_id,
+            "count": len(positions_items),
+            "positions_file": f"metrics/{positions_filename}",
+            "items": positions_items,
         }
 
         with metrics_path.open("w", encoding="utf-8") as metrics_file:
             json.dump(full_json_event, metrics_file, ensure_ascii=False, indent=2)
 
+        with positions_path.open("w", encoding="utf-8") as positions_file:
+            json.dump(positions_json_event, positions_file, ensure_ascii=False, indent=2)
+
+        simulations[run_id]["metrics_file"] = f"metrics/{metrics_filename}"
+        simulations[run_id]["positions_file"] = f"metrics/{positions_filename}"
+        simulations[run_id]["latest_stats_event"] = full_json_event
+        simulations[run_id]["latest_positions_event"] = positions_json_event
+
         append_event(run_id, full_json_event)
         if ws_clients:
             await send_progress(ws_clients, full_json_event)
+        if stats_ws_clients:
+            await send_progress(stats_ws_clients, full_json_event)
+        if positions_ws_clients:
+            await send_progress(positions_ws_clients, positions_json_event)
 
     simulations[run_id]["status"] = "completed"
     simulations[run_id]["stats_history_len"] = stats_len
@@ -330,6 +499,8 @@ async def run_simulation(run_id: str, config: dict):
         "tti_total": sim_duration,
         "stats_history_len": stats_len,
         "delivery_mode": delivery_mode,
+        "metrics_file": simulations[run_id].get("metrics_file"),
+        "positions_file": simulations[run_id].get("positions_file"),
     }
     append_event(run_id, completed_event)
     if ws_clients:
@@ -342,6 +513,10 @@ async def run_simulation(run_id: str, config: dict):
                 "delivery_mode": delivery_mode,
             },
         )
+    if stats_ws_clients:
+        await send_completion(stats_ws_clients, completed_event)
+    if positions_ws_clients:
+        await send_completion(positions_ws_clients, completed_event)
 
     loop = asyncio.get_running_loop()
     loop.create_task(cleanup_simulation(run_id, delay_seconds=300))

@@ -8,7 +8,15 @@ from TRAFFIC_MODEL  import PoissonModel, OnOffModel, MMPPModel
 import json
 import uuid
 from core.sim_run import run_simulation, simulations, send_completion
-from core.test_runs import run_mobility_test, run_buffer_test
+from core.test_runs import (
+    run_mobility_test,
+    run_buffer_test,
+    run_scheduler_with_buffer_test,
+    run_lte_time_line_test,
+    run_scheduler_grid_test,
+    run_scheduler_metrics_test,
+    run_scheduler_efficiency_test,
+)
 from typing import Optional, Any, Dict, List, Union
 import csv
 import asyncio
@@ -106,6 +114,31 @@ async def run_buffer_api_test(param: BufferTestConfig = BufferTestConfig()):
         "data": res,
     }
 
+
+@router_v1.post("/tests/scheduler_with_buffer")
+async def run_scheduler_with_buffer_api_test():
+    return run_scheduler_with_buffer_test()
+
+
+@router_v1.post("/tests/lte_time_line")
+async def run_lte_time_line_api_test():
+    return run_lte_time_line_test()
+
+
+@router_v1.post("/tests/scheduler_grid")
+async def run_scheduler_grid_api_test():
+    return run_scheduler_grid_test()
+
+
+@router_v1.post("/tests/scheduler_metrics")
+async def run_scheduler_metrics_api_test():
+    return run_scheduler_metrics_test()
+
+
+@router_v1.post("/tests/scheduler_efficiency")
+async def run_scheduler_efficiency_api_test():
+    return run_scheduler_efficiency_test()
+
 @router_v1.post("/sim/run", response_model=basic.BaseScheme_Response)
 async def sim_run(param: SimulationConfig):
 
@@ -142,8 +175,12 @@ async def sim_run(param: SimulationConfig):
     simulations[run_id] = {
         "status": "starting",
         "ws_clients": [],
+        "stats_ws_clients": [],
+        "positions_ws_clients": [],
         "events": deque(maxlen=256),
         "latest_event": None,
+        "latest_stats_event": None,
+        "latest_positions_event": None,
     }
 
     config_dict = {
@@ -187,6 +224,8 @@ async def sim_run(param: SimulationConfig):
     )
 
     ws_url = f"/api/v1/ws/simulation/{run_id}"
+    stats_ws_url = f"/api/v1/ws/simulation/{run_id}/stats"
+    positions_ws_url = f"/api/v1/ws/simulation/{run_id}/positions"
 
     return {
         "status": "success",
@@ -194,9 +233,106 @@ async def sim_run(param: SimulationConfig):
         "data": {
             "run_id": run_id,
             "ws_url": ws_url,
+            "stats_ws_url": stats_ws_url,
+            "positions_ws_url": positions_ws_url,
             "message": "Симуляция запущена. Подключитесь к WebSocket для получения прогресса"
         }
     }
+
+async def _send_simulation_result_ws(
+        websocket: WebSocket,
+        run_id: str,
+        clients_key: str,
+        latest_event_key: str,
+):
+    if run_id not in simulations:
+        await websocket.close(code=1008, reason=f"Simulation {run_id} not found")
+        return
+
+    await websocket.accept()
+
+    sim_data = simulations[run_id]
+    ws_clients = sim_data.setdefault(clients_key, [])
+    ws_clients.append(websocket)
+
+    try:
+        latest_event = sim_data.get(latest_event_key)
+        if latest_event is not None:
+            await websocket.send_json(latest_event)
+
+        status = sim_data.get("status")
+        if status == "completed":
+            await send_completion([websocket], {
+                "run_id": run_id,
+                "tti_total": sim_data.get("tti_total"),
+                "metrics_file": sim_data.get("metrics_file"),
+                "positions_file": sim_data.get("positions_file"),
+            })
+            return
+        if status == "failed":
+            await websocket.send_json({
+                "type": "failed",
+                "run_id": run_id,
+                "error": sim_data.get("error", "unknown error"),
+            })
+            return
+
+        while sim_data.get("status") in ("starting", "running"):
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
+
+        if sim_data.get("status") == "completed":
+            latest_event = sim_data.get(latest_event_key)
+            if latest_event is not None:
+                await websocket.send_json(latest_event)
+            await send_completion([websocket], {
+                "run_id": run_id,
+                "tti_total": sim_data.get("tti_total"),
+                "metrics_file": sim_data.get("metrics_file"),
+                "positions_file": sim_data.get("positions_file"),
+            })
+        elif sim_data.get("status") == "failed":
+            await websocket.send_json({
+                "type": "failed",
+                "run_id": run_id,
+                "error": sim_data.get("error", "unknown error"),
+            })
+
+    except WebSocketDisconnect:
+        pass
+
+    finally:
+        if websocket in ws_clients:
+            ws_clients.remove(websocket)
+        try:
+            await websocket.close()
+        except:
+            pass
+
+
+@router_v1.websocket("/ws/simulation/{run_id}/stats")
+async def simulation_stats_websocket(websocket: WebSocket, run_id: str):
+    """WebSocket для JSON общей статистики симуляции."""
+    await _send_simulation_result_ws(
+        websocket=websocket,
+        run_id=run_id,
+        clients_key="stats_ws_clients",
+        latest_event_key="latest_stats_event",
+    )
+
+
+@router_v1.websocket("/ws/simulation/{run_id}/positions")
+async def simulation_positions_websocket(websocket: WebSocket, run_id: str):
+    """WebSocket для JSON истории координат UE и базовой станции."""
+    await _send_simulation_result_ws(
+        websocket=websocket,
+        run_id=run_id,
+        clients_key="positions_ws_clients",
+        latest_event_key="latest_positions_event",
+    )
+
 
 @router_v1.websocket("/ws/simulation/{run_id}")
 async def simulation_websocket(websocket: WebSocket, run_id: str):
