@@ -71,7 +71,7 @@
 
 from collections import deque
 from typing import Dict, List, Optional, Tuple
-
+from INTERFACES import ChannelQualityState, PositionState
 import GLOBALS
 import numpy as np
 from TRAFFIC_MODEL import MMPPModel, OnOffModel, PoissonModel
@@ -710,6 +710,24 @@ class UserEquipment:
             step = (22.976 + 6.934) / 14
             return int(1 + (SINR + 6.934) / step)
 
+
+    def get_position_state(self) -> PositionState:
+        return PositionState(
+            ue_id=self.UE_ID,
+            x=self.position[0],
+            y=self.position[1],
+            velocity=self.velocity,
+            direction=self.direction,
+        )
+
+    def get_channel_quality_state(self) -> ChannelQualityState:
+        return ChannelQualityState(
+            ue_id=self.UE_ID,
+            sinr=float(self.SINR),
+            cqi=int(self.cqi),
+            cqi_subband=tuple(int(cqi) for cqi in self.cqi_subband),
+        )
+
     def _calculate_distances_to_BS(self) -> None:
         """
         Вычисляет расстояние от пользователя до базовой станции с учетом
@@ -1027,6 +1045,19 @@ class UECollection:
         """
         for ue in self.users.values():
             bs.REG_UE(ue)
+
+
+    def get_position_states(self) -> List[PositionState]:
+        return [
+            ue.get_position_state()
+            for ue in self.GET_ALL_USERS()
+        ]
+
+    def get_channel_quality_states(self) -> List[ChannelQualityState]:
+        return [
+            ue.get_channel_quality_state()
+            for ue in self.GET_ALL_USERS()
+        ]
 
 
 # Далее тесты для проверки работоспособности буфера и примеры работы с ним.
