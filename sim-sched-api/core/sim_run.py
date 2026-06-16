@@ -320,6 +320,13 @@ async def run_simulation(run_id: str, config: dict):
     elif traffic_model_type == "MMPP":
         traffic_params = {
             "packet_rates": config.get("traffic_packet_rates", [packet_rate, packet_rate * 2]),
+            "transition_matrix": config.get(
+                "traffic_transition_matrix",
+                [
+                    [0.9, 0.1],
+                    [0.2, 0.8],
+                ],
+            ),
         }
 
     for ue_id in config["ue_ids"]:
@@ -406,7 +413,34 @@ async def run_simulation(run_id: str, config: dict):
     simulations[run_id]["manager"] = sim_manager
     
     try:
-        await loop.run_in_executor(None, sim_manager.start_simulation)
+        done_event = threading.Event()
+        thread_result: Dict[str, Any] = {}
+        import traceback
+        def run_in_thread():
+            try:
+                print("SIM START")
+                sim_manager.start_simulation()
+                print("SIM FINISH")
+            except Exception as exc:
+                print("SIM ERROR")
+                traceback.print_exc()
+
+                thread_result["exception"] = exc
+            finally:
+                done_event.set()
+
+        sim_thread = threading.Thread(
+            target=run_in_thread,
+            name=f"sim-{run_id[:8]}",
+            daemon=True,
+        )
+        sim_thread.start()
+        while not done_event.is_set():
+            await asyncio.sleep(0.05)
+        sim_thread.join()
+
+        if "exception" in thread_result:
+            raise thread_result["exception"]
     except Exception as e:
         await flush_pending_batch()
         error_msg = str(e)

@@ -21,7 +21,7 @@ from typing import Optional, Any, Dict, List, Union
 import csv
 import asyncio
 from collections import deque
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from fastapi import WebSocket, WebSocketDisconnect
 
 @router_v1.get("/test")
@@ -32,34 +32,46 @@ async def test_route():
 async def get_scheduler_type():
     algorithms = SchedulerInterface.available_algorithms()
     return {"status": "success", "code": 200, "data": {"algorithms": algorithms}}
-# NO
+
+DEFAULT_UE_COUNT = 1
+DEFAULT_PACKET_RATE = 1000
+DEFAULT_SIM_DURATION = 1000
+DEFAULT_UPDATE_INTERVAL = 1
+DEFAULT_BS_BANDWIDTH_MHZ = 10.0
+DEFAULT_BS_CHANNEL_TYPE = "UMa"
+DEFAULT_BS_COORDS = {"x": 0.0, "y": 0.0}
+DEFAULT_UE_COORDS = {"x_min": -50.0, "x_max": 50.0, "y_min": -50.0, "y_max": 50.0}
 
 class dot(BaseModel):
-    x: float
-    y: float
+    x: float = DEFAULT_BS_COORDS["x"]
+    y: float = DEFAULT_BS_COORDS["y"]
 
 class coordinates_range(BaseModel):
-    x_min: float
-    x_max: float
-    y_min: float
-    y_max: float
+    x_min: float = DEFAULT_UE_COORDS["x_min"]
+    x_max: float = DEFAULT_UE_COORDS["x_max"]
+    y_min: float = DEFAULT_UE_COORDS["y_min"]
+    y_max: float = DEFAULT_UE_COORDS["y_max"]
 
 class SimulationConfig(BaseModel):
-    ue_cnt:             int                   # кол-во ue
-    ue_ids:             List[int]             # id ue
-    ue_move_pattern:    str                   # модель передвижения UE        см. available_ue_move_pattern
-    ue_coords:          coordinates_range     # тут определённая структура    (x_min x_max),(y_min ymax)
-    ue_traffic_pattern: str                   # Модель трафика                (id-key) см. available_ue_move_pattern
+    ue_cnt:             Optional[int] = None  # кол-во ue
+    users:              Optional[int] = None  # короткое поле от фронта
+    ue_ids:             Optional[List[Any]] = None  # id ue
+    ue_move_pattern:    Optional[str] = None  # модель передвижения UE        см. available_ue_move_pattern
+    movement:           Optional[str] = None  # короткое поле от фронта
+    ue_coords:          coordinates_range = Field(default_factory=coordinates_range)
+    ue_traffic_pattern: Optional[str] = None  # Модель трафика                (id-key) см. available_ue_move_pattern
+    traffic:            Optional[str] = None  # короткое поле от фронта
     ue_pause:           Optional[int] = None  
-    bs_scheduler:       str                   # модель планировщика           (id-key) см. get_scheduler_type()
-    bs_coords:          dot 
-    bs_bw_mhz:          float     
-    sim_packet_rate:    int             
-    sim_duration:       int = 1000          # длительность в TTI
-    update_interval:    int = 1             # интервал обновления
+    bs_scheduler:       Optional[str] = None  # модель планировщика           (id-key) см. get_scheduler_type()
+    scheduler:          Optional[str] = None  # короткое поле от фронта
+    bs_coords:          dot = Field(default_factory=dot)
+    bs_bw_mhz:          float = DEFAULT_BS_BANDWIDTH_MHZ
+    sim_packet_rate:    Optional[int] = DEFAULT_PACKET_RATE
+    sim_duration:       int = DEFAULT_SIM_DURATION  # длительность в TTI
+    update_interval:    int = DEFAULT_UPDATE_INTERVAL  # интервал обновления
     verbose:           bool = False         # подробный вывод
     stats_log:         bool = False         # сохранение статистики
-    bs_ch_type:        str = "UMa"          # тип канала
+    bs_ch_type:        str = DEFAULT_BS_CHANNEL_TYPE  # тип канала
     enable_tdl:        bool = True          # TDL модель
     log_to_file:       bool = False         # логи в файл
     stats_file_prefix: str = "sim_stats"    # префикс файлов статистики
@@ -95,6 +107,60 @@ available_bs_ch_types = ["UMa", "UMi", "RMa"]
 - UMi: Urban Micro    — ниже крыш (10-20 м), уличные сценарии  
 - RMa: Rural Macro    — сельская местность, большие расстояния (~500-1500 м)
 """
+
+movement_aliases = {
+    "RandomWalk": "RandomWalk",
+    "RandomWaypoint": "RandomWaypoint",
+    "RandomWaypoin": "RandomWaypoint",
+    "RandomDirection": "RandomDirection",
+    "GaussMarkov": "GaussMarkov",
+    "DiagonalWalk": "DiagonalWalk",
+}
+
+traffic_aliases = {
+    "poisson": "PoissonModel",
+    "onOff": "OnOffModel",
+    "mmpp": "MMPPModel",
+    "PoissonModel": "PoissonModel",
+    "OnOffModel": "OnOffModel",
+    "MMPPModel": "MMPPModel",
+}
+
+scheduler_aliases = {
+    "RoundRobin": "RoundRobin",
+    "BestCQI": "BestCQI",
+    "ProportionalFair": "ProportionalFair",
+    "Round Robin": "RoundRobin",
+    "Best CQI": "BestCQI",
+    "Proportional Fair": "ProportionalFair",
+}
+
+
+def normalize_choice(value: Optional[str], aliases: Dict[str, str], default: str) -> str:
+    if value is None or str(value).strip() == "":
+        return default
+
+    value = str(value).strip()
+    return aliases.get(value, value)
+
+
+def build_ue_ids(ue_cnt: int, ue_ids: Optional[List[Any]]) -> List[int]:
+    valid_ids = []
+    for ue_id in ue_ids or []:
+        try:
+            normalized_id = int(ue_id)
+        except (TypeError, ValueError):
+            continue
+        if normalized_id > 0:
+            valid_ids.append(normalized_id)
+
+    if len(valid_ids) == ue_cnt:
+        return valid_ids
+
+    return list(range(1, ue_cnt + 1))
+
+
+saved_configs: Dict[str, Dict[str, Any]] = {}
 
 @router_v1.post("/tests/mobility/run")
 async def run_mobility_api_test():
@@ -139,6 +205,32 @@ async def run_scheduler_metrics_api_test():
 async def run_scheduler_efficiency_api_test():
     return run_scheduler_efficiency_test()
 
+
+@router_v1.get("/configs/list")
+async def get_configs_list():
+    return list(saved_configs.keys())
+
+
+@router_v1.get("/configs/{config_name}")
+async def get_config(config_name: str):
+    return saved_configs.get(config_name, {})
+
+
+@router_v1.post("/configs/save")
+async def save_config(payload: Dict[str, Any]):
+    config_name = str(payload.get("name", "")).strip()
+    if not config_name:
+        return {"status": "error", "message": "config name is required"}
+
+    saved_configs[config_name] = payload.get("params", {})
+    return {"status": "ok", "name": config_name}
+
+
+@router_v1.get("/configs/{config_name}/precomputed")
+async def get_config_precomputed(config_name: str):
+    return None
+
+
 @router_v1.post("/sim/run", response_model=basic.BaseScheme_Response)
 async def sim_run(param: SimulationConfig):
 
@@ -147,21 +239,47 @@ async def sim_run(param: SimulationConfig):
     Получает данные от фронта, валидирует, преобразует и передает в sim_run
     """
 
-    if (param.ue_cnt <= 0):
+    ue_cnt = param.ue_cnt if param.ue_cnt is not None else param.users
+    if ue_cnt is None:
+        ue_cnt = DEFAULT_UE_COUNT
+
+    ue_ids = build_ue_ids(ue_cnt, param.ue_ids)
+    ue_move_pattern = normalize_choice(
+        param.ue_move_pattern or param.movement,
+        movement_aliases,
+        "RandomWalk",
+    )
+    ue_traffic_pattern = normalize_choice(
+        param.ue_traffic_pattern or param.traffic,
+        traffic_aliases,
+        "PoissonModel",
+    )
+    bs_scheduler = normalize_choice(
+        param.bs_scheduler or param.scheduler,
+        scheduler_aliases,
+        "RoundRobin",
+    )
+    sim_packet_rate = (
+        param.sim_packet_rate
+        if param.sim_packet_rate is not None and param.sim_packet_rate > 0
+        else DEFAULT_PACKET_RATE
+    )
+
+    if (ue_cnt <= 0):
         return {"status": "error", "code": 400, "data": {"message": "invalid ue_cnt param"}}
     
-    if (len(param.ue_ids) != param.ue_cnt):
+    if (len(ue_ids) != ue_cnt):
         return {"status": "error", "code": 400, "data": {"message": "len(param.ue_ids) not equal ue_cnt param"}}
 
-    if param.ue_move_pattern not in available_ue_move_pattern:
+    if ue_move_pattern not in available_ue_move_pattern:
         return {"status": "error", "code": 400, "data": {"message": f"invalid ue_move_pattern. available: {available_ue_move_pattern}"}}
     
-    if param.ue_traffic_pattern not in available_ue_traffic_pattern:
+    if ue_traffic_pattern not in available_ue_traffic_pattern:
         return {"status": "error", "code": 400, "data": {"message": f"invalid ue_traffic_pattern. available: {available_ue_traffic_pattern}"}}
 
     available_bs_scheduler_algorithms = SchedulerInterface.available_algorithms()
 
-    if param.bs_scheduler not in available_bs_scheduler_algorithms:
+    if bs_scheduler not in available_bs_scheduler_algorithms:
         return {"status": "error", "code": 400, "data": {"message": f"invalid bs_scheduler. available: {available_bs_scheduler_algorithms}"}}
 
     if param.realtime_payload_mode not in ("light", "full"):
@@ -202,21 +320,21 @@ async def sim_run(param: SimulationConfig):
         "bs_bw_mhz": param.bs_bw_mhz,
         "bs_ch_type": param.bs_ch_type,
         "enable_tdl": param.enable_tdl,
-        "bs_scheduler": param.bs_scheduler,
+        "bs_scheduler": bs_scheduler,
         
         # Параметры UE
-        "ue_cnt": param.ue_cnt,
-        "ue_ids": param.ue_ids,
-        "ue_move_pattern": param.ue_move_pattern,
+        "ue_cnt": ue_cnt,
+        "ue_ids": ue_ids,
+        "ue_move_pattern": ue_move_pattern,
         "ue_coords": {
             "x_min": param.ue_coords.x_min,
             "x_max": param.ue_coords.x_max,
             "y_min": param.ue_coords.y_min,
             "y_max": param.ue_coords.y_max
         },
-        "ue_traffic_pattern": param.ue_traffic_pattern,
+        "ue_traffic_pattern": ue_traffic_pattern,
         "ue_pause": param.ue_pause,
-        "sim_packet_rate": param.sim_packet_rate,
+        "sim_packet_rate": sim_packet_rate,
     }
 
     asyncio.create_task(

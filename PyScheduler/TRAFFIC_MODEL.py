@@ -485,9 +485,36 @@ class MMPPModel(ITrafficModel):
             max_packet_size: Максимальный размер пакета (по умолчанию 1500 байт)
         """
         super().__init__(min_packet_size, max_packet_size)
-        self.transition_matrix = transition_matrix
 
-        self.packet_rates = packet_rates
+        if packet_rates is None or len(packet_rates) == 0:
+            raise ValueError("MMPP packet_rates must contain at least one value")
+
+        self.packet_rates = np.asarray(packet_rates, dtype=float)
+
+        if transition_matrix is None:
+            n = len(self.packet_rates)
+            self.transition_matrix = np.ones((n, n), dtype=float)
+            np.fill_diagonal(self.transition_matrix, 0.0)
+        else:
+            self.transition_matrix = np.asarray(transition_matrix, dtype=float)
+
+        expected_shape = (len(self.packet_rates), len(self.packet_rates))
+        if self.transition_matrix.shape != expected_shape:
+            raise ValueError(
+                f"MMPP transition_matrix shape {self.transition_matrix.shape} "
+                f"does not match packet_rates length {len(self.packet_rates)}"
+            )
+
+        if np.any(self.packet_rates < 0):
+            raise ValueError("MMPP packet_rates cannot contain negative values")
+
+        if np.any(self.transition_matrix < 0):
+            raise ValueError("MMPP transition_matrix cannot contain negative values")
+
+        row_sums = np.sum(self.transition_matrix, axis=1)
+        if np.any(row_sums <= 0):
+            raise ValueError("Each MMPP transition_matrix row must have positive sum")
+
         self._device_states: Dict[int, Dict] = {}
 
     def _get_next_state(self, current_state: int) -> Tuple[int, float]:
@@ -501,14 +528,23 @@ class MMPPModel(ITrafficModel):
             next_state: следующее состояние
             time_to_transition: время до перехода (мс)
         """
-        rates = self.transition_matrix[current_state]
-        total_rate = sum(rates)
-        if total_rate == 0:
-            return current_state, float("inf")
+        rates = np.asarray(self.transition_matrix[current_state], dtype=float)
+        total_rate = float(np.sum(rates))
+        if total_rate <= 0:
+            raise ValueError(
+                f"MMPP transition rates for state {current_state} must have positive sum"
+            )
 
         time_to_transition = np.random.exponential(1 / total_rate) * 1000
 
         probabilities = rates / total_rate
+
+        if len(probabilities) != len(self.packet_rates):
+            raise ValueError(
+                f"MMPP mismatch: len(probabilities)={len(probabilities)} "
+                f"len(packet_rates)={len(self.packet_rates)}"
+            )
+
         next_state = np.random.choice(len(self.packet_rates), p=probabilities)
 
         return next_state, time_to_transition
@@ -666,10 +702,16 @@ class TrafficModelFactory:
         elif model_type == "OnOff":
             return OnOffModel(**kwargs)
         elif model_type == "MMPP":
-            if "transition_matrix" not in kwargs:
-                kwargs["transition_matrix"] = np.array(
-                    [[0, 0.07, 0.03], [0.12, 0, 0.08], [0.4, 0.1, 0]]
-                )
+            if "transition_matrix" not in kwargs or kwargs["transition_matrix"] is None:
+                packet_rates = kwargs.get("packet_rates")
+                if packet_rates is None:
+                    raise ValueError("MMPP requires packet_rates")
+
+                n = len(packet_rates)
+                transition_matrix = np.ones((n, n), dtype=float)
+                np.fill_diagonal(transition_matrix, 0.0)
+                kwargs["transition_matrix"] = transition_matrix
+
             return MMPPModel(**kwargs)
         else:
             available = TrafficModelFactory.get_available_models()
