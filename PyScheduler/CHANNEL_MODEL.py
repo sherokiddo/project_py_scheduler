@@ -273,7 +273,7 @@ class ChannelModel:
         )
 
         shadow_fading = self._calculate_shadow_fading(
-            UE_ID, displacement, channel_condition, sigma_sf, correlation_dist
+            UE_ID, displacement, channel_condition, sigma_sf, correlation_dist, d_2D
         )
 
         if channel_condition == "LOS":
@@ -300,6 +300,15 @@ class ChannelModel:
 
         return PL
 
+    def _get_key(self, bs_id: int, ue_id: int) -> int:
+        """
+        Вычисление ключа линка (Cantor pairing) как в NS-3:
+        uint32_t key = (((x1 + x2) * (x1 + x2 + 1)) / 2) + x2;
+        """
+        x1 = min(bs_id, ue_id)
+        x2 = max(bs_id, ue_id)
+        return int(((x1 + x2) * (x1 + x2 + 1)) / 2) + x2
+
     def _calculate_channel_condition(
         self, UE_ID: int, cond_update_period: float, UE_height: float, d_2D: float
     ) -> str:
@@ -316,33 +325,38 @@ class ChannelModel:
             str: Состояние радиоканала (LOS/NLOS).
 
         """
-        channel_condition = None
-        not_found = False
+        bs_id = getattr(self.bs, 'bs_id', 0)
+        key = self._get_key(bs_id, UE_ID)
         update = False
 
-        if UE_ID in ChannelModel.CHANNEL_COND_INFO:
-            ue_cond_info = ChannelModel.CHANNEL_COND_INFO[UE_ID]
-            channel_condition = ue_cond_info["cond"]
-
-            if (
-                cond_update_period != 0.0
-                and GLOBALS.CURRENT_TIME - ue_cond_info["updated_time"] > cond_update_period
-            ):
+        if key in ChannelModel.CHANNEL_COND_INFO:
+            ue_cond_info = ChannelModel.CHANNEL_COND_INFO[key]
+            if (cond_update_period != 0.0 and
+                    (GLOBALS.CURRENT_TIME - ue_cond_info["updated_time"]) > cond_update_period):
                 update = True
-
         else:
-            not_found = True
-            ChannelModel.CHANNEL_COND_INFO[UE_ID] = {"cond": None, "updated_time": None}
-            ue_cond_info = ChannelModel.CHANNEL_COND_INFO[UE_ID]
+            ChannelModel.CHANNEL_COND_INFO[key] = {"cond": None, "updated_time": None}
+            ue_cond_info = ChannelModel.CHANNEL_COND_INFO[key]
+            update = True
 
-        if not_found or update:
+        if update:
             los_probability = self._calculate_los_probability(UE_height, d_2D)
-            channel_condition = "LOS" if np.random.random() <= los_probability else "NLOS"
+
+            pRef = GLOBALS.RNG.uniform(0.0, 1.0, stream_offset=0)
+            channel_condition = "LOS" if pRef <= los_probability else "NLOS"
+
+            o2i_threshold = getattr(self.bs, 'o2i_threshold', 0.0)
+
+            o2iProb = GLOBALS.RNG.uniform(0.0, 1.0, stream_offset=1)
+            is_o2i = o2iProb < o2i_threshold
+
+            if is_o2i:
+                _ = GLOBALS.RNG.uniform(0.0, 1.0, stream_offset=2)
 
             ue_cond_info["cond"] = channel_condition
             ue_cond_info["updated_time"] = GLOBALS.CURRENT_TIME
 
-        return channel_condition
+        return ChannelModel.CHANNEL_COND_INFO[key]["cond"]
 
     def _calculate_shadow_fading(
         self,
@@ -351,6 +365,7 @@ class ChannelModel:
         channel_condition: str,
         sigma_SF: float,
         correlation_dist: float,
+        d_2D: float = 0.0
     ) -> float:
         """
         Расчёт значения теневого затененеия (Shadow Fading).
@@ -366,25 +381,39 @@ class ChannelModel:
             float: Теневое затененеие (дБ)
 
         """
-        shadow_fading = None
+        bs_id = getattr(self.bs, 'bs_id', 0)
+        key = self._get_key(bs_id, UE_ID)
         not_found = False
         new_condition = False
 
-        if UE_ID in ChannelModel.SHADOW_FADING_INFO:
-            ue_sf_info = ChannelModel.SHADOW_FADING_INFO[UE_ID]
+        if key in ChannelModel.SHADOW_FADING_INFO:
+            ue_sf_info = ChannelModel.SHADOW_FADING_INFO[key]
             new_condition = ue_sf_info["cond"] != channel_condition
         else:
             not_found = True
-            ChannelModel.SHADOW_FADING_INFO[UE_ID] = {"SF_value": None, "cond": None}
-            ue_sf_info = ChannelModel.SHADOW_FADING_INFO[UE_ID]
+            ChannelModel.SHADOW_FADING_INFO[key] = {
+                "SF_value": None,
+                "cond": None,
+                "first_update_done": False
+            }
+            ue_sf_info = ChannelModel.SHADOW_FADING_INFO[key]
+
+        norm_val = GLOBALS.RNG.normal(0.0, 1.0, stream_offset=3)
 
         if not_found or new_condition:
-            shadow_fading = np.random.normal(0, sigma_SF)
+            shadow_fading = norm_val * sigma_SF
+            if not_found:
+                ue_sf_info["first_update_done"] = False
+            else:
+                ue_sf_info["first_update_done"] = True
         else:
-            R = np.exp(-1 * displacement / correlation_dist)
-            shadow_fading = R * ue_sf_info["SF_value"] + np.sqrt(1 - R * R) * np.random.normal(
-                0, sigma_SF
-            )
+            if not ue_sf_info["first_update_done"]:
+                R = np.exp(-1 * d_2D / correlation_dist)
+                ue_sf_info["first_update_done"] = True
+            else:
+                R = np.exp(-1 * displacement / correlation_dist)
+
+            shadow_fading = R * ue_sf_info["SF_value"] + np.sqrt(1 - R * R) * norm_val * sigma_SF
 
         ue_sf_info["SF_value"] = shadow_fading
         ue_sf_info["cond"] = channel_condition
@@ -783,7 +812,8 @@ class RMaModel(ChannelModel):
             float: Дистанция излома (м).
 
         """
-        d_BP = (2 * np.pi * self.default_height * UE_height * self.bs.frequency_Hz) / 3.0e8
+        hBs = self.bs.height if hasattr(self.bs, 'height') else self.default_height
+        d_BP = (2 * np.pi * hBs * UE_height * self.bs.frequency_Hz) / 3.0e8
         return d_BP
 
     def _calculate_los_probability(self, UE_height: float, d_2D: float) -> float:
@@ -882,13 +912,16 @@ class RMaModel(ChannelModel):
             PL_LOS = self._calculate_los_path_loss(
                 UE_ID, displacement, channel_condition, d_2D, d_3D, UE_height
             )
+
+            hBs = self.bs.height if hasattr(self.bs, 'height') else self.default_height
+
             PL_NLOS = (
                 161.04
                 - 7.1 * np.log10(self.W)
                 + 7.5 * np.log10(self.h)
-                - (24.37 - 3.7 * (self.h / self.default_height) ** 2)
-                * np.log10(self.default_height)
-                + (43.42 - 3.1 * np.log10(self.default_height)) * (np.log10(d_3D) - 3)
+                - (24.37 - 3.7 * (self.h / hBs) ** 2)
+                * np.log10(hBs)
+                + (43.42 - 3.1 * np.log10(hBs)) * (np.log10(d_3D) - 3)
                 + 20 * np.log10(self.bs.frequency_GHz)
                 - (3.2 * (np.log10(11.75 * UE_height)) ** 2 - 4.97)
             )
@@ -978,22 +1011,23 @@ class UMaModel(ChannelModel):
                 g = (5 / 4) * (d_2D / 100) ** 3 * np.exp(-d_2D / 150)
 
             C = ((UE_height - 13) / 10) ** 1.5 * g
+        else:
+            C = 0
 
         h_E_probability = 1 / (1 + C)
 
-        if np.random.random() <= h_E_probability:
-            h_E = 1
+        u = GLOBALS.RNG.uniform(0.0, 1.0, stream_offset=4)
 
+        if u < h_E_probability:
+            h_E = 1.0
         else:
-            h_max = int(np.floor(UE_height - 1.5))
-            h_Es = list(range(12, h_max + 1, 3))
+            max_val = max(12, int(np.floor(UE_height - 1.5)))
+            random_val = GLOBALS.RNG.get_integer(12, max_val, stream_offset=4)
+            h_E = float(random_val // 3) * 3.0
 
-            if not h_Es:
-                h_Es = [12]
+        hBs = self.bs.height if hasattr(self.bs, 'height') else 25.0
 
-            h_E = np.random.choice(h_Es)
-
-        bs_height_prime = self.default_height - h_E
+        bs_height_prime = hBs - h_E
         UE_height_prime = UE_height - h_E
 
         d_BP = (4 * bs_height_prime * UE_height_prime * self.bs.frequency_Hz) / 3.0e8
@@ -1018,6 +1052,8 @@ class UMaModel(ChannelModel):
             C_prime = 0
         elif 13 <= UE_height <= 23:
             C_prime = ((UE_height - 13) / 10) ** 1.5
+        else:
+            C_prime = 0
 
         los_probability = ((18 / d_2D) + np.exp(-d_2D / 63) * (1 - (18 / d_2D))) * (
             1 + C_prime * (5 / 4) * (d_2D / 100) ** 3 * np.exp(-d_2D / 150)
@@ -1050,24 +1086,20 @@ class UMaModel(ChannelModel):
 
         """
         d_BP = self._calculate_breakpoint_distance(UE_height, d_2D)
+        hBs = self.bs.height if hasattr(self.bs, 'height') else 25.0
 
-        if 10 <= d_2D <= d_BP:
+        if d_2D <= d_BP:
             PL1 = 28 + 22 * np.log10(d_3D) + 20 * np.log10(self.bs.frequency_GHz)
-
             return PL1
 
-        elif d_BP < d_2D <= 5000:
+        else:
             PL2 = (
                 28
                 + 40 * np.log10(d_3D)
                 + 20 * np.log10(self.bs.frequency_GHz)
-                - 9 * np.log10(d_BP**2 + (self.default_height - UE_height) ** 2)
+                - 9 * np.log10(d_BP**2 + (hBs - UE_height) ** 2)
             )
-
             return PL2
-
-        else:
-            return 10000.0
 
     def _calculate_nlos_path_loss(
         self,
@@ -1093,24 +1125,18 @@ class UMaModel(ChannelModel):
             float: Затухание сигнала для NLOS случая (дБ).
 
         """
-        if 10 <= d_2D <= 5000:
-            PL_LOS = self._calculate_los_path_loss(
-                UE_ID, displacement, channel_condition, d_2D, d_3D, UE_height
-            )
-            PL_NLOS = (
+        PL_LOS = self._calculate_los_path_loss(
+            UE_ID, displacement, channel_condition, d_2D, d_3D, UE_height
+        )
+        PL_NLOS = (
                 13.54
                 + 39.08 * np.log10(d_3D)
                 + 20 * np.log10(self.bs.frequency_GHz)
                 - 0.6 * (UE_height - 1.5)
-            )
+        )
 
-            PL = max(PL_LOS, PL_NLOS)
-
-            return PL
-
-        else:
-            return 10000.0
-
+        PL = max(PL_LOS, PL_NLOS)
+        return PL
 
 class UMiModel(ChannelModel):
     """
@@ -1180,7 +1206,9 @@ class UMiModel(ChannelModel):
         """
         h_E = 1.0
 
-        bs_height_prime = self.default_height - h_E
+        hBs = self.bs.height if hasattr(self.bs, 'height') else self.default_height
+
+        bs_height_prime = hBs - h_E
         UE_height_prime = UE_height - h_E
 
         d_BP = (4 * bs_height_prime * UE_height_prime * self.bs.frequency_Hz) / 3.0e8
@@ -1230,6 +1258,7 @@ class UMiModel(ChannelModel):
 
         """
         d_BP = self._calculate_breakpoint_distance(UE_height)
+        hBs = self.bs.height if hasattr(self.bs, 'height') else self.default_height
 
         if 10 <= d_2D <= d_BP:
             PL1 = 32.4 + 21 * np.log10(d_3D) + 20 * np.log10(self.bs.frequency_GHz)
@@ -1241,7 +1270,7 @@ class UMiModel(ChannelModel):
                 32.4
                 + 40 * np.log10(d_3D)
                 + 20 * np.log10(self.bs.frequency_GHz)
-                - 9.5 * np.log10(d_BP**2 + (self.default_height - UE_height) ** 2)
+                - 9.5 * np.log10(d_BP**2 + (hBs - UE_height) ** 2)
             )
 
             return PL2

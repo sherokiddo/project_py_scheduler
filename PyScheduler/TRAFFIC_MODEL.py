@@ -29,6 +29,7 @@
 #------------------------------------------------------------------------------
 """
 
+import math
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass
@@ -38,7 +39,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 import GLOBALS
-
+from RNG import RandomGenerator
 
 class QCI(IntEnum):
     """
@@ -347,12 +348,14 @@ class OnOffModel(ITrafficModel):
     """
 
     def __init__(
-        self,
-        duration_on: float,
-        duration_off: float,
-        packet_rate: float,
-        min_packet_size: int = 150,
-        max_packet_size: int = 1500,
+            self,
+            rng_seed: int,
+            rng_run: int,
+            base_stream_idx: int,
+            mean_on=0.5,
+            mean_off=0.5,
+            pkt_size=1000,
+            rate_kbps=500
     ):
         """
         Args:
@@ -360,80 +363,117 @@ class OnOffModel(ITrafficModel):
             duration_off: Средняя длительность OFF фазы (секунды)
             packet_rate: Интенсивность в ON фазе (пакетов/сек)
         """
-        super().__init__(min_packet_size, max_packet_size)
-        self.duration_on = duration_on
-        self.duration_off = duration_off
-        self.packet_rate = packet_rate
-        self._device_states: Dict[int, Dict] = {}
+        self.rng_seed = rng_seed
+        self.rng_run = rng_run
+        self.base_stream_idx = base_stream_idx
 
-    def generate_traffic(self, ue_id: int, current_time: int, update_interval: int) -> List[Packet]:
-        """Генерация ON/OFF трафика"""
+        self.mean_on = mean_on
+        self.mean_off = mean_off
+        self.pkt_size = pkt_size
 
-        # Инициализация состояния для нового UE
-        if ue_id not in self._device_states:
-            self._initialize_state(ue_id, current_time, update_interval)
+        # Задержка между пакетами в секундах (детерминированная, как в NS-3)
+        rate_bps = rate_kbps * 1000
+        self.pkt_delay = (self.pkt_size * 8) / rate_bps
 
-        state_data = self._device_states[ue_id]
-        packets = []
-        t = current_time - update_interval
+        # Словарь для хранения изолированных состояний каждого UE
+        self._device_states = {}
 
-        while t < current_time:
-            if state_data["state"] == "ON":
-                end_generate = min(state_data["end_state_time"], current_time)
-                mean_interval_ms = 1000.0 / self.packet_rate
+        # Переменные конечного автомата (State Machine)
+        self.current_state = 'OFF'
+        self.next_state_change_time = 0.0
+        self.next_tx_time = 0.0
+        self.is_started = False
 
-                while t < end_generate:
-                    interval = np.random.exponential(mean_interval_ms)
-                    t += interval
-                    if t > end_generate:
-                        break
+    def _get_exponential_time(self, rng, mean: float) -> float:
+        """Реплика ns3::ExponentialRandomVariable"""
+        return rng.exponential(mean=mean)
 
-                    packet_size = np.random.randint(self.min_packet_size, self.max_packet_size)
-                    packet = Packet(
-                        size=packet_size, ue_id=ue_id, creation_time=t, priority=0
-                    )
-                    packets.append(packet)
+    def _initialize_state(self, ue_id: int, current_time_sec: float):
+        """
+        Инициализация состояния для нового UE.
+        КРИТИЧЕСКИ ВАЖНО: Каждому UE выдается своя пара изолированных потоков ПСЧ.
+        Например: UE 1 -> потоки 0 и 1; UE 2 -> потоки 2 и 3.
+        """
+        stream_on = self.base_stream_idx + (ue_id * 2)
+        stream_off = self.base_stream_idx + (ue_id * 2) + 1
 
-                if state_data["end_state_time"] <= current_time:
-                    self._switch_to_off(ue_id)
+        rng_on = RandomGenerator(self.rng_seed, stream_on, self.rng_run)
+        rng_off = RandomGenerator(self.rng_seed, stream_off, self.rng_run)
 
-            elif state_data["state"] == "OFF":
-                t = min(state_data["end_state_time"], current_time)
-
-                if state_data["end_state_time"] <= current_time:
-                    self._switch_to_on(ue_id)
-
-            state_data = self._device_states[ue_id]
-
-        return packets
-
-    def _initialize_state(self, ue_id: int, current_time: int, update_interval: int):
-        """Инициализация состояния для нового UE"""
-        initial_state = "ON" if np.random.rand() > 0.5 else "OFF"
-
-        if initial_state == "ON":
-            duration = np.random.exponential(self.duration_on) * 1000
-        else:
-            duration = np.random.exponential(self.duration_off) * 1000
+        _ = self._get_exponential_time(rng_off, self.mean_off)
+        # Как и в NS-3, стартуем с фазы OFF и считаем, когда просыпаться
+        off_duration = self._get_exponential_time(rng_off, self.mean_off)
 
         self._device_states[ue_id] = {
-            "state": initial_state,
-            "end_state_time": current_time - update_interval + duration,
+            "rng_on": rng_on,
+            "rng_off": rng_off,
+            "state": "OFF",
+            "next_state_change_time": current_time_sec + off_duration,
+            "next_tx_time": 0.0,
+            "last_tx_time": current_time_sec,
+            "residual_time": 0.0
         }
 
-    def _switch_to_off(self, ue_id: int):
-        """Переключение в OFF состояние"""
-        state = self._device_states[ue_id]
-        duration = np.random.exponential(self.duration_off) * 1000
-        state["state"] = "OFF"
-        state["end_state_time"] = state["end_state_time"] + duration
+    def generate_traffic(self, ue_id: int, current_time: int, update_interval: int) -> List['Packet']:
+        """
+        Генерация трафика в дискретном окне времени.
+        Внимание: current_time и update_interval ожидаются в миллисекундах!
+        """
+        # Переводим в секунды для совместимости с NS-3
+        curr_time_sec = current_time / 1000.0
+        step_sec = update_interval / 1000.0
+        window_start = curr_time_sec - step_sec
 
-    def _switch_to_on(self, ue_id: int):
-        """Переключение в ON состояние"""
+        # Если UE появился впервые, инициализируем его на начало текущего окна
+        if ue_id not in self._device_states:
+            self._initialize_state(ue_id, window_start)
+
         state = self._device_states[ue_id]
-        duration = np.random.exponential(self.duration_on) * 1000
-        state["state"] = "ON"
-        state["end_state_time"] = state["end_state_time"] + duration
+        packets = []
+
+        # Симулируем время внутри окна (от window_start до curr_time_sec)
+        sim_time = window_start
+
+        while sim_time < curr_time_sec:
+            if state["state"] == "OFF":
+                # В состоянии OFF ждем наступления времени смены состояния
+                next_event_time = min(state["next_state_change_time"], curr_time_sec)
+                sim_time = next_event_time
+
+                # Если дождались смены, переходим в ON
+                if sim_time == state["next_state_change_time"]:
+                    state["state"] = "ON"
+                    on_duration = self._get_exponential_time(state["rng_on"], self.mean_on)
+                    state["next_state_change_time"] = sim_time + on_duration
+                    state["next_tx_time"] = sim_time + self.pkt_delay
+
+                    state["last_tx_time"] = sim_time
+                    state["next_tx_time"] = sim_time + (self.pkt_delay - state["residual_time"])
+
+            elif state["state"] == "ON":
+                # В состоянии ON ждем либо следующего пакета, либо конца фазы ON
+                next_event_time = min(state["next_tx_time"], state["next_state_change_time"], curr_time_sec)
+                sim_time = next_event_time
+
+                # Пришло время отправить пакет (и фаза ON еще не закончилась)
+                if sim_time == state["next_tx_time"] and sim_time < state["next_state_change_time"]:
+                    # Возвращаем время в миллисекунды для твоего объекта Packet
+                    packet_time_ms = sim_time * 1000.0
+                    packets.append(Packet(size=self.pkt_size, ue_id=ue_id, creation_time=packet_time_ms, priority=0))
+
+                    state["last_tx_time"] = sim_time
+                    state["next_tx_time"] += self.pkt_delay
+                    state["residual_time"] = 0.0
+
+                # Пришло время уйти в спячку
+                if sim_time == state["next_state_change_time"]:
+                    state["state"] = "OFF"
+                    off_duration = self._get_exponential_time(state["rng_off"], self.mean_off)
+                    state["next_state_change_time"] = sim_time + off_duration
+
+                    state["residual_time"] += (sim_time - state["last_tx_time"])
+
+        return packets
 
     def clear_state(self, ue_id: int):
         """
@@ -449,15 +489,14 @@ class OnOffModel(ITrafficModel):
         return "OnOff"
 
     def get_model_info(self) -> Dict:
-        info = super().get_model_info()
-        info.update(
-            {
-                "duration_on": self.duration_on,
-                "duration_off": self.duration_off,
-                "packet_rate": self.packet_rate,
-                "active_devices": len(self._device_states),  # Сколько UE в памяти
-            }
-        )
+        info = super().get_model_info() if hasattr(super(), 'get_model_info') else {}
+        info.update({
+            "mean_on": self.mean_on,
+            "mean_off": self.mean_off,
+            "packet_size": self.pkt_size,
+            "pkt_delay": self.pkt_delay,
+            "active_devices": len(self._device_states)
+        })
         return info
 
 

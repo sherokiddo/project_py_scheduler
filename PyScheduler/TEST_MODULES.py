@@ -7,8 +7,9 @@ from BS_MODULE import BaseStation
 from MOBILITY_MODEL import MapBorders, MobilityInterface
 from SIMULATION_MANAGER import SimulationManager
 from TRAFFIC_MODEL import PoissonModel
-from UE_MODULE import UECollection
-
+from UE_MODULE import UECollection, UserEquipment
+from RNG import RandomGenerator
+from CHANNEL_MODEL import ChannelInterface
 
 def visualize_users_mobility(
     ue_collection: UECollection,
@@ -501,7 +502,142 @@ def test_pure_mobility():
         plt.close()
 
 
+def test_pure_channel():
+    """
+    Тестовый стенд для изолированной проверки и валидации моделей канала.
+    """
+    config = {
+        'seed': 202,
+        'run': 3,
+        'sim_time': 40000,
+        'upd_interval': 1000,
+        'save_plot': 0,
+        'bs_x': 250.0,
+        'bs_y': 250.0,
+        'bs_height': 35.0,
+        'frequency_GHz': 3.5,
+        'bandwidth': 20,
+        'channel_model': 'UMi',
+        'cond_update_period': 1000.0,
+        'ues': [
+            {'ue_id': 1, 'x': 265.0, 'y': 250.0, 'height': 1.5, 'ue_class': 'pedestrian', 'label': 'Near BS (15m)'},
+            {'ue_id': 2, 'x': 500.0, 'y': 500.0, 'height': 1.5, 'ue_class': 'pedestrian', 'label': 'Map Edge'},
+            {'ue_id': 3, 'x': 350.0, 'y': 350.0, 'height': 1.5, 'ue_class': 'pedestrian', 'label': 'Mid Range'},
+            {'ue_id': 4, 'x': 200.0, 'y': 200.0, 'height': 1.5, 'ue_class': 'pedestrian', 'label': 'UMi Close (70m)'},
+            {'ue_id': 5, 'x': 400.0, 'y': 300.0, 'height': 1.5, 'ue_class': 'pedestrian', 'label': 'UMi Street (158m)'},
+        ]
+    }
+
+    GLOBALS.SEED = config['seed']
+    GLOBALS.RNG = RandomGenerator(seed=GLOBALS.SEED, base_stream_idx=0, run_idx=config['run'])
+    print(f"[*] Установлен | Seed: {config['seed']} | Run: {config['run']}")
+    print(f"[*] Старт теста | Модель: {config['channel_model']}")
+
+    ch_params = {
+        "cond_update_period": config['cond_update_period'],
+        "freq_fad_nlos_model": "TDL-A",
+        "freq_fad_los_model": "TDL-D",
+        "ds_profile": "normal"
+    }
+
+    bs = BaseStation(
+        x=config['bs_x'],
+        y=config['bs_y'],
+        height=config['bs_height'],
+        frequency_GHz=config['frequency_GHz'],
+        bandwidth=config['bandwidth'],
+        ch_model_type=config['channel_model'],
+        ch_model_params=ch_params,
+        use_simple_buffer=True
+    )
+
+    ue_collection = UECollection()
+    for ue_cfg in config['ues']:
+        ue = UserEquipment(
+            UE_ID=ue_cfg['ue_id'],
+            x=ue_cfg['x'],
+            y=ue_cfg['y'],
+            ue_class=ue_cfg['ue_class']
+        )
+        ue.UE_height = ue_cfg['height']
+        ue_collection.ADD_USER(ue)
+        bs.REG_UE(ue)
+
+    stats = {
+        ue_cfg['ue_id']: {'time': [], 'path_loss': [], 'label': ue_cfg['label']}
+        for ue_cfg in config['ues']
+    }
+
+    update_interval = config['upd_interval']
+    csv_filename = f"pure_channel_{config['channel_model']}_seed{config['seed']}_run{config['run']}.csv"
+
+    with open(csv_filename, mode='w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f, delimiter=';')
+        writer.writerow([
+            "Time_s", "UE_ID", "Label", "Distance_2D", "Distance_3D",
+            "Channel_Cond", "Path_Loss_dB"
+        ])
+
+        for current_time in range(0, config['sim_time'], update_interval):
+            GLOBALS.CURRENT_TIME = current_time
+            time_sec = current_time / 1000.0
+
+            for ue in ue_collection.GET_ALL_USERS():
+                ue._calculate_distances_to_BS()
+
+                correct_d_3D = np.sqrt(ue.dist_to_BS_2D ** 2 + (bs.height - ue.UE_height) ** 2)
+
+                current_pl = bs.channel_model._calculate_path_loss(
+                    UE_ID=ue.UE_ID,
+                    displacement=0.0,
+                    d_2D=ue.dist_to_BS_2D,
+                    d_2D_in=getattr(ue, 'dist_to_BS_2D_in', 0.0),
+                    d_3D=correct_d_3D,
+                    UE_height=ue.UE_height,
+                    ue_class=ue.ue_class
+                )
+
+                bs_id = getattr(bs, 'bs_id', 0)
+                cantor_key = bs.channel_model._get_key(bs_id, ue.UE_ID)
+
+                cond_info = bs.channel_model.CHANNEL_COND_INFO.get(cantor_key, {})
+                current_cond = cond_info.get("cond", "UNKNOWN")
+
+                label = stats[ue.UE_ID]['label']
+                writer.writerow([
+                    time_sec, ue.UE_ID, label,
+                    round(ue.dist_to_BS_2D, 2), round(ue.dist_to_BS_3D, 2),
+                    current_cond, round(current_pl, 4)
+                ])
+
+                if current_pl < 9000:
+                    stats[ue.UE_ID]['time'].append(time_sec)
+                    stats[ue.UE_ID]['path_loss'].append(current_pl)
+                else:
+                    stats[ue.UE_ID]['time'].append(time_sec)
+                    stats[ue.UE_ID]['path_loss'].append(np.nan)
+
+    print(f"\n[*] Лог успешно сохранён в файл: {csv_filename}")
+
+    if config.get('save_plot', 1):
+        plt.figure(figsize=(12, 7))
+        for ue_id, data in stats.items():
+            plt.plot(data['time'], data['path_loss'], label=f"UE {ue_id} ({data['label']})", linewidth=1.5)
+
+        plt.title(
+            f"Path Loss Validation vs Time\nModel: {config['channel_model']}, Freq: {config['frequency_GHz']} GHz")
+        plt.xlabel("Time (seconds)")
+        plt.ylabel("Path Loss (dB)")
+        plt.grid(True, which='major', linestyle='-', alpha=0.6)
+        plt.grid(True, which='minor', linestyle=':', alpha=0.4)
+        plt.minorticks_on()
+        plt.legend()
+        plot_filename = f"path_loss_{config['channel_model']}_run{config['run']}.png"
+        plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
+        print(f"[*] График сохранен: {plot_filename}\n")
+
 if __name__ == "__main__":
-    # sim_with_manager()
-    test_pure_mobility()
+    #sim_with_manager()
+    #test_pure_mobility()
+    test_pure_channel()
     #sim_with_manager_qos()
