@@ -286,7 +286,7 @@ def sim_with_manager_qos():
 
     # Установка планировщика. Можно передвать параметры, которые
     # поддерживает SchedulerInterface.
-    sim.set_scheduler(algorithm="ProportionalFair")
+    sim.set_scheduler(algorithm="QosAware")
 
     # Настраиваем модели для каждого UE
     config = [

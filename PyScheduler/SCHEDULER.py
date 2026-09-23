@@ -107,8 +107,10 @@
 
 import GLOBALS
 import time
+import math
 from dataclasses import dataclass
 from BS_MODULE import BaseStation
+from TRAFFIC_MODEL import QCI
 from typing import Dict, List, Optional
 
 @dataclass(slots=True)
@@ -258,6 +260,7 @@ class SchedulerInterface:
             'FD_FGS':           FDxFairGreedyScheduler,
             'FD_PF':            FDxProportionalFairScheduler,
             'BasicQosAware':    BasicQosAwareScheduler,
+            'QosAware':         QosAwareScheduler,
             }
 
         if algorithm not in schedulers:
@@ -285,6 +288,7 @@ class SchedulerInterface:
                 'FD_FGS',
                 'FD_FF',
                 'BasicQosAware',
+                'QosAware',
                 ]
 
     def __init__(self, lte_grid, bs,
@@ -2929,6 +2933,211 @@ class BasicQosAwareScheduler(SchedulerInterface):
         
         return allocation
 
+
+class QosAwareScheduler(SchedulerInterface):
+
+    def __init__(self, lte_grid, bs, **kwargs):
+
+        super().__init__(
+            lte_grid=lte_grid,
+            bs=bs,
+            **kwargs)
+        
+        self.allocation_flow = {}
+        
+    def _apply_pdsch_estimation(self, priority_list: List[Dict], tti: int) -> List[Dict]:
+        """
+        Оценка распределения PDSCH. В данном случае не требуется.
+
+        """
+        if self.verbose:
+            print(f"[SCHEDULER TTI {tti}] PDSCH estimation: SKIPPED (FD-QoS per-RBG selection)")
+            print(f"[SCHEDULER TTI {tti}] After estimation: {len(priority_list)} UE selected, 0 UE excluded")
+
+        return priority_list
+    
+    def _calculate_priorities(self, windowed_ues: List[Dict], tti: int) -> List[Dict]:
+
+        gbr_metric_scale = 1_000_000
+        urgency_scale = 1000
+
+        buffer_manager = self.lte_grid.bs.buffer_manager
+
+        for user in windowed_ues:
+            ue_id = user['UE_ID']
+            buffer_status_list = buffer_manager.get_buffer_status(ue_id)
+    
+            best_metric = 0.0
+    
+            for buffer_status in buffer_status_list:
+                if buffer_status.buffer_size <= 0:
+                    continue
+    
+                hol_delay = buffer_status.hol_delay
+                qci = buffer_status.qci
+                pdb = QCI(qci).get_delay_budget()
+    
+                urgency = self._sigmoid_delay_function(hol_delay, pdb)
+    
+                if GLOBALS.is_gbr(qci):
+                    metric = gbr_metric_scale + urgency_scale * urgency
+                else:
+                    metric = urgency_scale * urgency
+    
+                best_metric = max(best_metric, metric)
+    
+            user['priority'] = best_metric
+    
+        return windowed_ues
+
+    def _allocate_pdsch(self, tti: int, ues_with_pdcch: List[Dict],
+                        eligible_ues: List[Dict]) -> Dict[int, List[int]]:
+        
+        allocation = {u['UE_ID']: [] for u in eligible_ues}
+
+        if not ues_with_pdcch:
+            return allocation
+        
+        remaining_flow_buffer = {}
+        buffer_manager = self.lte_grid.bs.buffer_manager
+
+        HOLdelays = {}
+        flows_for_schedule = []
+
+        for user in ues_with_pdcch:
+            ue_id = user['UE_ID']
+            buffer_status_list = buffer_manager.get_buffer_status(ue_id)
+
+            for buffer_status in buffer_status_list:
+                if buffer_status.buffer_size <= 0:
+                    continue
+
+                flow_qci = buffer_status.qci
+                hol_delay = buffer_status.hol_delay
+
+                flow = (ue_id, flow_qci)
+                flows_for_schedule.append(flow)
+
+                HOLdelays[flow] = hol_delay
+                remaining_flow_buffer[flow] = GLOBALS.bytes_to_bits(buffer_status.buffer_size)
+
+        self.allocation_flow = {f: 0 for f in flows_for_schedule}
+        rbg_size  = self.lte_grid.GET_RBG_SIZE()
+        total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size
+
+        for rbg_idx in range(total_rbg):
+            
+            rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
+            rbg_width = len(rb_indices)
+            best_metric = -1.0
+            best_flow_user = (0, 0)
+            best_rbg_bits = 0
+
+            flows_for_schedule = [
+                flow for flow in flows_for_schedule
+                if remaining_flow_buffer.get(flow, 0) > 0
+            ]
+
+            if not flows_for_schedule:
+                break
+
+            for ue_id, qci in flows_for_schedule:
+
+                sb_cqi_list = self._get_sb_cqi(ue_id)
+                if (sb_cqi_list and rbg_idx < len(sb_cqi_list)
+                    and sb_cqi_list[rbg_idx] > 0
+                ):
+                    cqi = sb_cqi_list[rbg_idx]
+                else:
+                    cqi = self._get_wb_cqi(ue_id)
+
+                if cqi <= 0:
+                    continue
+
+                bits_per_rb = self.amc.GET_BITS_PER_RB(cqi)
+                r_j_k = rbg_width * bits_per_rb
+                avg_tput = buffer_manager.qci_tput_tracker.get_average_throughput(ue_id, qci)
+                denom = 1.0 if avg_tput <= 0 else (avg_tput / 1000.0)
+                pf_metric = r_j_k / (denom ** 0.6)
+
+                if GLOBALS.is_gbr(qci):
+                    pdb = QCI(qci).get_delay_budget()
+                    hol_delay = HOLdelays.get((ue_id, qci))
+                    metric = self._sigmoid_delay_function(hol_delay, pdb) * pf_metric
+                else:
+                    metric = pf_metric
+
+                if metric > best_metric:
+                    best_metric = metric
+                    best_flow_user = (ue_id, qci)
+                    best_rbg_bits = r_j_k
+
+            best_ue_id, qci = best_flow_user
+            if best_ue_id == 0:
+                continue
+
+            allocate_rbg = self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, best_ue_id)
+            if not allocate_rbg:
+                continue
+
+            allocation[best_ue_id].extend(rb_indices)
+
+            wb_cqi = self._get_wb_cqi(ue_id)
+            bits_per_rb_wb = self.amc.GET_BITS_PER_RB(wb_cqi)
+            bits_for_flow = rbg_width * bits_per_rb_wb
+            self.allocation_flow[best_flow_user] += bits_for_flow
+
+            remaining_flow_buffer[best_flow_user] = max(0, remaining_flow_buffer[best_flow_user] - 
+                                                        best_rbg_bits)
+            
+        return allocation
+    
+    def _sigmoid_delay_function(self, hol_delay: int, packet_delay_budget: int) -> float:
+
+        par_a = 0.045
+        par_c = 10
+        par_D = 2 * packet_delay_budget / 3
+
+        return par_c / (1 + math.exp(-par_a * (hol_delay - par_D)))
+
+    
+    def _logical_channel_multiplexing(self, tb_size: int, buffer_status_list: List) -> List[SchedulingGrant]:
+        
+        grants = []
+
+        ue_id = buffer_status_list[0].ue_id
+
+        filtered_allocation_flow = {
+            flow[1]: allocation_bits
+            for flow, allocation_bits in self.allocation_flow.items()
+            if flow[0] == ue_id
+        }
+
+        sorted_buffer_status_list = sorted(
+            buffer_status_list,
+            key=lambda bs: QCI(bs.qci).get_priority()
+        )
+
+        for buffer_status in sorted_buffer_status_list:
+            if buffer_status.qci in filtered_allocation_flow:
+                if filtered_allocation_flow[buffer_status.qci] > 0:
+                    num_bits = filtered_allocation_flow[buffer_status.qci]
+                    num_bytes = GLOBALS.bits_to_bytes(num_bits)
+                    bytes_to_extract = num_bytes if num_bytes <= tb_size else tb_size
+                    grant = SchedulingGrant(
+                        ue_id=buffer_status.ue_id,
+                        num_bytes=bytes_to_extract,
+                        lcid=buffer_status.lcid,
+                    )
+
+                    grants.append(grant)
+
+                    tb_size -= bytes_to_extract
+                    if tb_size <= 0:
+                        break
+
+        return grants
+                
 
 #TODO: Финальный аккорд модуля. Новая архитектура готова. Теперь можно подумать
 # о развитии. Хочу отметить, что требуется еще много доработок. Вот список:
