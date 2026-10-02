@@ -126,27 +126,100 @@ class RngStream:
                 state[0:3] = s1
                 state[3:6] = s2
 
+class PhiloxStream:
+    """
+    Математическое ядро: Генератор Philox4x64-10.
+    """
+    PHILOX_M4x64_0 = 0xD2E7470EE14C6C93
+    PHILOX_M4x64_1 = 0xCA5A826395121157
+    PHILOX_W64_0 = 0x9E3779B97F4A7C15
+    PHILOX_W64_1 = 0xBB67AE8584CAA73B
+
+    def __init__(self, seed=12345, stream_idx=0, run_idx=1):
+        self.seed = seed if seed != 0 else 12345
+        self.stream_idx = stream_idx
+        self.run_idx = run_idx
+
+        # Ключ (Key): 2 блока по 64 бита
+        self.key = [self.seed & 0xFFFFFFFFFFFFFFFF, self.stream_idx & 0xFFFFFFFFFFFFFFFF]
+
+        # Счетчик (Counter): 4 блока по 64 бита
+        self.counter = [0, 0, 0, self.run_idx & 0xFFFFFFFFFFFFFFFF]
+
+        self._buffer = []
+
+    def _mulhilo(self, a, b):
+        """Умножение двух 64-битных чисел."""
+        product = a * b
+        return (product >> 64) & 0xFFFFFFFFFFFFFFFF, product & 0xFFFFFFFFFFFFFFFF
+
+    def _philox_round(self):
+        """Генерация 4-х псевдослучайных 64-битных чисел."""
+        self.counter[0] = (self.counter[0] + 1) & 0xFFFFFFFFFFFFFFFF
+        if self.counter[0] == 0:
+            self.counter[1] = (self.counter[1] + 1) & 0xFFFFFFFFFFFFFFFF
+            if self.counter[1] == 0:
+                self.counter[2] = (self.counter[2] + 1) & 0xFFFFFFFFFFFFFFFF
+                if self.counter[2] == 0:
+                    self.counter[3] = (self.counter[3] + 1) & 0xFFFFFFFFFFFFFFFF
+
+        c0, c1, c2, c3 = self.counter
+        k0, k1 = self.key
+
+        for _ in range(10):
+            hi0, lo0 = self._mulhilo(self.PHILOX_M4x64_0, c0)
+            hi1, lo1 = self._mulhilo(self.PHILOX_M4x64_1, c2)
+
+            # Перемешивание битов
+            new_c0 = hi1 ^ c1 ^ k0
+            new_c1 = lo1
+            new_c2 = hi0 ^ c3 ^ k1
+            new_c3 = lo0
+
+            c0, c1, c2, c3 = new_c0, new_c1, new_c2, new_c3
+
+            # Обновление ключа
+            k0 = (k0 + self.PHILOX_W64_0) & 0xFFFFFFFFFFFFFFFF
+            k1 = (k1 + self.PHILOX_W64_1) & 0xFFFFFFFFFFFFFFFF
+
+        self._buffer = [c3, c2, c1, c0]
+
+    def rand_u01(self):
+        """Нормализует 64-битное число до [0.0, 1.0) делением на 2^64"""
+        if not self._buffer:
+            self._philox_round()
+        val = self._buffer.pop()
+        return val / 18446744073709551616.0
 
 class RandomGenerator:
     """
     Единая точка входа для генерации случайных распределений.
-    Именно методы этого класса заменяют старые классы UniformVariable и NormalRandomVariable.
+    Поддерживает алгоритмы: 'MRG32k3a' и 'Philox'
     """
 
-    def __init__(self, seed=12345, base_stream_idx=0, run_idx=1):
+    def __init__(self, seed=12345, base_stream_idx=0, run_idx=1, engine='MRG32k3a'):
         self.seed = seed if seed != 0 else 12345
         self.base_stream_idx = base_stream_idx
         self.run_idx = run_idx
+        self.engine = engine
         self._streams = {}
         self._normal_cache = {}
 
     def _get_stream(self, stream_offset):
         if stream_offset not in self._streams:
-            self._streams[stream_offset] = RngStream(
-                seed=self.seed,
-                stream_idx=self.base_stream_idx + stream_offset,
-                run_idx=self.run_idx
-            )
+            if self.engine == 'Philox':
+                self._streams[stream_offset] = PhiloxStream(
+                    seed=self.seed,
+                    stream_idx=self.base_stream_idx + stream_offset,
+                    run_idx=self.run_idx
+                )
+            else:
+                # По умолчанию работает классический MRG32k3a
+                self._streams[stream_offset] = RngStream(
+                    seed=self.seed,
+                    stream_idx=self.base_stream_idx + stream_offset,
+                    run_idx=self.run_idx
+                )
         return self._streams[stream_offset]
 
     def uniform(self, min_val=0.0, max_val=1.0, stream_offset=0):
