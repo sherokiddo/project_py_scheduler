@@ -10,18 +10,24 @@
 # симуляций. Также включает классы случайных величин (Uniform, Normal,
 # Exponential).
 #
-# Версия: 1.0.1
+# Версия: 1.2.0
 # Дата последнего изменения: 2026-10-02
 # Автор: Шаимов Богдан
 # Версия Python Kernel: 3.12.9
 #
 # Изменения:
-# v1.0.1 - 2026-10-02:
+# v1.1.0 - 2026-09-25:
 # - Добавлен алгоритм генерации псевдослучайных чисел - Philox4x64
+# v1.2.0 - 2026-10-02:
+# - Добавлен DataStream для чтения датасетов (.json, .csv)
 #------------------------------------------------------------------------------
 """
 
 import math
+import csv
+import json
+import os
+from collections import deque
 class RngStream:
     """
     Математическое ядро: Генератор MRG32k3a.
@@ -191,23 +197,91 @@ class PhiloxStream:
         val = self._buffer.pop()
         return val / 18446744073709551616.0
 
+class DataStream:
+    """
+    Чтение заранее известных данных из .json или .csv.
+    Используется для подмены генерируемых чисел датасетами.
+    """
+    def __init__(self, filepath, loop=True):
+        self.filepath = filepath
+        self.loop = loop
+        self._buffer = deque()
+        self._initial_data = []
+
+        if not os.path.exists(self.filepath):
+            raise FileNotFoundError(f"Файл с датасетом не найден: {self.filepath}")
+
+        self._load_data()
+
+    def _load_data(self):
+        ext = os.path.splitext(self.filepath)[1].lower()
+        if ext == '.json':
+            self._load_from_json()
+        elif ext == '.csv':
+            self._load_from_csv()
+        else:
+            raise ValueError(f"Неподдерживаемый формат файла: {ext}. Требуется .json или .csv")
+
+        if not self._buffer:
+            raise ValueError(f"Файл {self.filepath} пуст или не содержит числовых данных.")
+
+        if self.loop:
+            self._initial_data = list(self._buffer)
+
+    def _load_from_json(self):
+        with open(self.filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            if isinstance(data, list):
+                for item in data:
+                    self._buffer.append(float(item))
+            elif isinstance(data, dict):
+                for key, val in data.items():
+                    if isinstance(val, list):
+                        for item in val:
+                            self._buffer.append(float(item))
+                        break
+
+    def _load_from_csv(self):
+        with open(self.filepath, 'r', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            for row in reader:
+                for item in row:
+                    try:
+                        self._buffer.append(float(item.strip()))
+                    except ValueError:
+                        continue
+
+    def get_next_value(self):
+        """Возвращает следующее значение из буфера."""
+        if not self._buffer:
+            if self.loop and self._initial_data:
+                self._buffer.extend(self._initial_data)
+            else:
+                raise StopIteration(f"Данные в файле {self.filepath} закончились.")
+        return self._buffer.popleft()
+
 class RandomGenerator:
     """
     Единая точка входа для генерации случайных распределений.
-    Поддерживает алгоритмы: 'MRG32k3a' и 'Philox'
+    Поддерживает алгоритмы: 'MRG32k3a', 'Philox' и 'File'.
     """
 
-    def __init__(self, seed=12345, base_stream_idx=0, run_idx=1, engine='MRG32k3a'):
+    def __init__(self, seed=12345, base_stream_idx=0, run_idx=1, engine='MRG32k3a', filepath=None):
         self.seed = seed if seed != 0 else 12345
         self.base_stream_idx = base_stream_idx
         self.run_idx = run_idx
         self.engine = engine
+        self.filepath = filepath
         self._streams = {}
         self._normal_cache = {}
 
     def _get_stream(self, stream_offset):
         if stream_offset not in self._streams:
-            if self.engine == 'Philox':
+            if self.engine == 'File':
+                if not self.filepath:
+                    raise ValueError("Для режима 'File' необходимо указать filepath")
+                self._streams[stream_offset] = DataStream(filepath=self.filepath)
+            elif self.engine == 'Philox':
                 self._streams[stream_offset] = PhiloxStream(
                     seed=self.seed,
                     stream_idx=self.base_stream_idx + stream_offset,
@@ -223,10 +297,15 @@ class RandomGenerator:
 
     def uniform(self, min_val=0.0, max_val=1.0, stream_offset=0):
         stream = self._get_stream(stream_offset)
+        if self.engine == 'File':
+            return stream.get_next_value()
         return min_val + stream.rand_u01() * (max_val - min_val)
 
     def normal(self, mean=0.0, variance=1.0, bound=float('inf'), stream_offset=0):
         stream = self._get_stream(stream_offset)
+
+        if self.engine == 'File':
+            return stream.get_next_value()
 
         if stream_offset in self._normal_cache:
             y, v2 = self._normal_cache.pop(stream_offset)
@@ -254,6 +333,10 @@ class RandomGenerator:
 
     def exponential(self, mean=1.0, bound=0.0, stream_offset=0):
         stream = self._get_stream(stream_offset)
+
+        if self.engine == 'File':
+            return stream.get_next_value()
+
         while True:
             v = stream.rand_u01()
             if v == 0:
@@ -266,5 +349,10 @@ class RandomGenerator:
         """
         Генерирует целое число в диапазоне [min_val, max_val] включительно.
         """
+
+        stream = self._get_stream(stream_offset)
+        if self.engine == 'File':
+            return int(stream.get_next_value())
+
         v = self.uniform(0.0, 1.0, stream_offset=stream_offset)
         return int(min_val + v * (max_val - min_val + 1))
