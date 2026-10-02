@@ -10,10 +10,13 @@
 #   симуляций. Также включает классы случайных величин (Uniform, Normal,
 #   Exponential).
 #
-#  Версия: 1.0
-#  Дата последнего изменения: 2026-08-05
+#  Версия: 1.0.1
+#  Дата последнего изменения: 2026-10-02
 #  Автор: Шаимов Богдан
 #  Версия Python Kernel: 3.12.9
+# Изменения:
+#   v1.0.1 - 2026-10-02:
+#     - Добавлен алгоритм генерации псевдослучайных чисел - Philox4x64
 #------------------------------------------------------------------------------
 """
 
@@ -128,7 +131,7 @@ class RngStream:
 
 class PhiloxStream:
     """
-    Математическое ядро: Генератор Philox4x64-10.
+    Математическое ядро: Генератор Philox4x64.
     """
     PHILOX_M4x64_0 = 0xD2E7470EE14C6C93
     PHILOX_M4x64_1 = 0xCA5A826395121157
@@ -140,10 +143,8 @@ class PhiloxStream:
         self.stream_idx = stream_idx
         self.run_idx = run_idx
 
-        # Ключ (Key): 2 блока по 64 бита
         self.key = [self.seed & 0xFFFFFFFFFFFFFFFF, self.stream_idx & 0xFFFFFFFFFFFFFFFF]
 
-        # Счетчик (Counter): 4 блока по 64 бита
         self.counter = [0, 0, 0, self.run_idx & 0xFFFFFFFFFFFFFFFF]
 
         self._buffer = []
@@ -170,7 +171,6 @@ class PhiloxStream:
             hi0, lo0 = self._mulhilo(self.PHILOX_M4x64_0, c0)
             hi1, lo1 = self._mulhilo(self.PHILOX_M4x64_1, c2)
 
-            # Перемешивание битов
             new_c0 = hi1 ^ c1 ^ k0
             new_c1 = lo1
             new_c2 = hi0 ^ c3 ^ k1
@@ -178,7 +178,6 @@ class PhiloxStream:
 
             c0, c1, c2, c3 = new_c0, new_c1, new_c2, new_c3
 
-            # Обновление ключа
             k0 = (k0 + self.PHILOX_W64_0) & 0xFFFFFFFFFFFFFFFF
             k1 = (k1 + self.PHILOX_W64_1) & 0xFFFFFFFFFFFFFFFF
 
@@ -214,7 +213,6 @@ class RandomGenerator:
                     run_idx=self.run_idx
                 )
             else:
-                # По умолчанию работает классический MRG32k3a
                 self._streams[stream_offset] = RngStream(
                     seed=self.seed,
                     stream_idx=self.base_stream_idx + stream_offset,
