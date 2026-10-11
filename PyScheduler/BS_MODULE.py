@@ -998,9 +998,6 @@ class RLCUM(RLCEntity):
                 extracted_packets.append(segment)
                 extracted_bytes += segment_size
 
-                if segment.age(GLOBALS.CURRENT_TIME) > segment.qci.get_delay_budget():
-                    self.packets_extracted_late += 1
-
                 break
 
             # Полное извлечение пакета
@@ -1009,12 +1006,13 @@ class RLCUM(RLCEntity):
                 extracted_packets.append(extracted_packet)
                 extracted_bytes += packet_size
 
+                self.packets_extracted += 1
+
                 if extracted_packet.age(GLOBALS.CURRENT_TIME) > extracted_packet.qci.get_delay_budget():
                     self.packets_extracted_late += 1
 
         self.current_tx_buffer_size -= extracted_bytes
         self.extracted_bytes = extracted_bytes
-        self.packets_extracted = len(extracted_packets)
 
         return extracted_packets, extracted_bytes
 
@@ -1475,7 +1473,6 @@ class LayeredBufferManager(IBufferManager):
         
         packets = []
         extracted_bytes = 0
-        extracted_bytes_per_qci = {}
         
         for grant in grants:
             lcid = grant.lcid
@@ -1486,14 +1483,7 @@ class LayeredBufferManager(IBufferManager):
             packets.extend(lc_packets)
             extracted_bytes += lc_extracted_bytes
 
-            if lc_extracted_bytes > 0 and lc_packets:
-                qci = lc_packets[0].qci
-                extracted_bytes_per_qci[qci] = (
-                    extracted_bytes_per_qci.get(qci, 0) + lc_extracted_bytes
-                )
-
         self.current_total_size -= extracted_bytes
-        self.qci_tput_tracker.update_all_qcis(ue_id, extracted_bytes_per_qci)
 
         return packets, extracted_bytes
             

@@ -898,6 +898,7 @@ class SchedulerInterface:
         time_interval_ms = 1
         self.last_ue_transmitted_bits = {}
         buffer_manager = self.lte_grid.bs.buffer_manager
+        qci_tput_tracker = getattr(buffer_manager, "qci_tput_tracker", None)
 
         for user in users:
             ue   = user.get('ue')
@@ -911,6 +912,10 @@ class SchedulerInterface:
             if allocated_rbs == 0:
                 ue.UPD_DL_THROUGHPUT_BPS(0, time_interval_ms)
                 self.last_ue_transmitted_bits[ueid] = 0
+
+                if qci_tput_tracker is not None and buffer_manager.ue_has_buffer(ueid):
+                    qci_tput_tracker.update_all_qcis(ueid, {})
+
                 continue
 
             if not buffer_manager.ue_has_buffer(ueid):
@@ -932,6 +937,10 @@ class SchedulerInterface:
             if max_bytes <= 0:
                 ue.UPD_DL_THROUGHPUT_BPS(0, time_interval_ms)
                 self.last_ue_transmitted_bits[ueid] = 0
+
+                if qci_tput_tracker is not None and buffer_manager.ue_has_buffer(ueid):
+                    qci_tput_tracker.update_all_qcis(ueid, {})
+
                 continue
 
             buffer_status_list = buffer_manager.get_buffer_status(ueid)
@@ -949,7 +958,21 @@ class SchedulerInterface:
                     print(f"[ERROR] TTI {tti} UE {ueid}: Buffer extraction failed - {e}")
                 ue.UPD_DL_THROUGHPUT_BPS(0, time_interval_ms)
                 self.last_ue_transmitted_bits[ueid] = 0
+
+                if qci_tput_tracker is not None and buffer_manager.ue_has_buffer(ueid):
+                    qci_tput_tracker.update_all_qcis(ueid, {})
+
                 continue
+
+            if qci_tput_tracker is not None:
+                bytes_per_qci = {}
+
+                for packet in packets:
+                    bytes_per_qci[packet.qci] = (
+                        bytes_per_qci.get(packet.qci, 0) + packet.size
+                    )
+
+                qci_tput_tracker.update_all_qcis(ueid, bytes_per_qci)
 
             transmitted_bits = GLOBALS.bytes_to_bits(total_bytes) + remainder_bits
             self.last_ue_transmitted_bits[ueid] = transmitted_bits
@@ -3082,7 +3105,7 @@ class QosAwareScheduler(SchedulerInterface):
 
             allocation[best_ue_id].extend(rb_indices)
 
-            wb_cqi = self._get_wb_cqi(ue_id)
+            wb_cqi = self._get_wb_cqi(best_ue_id)
             bits_per_rb_wb = self.amc.GET_BITS_PER_RB(wb_cqi)
             bits_for_flow = rbg_width * bits_per_rb_wb
             self.allocation_flow[best_flow_user] += bits_for_flow

@@ -246,7 +246,7 @@ def sim_with_manager_qos():
     x_min, x_max, y_min, y_max = MapBorders().get_borders()
 
     # Создание и настройка базовой станции
-    bs = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMa", use_simple_buffer=False)
+    bs = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMa", use_simple_buffer=False, enable_tdl=True)
 
     # Создание коллекции пользовательских устройств
     ue_collection = UECollection()

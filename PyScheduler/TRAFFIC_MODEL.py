@@ -605,7 +605,7 @@ class MMPPModel(ITrafficModel):
         return info
     
 
-class PereodicModel(ITrafficModel):
+class PeriodicModel(ITrafficModel):
     """
     Переодическая модель генерации трафика.
     
@@ -621,6 +621,16 @@ class PereodicModel(ITrafficModel):
             packet_size (int, optional): Размер пакета (байты). По умолчанию 1500.
 
         """
+        if not isinstance(packet_interval, int) or not isinstance(packet_size, int):
+            raise TypeError(
+                "Packet interval and packet size must be integers"
+            )
+
+        if packet_interval <= 0 or packet_size <= 0:
+            raise ValueError(
+                "Packet interval and packet size must be greater than 0"
+            )
+
         super().__init__(
             min_packet_size=packet_size, 
             max_packet_size=packet_size
@@ -725,6 +735,16 @@ class ConstBitrateModel(ITrafficModel):
             packet_size (int, optional): Размер пакета (байты). По умолчанию 1500.
 
         """
+        if not isinstance(packet_size, int):
+            raise TypeError(
+                "Packet size must be an integer"
+            )
+
+        if packet_size <= 0:
+            raise ValueError(
+                "Packet size must be greater than 0"
+            )
+
         super().__init__(
             min_packet_size=packet_size, 
             max_packet_size=packet_size
@@ -868,7 +888,7 @@ class TrafficModelFactory:
                 - 'Poisson': Пакеты генерируются с постоянной интенсивностью.
                 - 'OnOff': Модель с чередованием фаз активности (ON) и молчания (OFF).
                 - 'MMPP': Марковская модель (2-state Markov Modulated Poisson Process).
-                - 'Pereodic': Переодическая модель генерации трафика.
+                - 'Periodic': Переодическая модель генерации трафика.
                 - 'ConstBitrate': Модель генерации трафика с постоянным битрейтом.
 
             **kwargs: Параметры, специфичные для каждой модели:
@@ -892,7 +912,7 @@ class TrafficModelFactory:
                     - min_packet_size (int): Минимальный размер пакета (байт).
                     - max_packet_size (int): Максимальный размер пакета (байт).
 
-                Для 'Pereodic':
+                Для 'Periodic':
                     - packet_interval (int): Интервал между пакетами (мс).
                     - packet_size (int): Размер пакета (байты).
 
@@ -925,8 +945,8 @@ class TrafficModelFactory:
                     [[0, 0.07, 0.03], [0.12, 0, 0.08], [0.4, 0.1, 0]]
                 )
             return MMPPModel(**kwargs)
-        elif model_type == "Pereodic":
-            return PereodicModel(**kwargs)
+        elif model_type == "Periodic":
+            return PeriodicModel(**kwargs)
         elif model_type == "ConstBitrate":
             return ConstBitrateModel(**kwargs)
         else:
@@ -936,7 +956,7 @@ class TrafficModelFactory:
     @staticmethod
     def get_available_models() -> List[str]:
         """Список доступных моделей"""
-        return ["Poisson", "OnOff", "MMPP", "Pereodic", "ConstBitrate"]
+        return ["Poisson", "OnOff", "MMPP", "Periodic", "ConstBitrate"]
 
     @staticmethod
     def create_poisson_model(packet_rate: float, **kwargs) -> PoissonModel:
@@ -960,12 +980,12 @@ class TrafficModelFactory:
         return MMPPModel(packet_rates=packet_rates, transition_matrix=transition_matrix, **kwargs)
     
     @staticmethod
-    def create_pereodic_model(packet_interval: int, packet_size: int) -> PereodicModel:
-        """Удобный метод для создания Pereodic модели"""
-        return PereodicModel(packet_interval=packet_interval, packet_size=packet_size)
+    def create_periodic_model(packet_interval: int, packet_size: int) -> PeriodicModel:
+        """Удобный метод для создания Periodic модели"""
+        return PeriodicModel(packet_interval=packet_interval, packet_size=packet_size)
     
     @staticmethod
-    def create_pereodic_model(bitrate: str, packet_size: int) -> PereodicModel:
+    def create_const_bitrate_model(bitrate: str, packet_size: int) -> ConstBitrateModel:
         """Удобный метод для создания ConstBitrate модели"""
         return ConstBitrateModel(bitrate=bitrate, packet_size=packet_size)
 
