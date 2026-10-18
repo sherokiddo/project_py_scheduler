@@ -246,7 +246,7 @@ def sim_with_manager_qos():
     x_min, x_max, y_min, y_max = MapBorders().get_borders()
 
     # Создание и настройка базовой станции
-    bs = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMa", use_simple_buffer=False)
+    bs = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMa", use_simple_buffer=False, enable_tdl=True)
 
     # Создание коллекции пользовательских устройств
     ue_collection = UECollection()
@@ -286,7 +286,7 @@ def sim_with_manager_qos():
 
     # Установка планировщика. Можно передвать параметры, которые
     # поддерживает SchedulerInterface.
-    sim.set_scheduler(algorithm="ProportionalFair")
+    sim.set_scheduler(algorithm="QosAware")
 
     # Настраиваем модели для каждого UE
     config = [
@@ -339,6 +339,7 @@ def sim_with_manager_qos():
         scheduler_level="full",
         amc_level="full",
         pdcch_level="basic",
+        qos_level="basic",
         file_prefix="emp_stats",
     )
 
