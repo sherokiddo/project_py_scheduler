@@ -2958,9 +2958,26 @@ class BasicQosAwareScheduler(SchedulerInterface):
 
 
 class QosAwareScheduler(SchedulerInterface):
-
+    """
+    QoS-Aware Scheduler.
+    
+    """
     def __init__(self, lte_grid, bs, **kwargs):
+        """
+        Инициализация QoS-Aware Scheduler.
 
+        Args:
+            lte_grid: Экземпляр LTE Grid.
+            bs: Экземпляр Base Station.
+            max_dl_ue_tti: Максимум UE за TTI По умолчанию None.
+            pcfich: PCFICH значение. По умолчанию 2.
+            max_dl_cce_allowance: Лимит CCE. По умолчанию None.
+            verbose_pdcch: Отладочный вывод для PDCCH. По умолчанию False.
+            enable_window: Включить скользящее окно. По умолчанию True.
+            window_size: Размер окна в TTI. По умолчанию 100.
+            verbose: Отладочный вывод для планировщика. По умолчанию False.
+
+        """
         super().__init__(
             lte_grid=lte_grid,
             bs=bs,
@@ -2980,7 +2997,18 @@ class QosAwareScheduler(SchedulerInterface):
         return priority_list
     
     def _calculate_priorities(self, windowed_ues: List[Dict], tti: int) -> List[Dict]:
+        """
+        Вычисление метрики приоритета для упорядочивания PDCCH-очереди.
 
+        Args:
+            windowed_ues (List[Dict]): Список пользователей после filter_by_window.
+            tti (int): Текущий TTI.
+
+        Returns:
+            List[Dict]: Список пользователей с расчитанной метрикой.
+
+        """
+        # Увеличение масштаба метрики для GBR, чтобы гарантировать, что они будут иметь приоритет над non-GBR
         gbr_metric_scale = 1_000_000
         urgency_scale = 1000
 
@@ -3015,7 +3043,19 @@ class QosAwareScheduler(SchedulerInterface):
 
     def _allocate_pdsch(self, tti: int, ues_with_pdcch: List[Dict],
                         eligible_ues: List[Dict]) -> Dict[int, List[int]]:
-        
+        """
+        Распределение PDSCH ресурсов (RBG) между UE.
+
+        Args:
+            tti (int): Текущий TTI.
+            ues_with_pdcch (List[Dict]): Список пользователей с успешно выделенным 
+            PDCCH.
+            eligible_ues (List[Dict]): Все eligible пользователи.
+
+        Returns:
+            Dict[int, List[int]]: Allocation map (UE_ID -> список freq_idx).
+
+        """
         allocation = {u['UE_ID']: [] for u in eligible_ues}
 
         if not ues_with_pdcch:
@@ -3054,7 +3094,6 @@ class QosAwareScheduler(SchedulerInterface):
             rbg_width = len(rb_indices)
             best_metric = -1.0
             best_flow_user = (0, 0)
-            best_rbg_bits = 0
 
             flows_for_schedule = [
                 flow for flow in flows_for_schedule
@@ -3093,7 +3132,6 @@ class QosAwareScheduler(SchedulerInterface):
                 if metric > best_metric:
                     best_metric = metric
                     best_flow_user = (ue_id, qci)
-                    best_rbg_bits = r_j_k
 
             best_ue_id, qci = best_flow_user
             if best_ue_id == 0:
@@ -3111,12 +3149,22 @@ class QosAwareScheduler(SchedulerInterface):
             self.allocation_flow[best_flow_user] += bits_for_flow
 
             remaining_flow_buffer[best_flow_user] = max(0, remaining_flow_buffer[best_flow_user] - 
-                                                        best_rbg_bits)
+                                                        bits_for_flow)
             
         return allocation
     
     def _sigmoid_delay_function(self, hol_delay: int, packet_delay_budget: int) -> float:
+        """
+        Вычисление сигмоидной функции задержки для оценки приоритета потока.
+        
+        Args:
+            hol_delay (int): HOL задержка потока (мс).
+            packet_delay_budget (int): Максимально допустимая задержка пакета (мс).
 
+        Returns:
+            float: Значение сигмоидной функции задержки.
+
+        """
         par_a = 0.045
         par_c = 10
         par_D = 2 * packet_delay_budget / 3
@@ -3125,7 +3173,19 @@ class QosAwareScheduler(SchedulerInterface):
 
     
     def _logical_channel_multiplexing(self, tb_size: int, buffer_status_list: List) -> List[SchedulingGrant]:
+        """
+        Мультиплексирование логических каналов в пределах одного транспортного 
+        блока на основе решений планировщика.
         
+        Args:
+            tb_size (int): Размер транспортного блока (байты).
+            buffer_status_list (List): Список состояний буферов UE.
+
+        Returns:
+            List[SchedulingGrant]: Список грантов, определяющих количество байт,
+                для каждого логического канала UE.
+
+        """
         grants = []
 
         ue_id = buffer_status_list[0].ue_id
