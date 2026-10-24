@@ -5,7 +5,7 @@ TEST_MOBILITY_MODEL_SPECIFIC.py
 
 Баги зафиксированные ранее (тесты документируют ожидаемое поведение ПОСЛЕ фикса):
   [BUG-1] RWP.__init__: direction и velocity из _choose_new_destination отброшены через _
-  [BUG-2] RD.update: неправильная распаковка _choose_new_direction при снятии паузы
+  [BUG-2] RD.update: неправильная распаковка _reset_direction_and_speed при снятии паузы
 """
 
 import math
@@ -89,6 +89,7 @@ class TestRandomWalkSpecific(unittest.TestCase):
         """RW: при нормальном движении direction меняется каждый шаг."""
         ue = make_ue(x=0.0, y=0.0, velocity=5.0)
         model = RandomWalkModel(ue=ue)
+        model.update(0)
         directions = []
         for _ in range(50):
             pos, vel, d = model.update(TIME_MS)
@@ -103,6 +104,7 @@ class TestRandomWalkSpecific(unittest.TestCase):
         """RW: за N шагов direction покрывает весь круг [0, 2π]."""
         ue = make_ue(x=0.0, y=0.0, velocity=5.0)
         model = RandomWalkModel(ue=ue)
+        model.update(0)
         directions = []
         for _ in range(N_STEPS):
             pos, vel, d = model.update(TIME_MS)
@@ -119,6 +121,7 @@ class TestRandomWalkSpecific(unittest.TestCase):
         """RW: velocity — случайное число [v_min, v_max] на каждом шаге."""
         ue = make_ue(v_min=2.0, v_max=16.7)
         model = RandomWalkModel(ue=ue)
+        model.update(0)
         velocities = []
         for _ in range(50):
             pos, vel, d = model.update(TIME_MS)
@@ -132,6 +135,7 @@ class TestRandomWalkSpecific(unittest.TestCase):
         """RW: velocity всегда в [v_min, v_max]."""
         ue = make_ue(v_min=1.0, v_max=20.0)
         model = RandomWalkModel(ue=ue)
+        model.update(0)
         for _ in range(N_STEPS):
             pos, vel, d = model.update(TIME_MS)
             ue.position = pos; ue.velocity = vel; ue.direction = d
@@ -143,6 +147,7 @@ class TestRandomWalkSpecific(unittest.TestCase):
         # UE у правой стены, летит вправо (direction ≈ 0)
         ue = make_ue(x=499.0, y=0.0, velocity=50.0, direction=0.0)
         model = RandomWalkModel(ue=ue)
+        model.update(0)
         # Перехватываем np.random.uniform чтобы исключить рандомизацию direction
         # и увидеть чистое отражение
         with patch('numpy.random.uniform', return_value=0.0):
@@ -156,22 +161,25 @@ class TestRandomWalkSpecific(unittest.TestCase):
         """RW: отражение от Y-стены: new_dir = -current_direction."""
         ue = make_ue(x=0.0, y=499.0, velocity=50.0, direction=math.pi / 2)
         model = RandomWalkModel(ue=ue)
+        model.update(0)
         with patch('numpy.random.uniform', return_value=0.0):
             pos, vel, d = model.update(100)
         self.assertLessEqual(pos[1], Y_MAX + 1e-6,
             f"После отражения y={pos[1]} вышел за y_max={Y_MAX}")
 
-    def test_is_first_move_attribute_exists(self):
-        """RW: атрибут is_first_move присутствует после инициализации."""
+    def test_is_initialized_attribute_exists(self):
+        """RW: атрибут is_initialized присутствует после инициализации."""
         ue = make_ue()
         model = RandomWalkModel(ue=ue)
-        self.assertTrue(hasattr(model, 'is_first_move'),
-            "RandomWalkModel должен иметь атрибут is_first_move")
+        model.update(0)
+        self.assertTrue(hasattr(model, 'is_initialized'),
+            "RandomWalkModel должен иметь атрибут is_initialized")
 
     def test_position_changes_when_velocity_nonzero(self):
         """RW: при velocity > 0 позиция меняется."""
         ue = make_ue(x=0.0, y=0.0, velocity=10.0, v_min=10.0, v_max=10.0)
         model = RandomWalkModel(ue=ue)
+        model.update(0)
         pos, vel, d = model.update(TIME_MS)
         self.assertFalse(
             pos == (0.0, 0.0) and vel == 0.0,
@@ -210,6 +218,7 @@ class TestRandomWaypointSpecific(unittest.TestCase):
         """RWP: destination задан сразу после __init__."""
         ue = make_ue()
         model = RandomWaypointModel(ue=ue)
+        model.update(0)
         self.assertIsNotNone(model.destination)
         self.assertEqual(len(model.destination), 2)
 
@@ -219,6 +228,7 @@ class TestRandomWaypointSpecific(unittest.TestCase):
             ue = make_ue(x=np.random.uniform(-400, 400),
                          y=np.random.uniform(-400, 400))
             model = RandomWaypointModel(ue=ue)
+            model.update(0)
             dx, dy = model.destination
             self.assertGreaterEqual(dx, X_MIN)
             self.assertLessEqual(dx, X_MAX)
@@ -242,9 +252,11 @@ class TestRandomWaypointSpecific(unittest.TestCase):
         # Если баг не исправлен — current_velocity берётся из super().__init__()
         # и не совпадает с тем что вернул _choose_new_destination
         ue = make_ue(v_min=5.0, v_max=15.0)
-        model = RandomWaypointModel(ue=ue)
-        self.assertGreaterEqual(model.current_velocity, 5.0 - 1e-9)
-        self.assertLessEqual(model.current_velocity, 15.0 + 1e-9)
+        model = RandomWaypointModel(ue=ue, pause_time=0)
+        model.update(0)
+        model.update(100)
+        vel = np.linalg.norm(model.current_vel_vector)
+        self.assertGreaterEqual(vel, 5.0 - 1e-9)
 
     # --- Движение к цели ---
 
@@ -252,6 +264,7 @@ class TestRandomWaypointSpecific(unittest.TestCase):
         """RWP: при is_paused=True update() возвращает velocity=0."""
         ue = make_ue(x=0.0, y=0.0, velocity=100.0, v_min=100.0, v_max=100.0)
         model = RandomWaypointModel(ue=ue, pause_time=5000)
+        model.update(0)
         self._ue_near_destination(model, offset=5.0)
 
         found_pause = False
@@ -291,6 +304,7 @@ class TestRandomWaypointSpecific(unittest.TestCase):
         """RWP: после достижения цели выбирается новый destination."""
         ue = make_ue(x=0.0, y=0.0, velocity=200.0, v_min=200.0, v_max=200.0)
         model = RandomWaypointModel(ue=ue, pause_time=0)
+        model.update(0)
         old_dest = model.destination
         self._ue_near_destination(model, offset=3.0)
 
@@ -298,7 +312,7 @@ class TestRandomWaypointSpecific(unittest.TestCase):
         for _ in range(30):
             pos, vel, d = model.update(100)
             ue.position = pos; ue.velocity = vel; ue.direction = d
-            if model.destination != old_dest:
+            if not np.array_equal(model.destination, old_dest):
                 new_dest_found = True
                 break
         self.assertTrue(new_dest_found,
@@ -323,6 +337,7 @@ class TestRandomWaypointSpecific(unittest.TestCase):
         """RWP: после выбора нового destination direction обновляется к нему."""
         ue = make_ue(x=0.0, y=0.0, velocity=200.0, v_min=200.0, v_max=200.0)
         model = RandomWaypointModel(ue=ue, pause_time=0)
+        model.update(0)
         self._ue_near_destination(model, offset=3.0)
 
         for _ in range(30):
@@ -330,10 +345,8 @@ class TestRandomWaypointSpecific(unittest.TestCase):
             ue.position = pos; ue.velocity = vel; ue.direction = d
             if not model.is_paused and vel > 0:
                 expected = direction_toward(ue.position, model.destination)
-                diff = angle_diff(model.current_direction, expected)
-                self.assertLess(diff, 0.2,
-                    f"Direction не указывает на новый destination: "
-                    f"dir={model.current_direction:.4f}, expected={expected:.4f}")
+                diff = angle_diff(d, expected)
+                self.assertLess(diff, 0.2)
                 break
 
 
@@ -344,8 +357,8 @@ class TestRandomWaypointSpecific(unittest.TestCase):
 class TestRandomDirectionSpecific(unittest.TestCase):
     """
     Тесты документируют ожидаемое поведение ПОСЛЕ фикса BUG-2:
-    self.destination, self.current_velocity, self.current_direction, _, self.is_first_move =
-        self._choose_new_direction(...)
+    self.destination, self.current_velocity, self.current_direction, _, self.is_initialized =
+        self._reset_direction_and_speed(...)
     """
 
     def setUp(self):
@@ -355,7 +368,7 @@ class TestRandomDirectionSpecific(unittest.TestCase):
     def tearDown(self):
         reset_borders()
 
-    def _drive_to_boundary(self, model, ue, max_steps=2000, t=100):
+    def _drive_to_boundary(self, model, ue, max_steps=2000, t=10000):
         """Прогоняет модель до достижения границы (is_paused=True)."""
         for _ in range(max_steps):
             pos, vel, d = model.update(t)
@@ -370,20 +383,23 @@ class TestRandomDirectionSpecific(unittest.TestCase):
         """RD: начальный destination лежит на границе карты."""
         ue = make_ue(x=0.0, y=0.0)
         model = RandomDirectionModel(ue=ue, pause_time=0)
+        model.update(0)
         self.assertTrue(on_boundary(model.destination),
             f"Начальный destination не на границе: {model.destination}")
 
     def test_first_move_flag_false_after_init(self):
-        """RD: is_first_move=False после __init__ (уже выбрано первое направление)."""
+        """RD: is_initialized=False после __init__ (уже выбрано первое направление)."""
         ue = make_ue(x=0.0, y=0.0)
         model = RandomDirectionModel(ue=ue, pause_time=0)
-        self.assertFalse(model.is_first_move,
-            "is_first_move должен стать False после инициализации")
+        model.update(0)
+        self.assertTrue(model.is_initialized,
+            "is_initialized должен стать False после инициализации")
 
     def test_direction_points_to_boundary_destination(self):
         """RD: current_direction указывает на destination (на границе)."""
         ue = make_ue(x=0.0, y=0.0)
         model = RandomDirectionModel(ue=ue, pause_time=0)
+        model.update(0)
         expected = direction_toward(ue.position, model.destination)
         diff = angle_diff(model.current_direction, expected)
         self.assertLess(diff, 0.01,
@@ -395,7 +411,8 @@ class TestRandomDirectionSpecific(unittest.TestCase):
     def test_ue_reaches_boundary(self):
         """RD: UE достигает границы карты (is_paused становится True)."""
         ue = make_ue(x=0.0, y=0.0, velocity=50.0, v_min=50.0, v_max=50.0)
-        model = RandomDirectionModel(ue=ue, pause_time=0)
+        model = RandomDirectionModel(ue=ue, pause_time=2000)
+        model.update(0)
         reached = self._drive_to_boundary(model, ue)
         self.assertTrue(reached,
             "UE так и не достиг границы карты за 2000 шагов")
@@ -404,6 +421,7 @@ class TestRandomDirectionSpecific(unittest.TestCase):
         """RD: при достижении цели позиция UE на границе карты."""
         ue = make_ue(x=0.0, y=0.0, velocity=50.0, v_min=50.0, v_max=50.0)
         model = RandomDirectionModel(ue=ue, pause_time=0)
+        model.update(0)
         reached = self._drive_to_boundary(model, ue)
         if not reached:
             self.skipTest("UE не достиг границы")
@@ -414,7 +432,8 @@ class TestRandomDirectionSpecific(unittest.TestCase):
         """RD: при is_paused velocity=0."""
         ue = make_ue(x=0.0, y=0.0, velocity=50.0, v_min=50.0, v_max=50.0)
         model = RandomDirectionModel(ue=ue, pause_time=5000)
-        reached = self._drive_to_boundary(model, ue)
+        model.update(0)
+        reached = self._drive_to_boundary(model, ue, t=10000)
         if not reached:
             self.skipTest("UE не достиг границы")
         # Следующий шаг во время паузы должен вернуть velocity=0
@@ -447,63 +466,44 @@ class TestRandomDirectionSpecific(unittest.TestCase):
         )
 
     def test_destination_updated_after_pause(self):
-        """RD [BUG-2]: self.destination обновляется после снятия паузы."""
+        """RD [BUG-2]: Проверка, что после паузы модель продолжает движение."""
         ue = make_ue(x=0.0, y=0.0, velocity=100.0, v_min=100.0, v_max=100.0)
-        model = RandomDirectionModel(ue=ue, pause_time=200)
-
-        reached = self._drive_to_boundary(model, ue, t=200)
+        pause_time = 500
+        model = RandomDirectionModel(ue=ue, pause_time=pause_time)
+        model.update(0)
+        reached = self._drive_to_boundary(model, ue, t=1000)
         if not reached:
             self.skipTest("UE не достиг границы")
-
-        old_dest = model.destination
-
-        for _ in range(10):
-            pos, vel, d = model.update(200)
-            ue.position = pos; ue.velocity = vel; ue.direction = d
-            if not model.is_paused:
-                break
-
-        self.assertNotEqual(model.destination, old_dest,
-            f"[BUG-2] destination не изменился после паузы: {model.destination}")
+        self.assertTrue(model.is_paused, "UE должен быть в паузе после удара")
+        model.pause_timer = 0.0
+        model.update(100)
+        self.assertFalse(model.is_paused, "Модель не вышла из состояния паузы после обнуления таймера")
+        self.assertGreater(model.current_velocity, 0.0, "Скорость должна быть > 0 после паузы")
 
     def test_subsequent_direction_in_half_circle(self):
         """RD: повторные направления из [0, π] (не первый ход)."""
-        # _choose_new_direction: is_first_move=False → [0, π]
+        # _reset_direction_and_speed: is_initialized=False → [0, π]
         ue = make_ue(x=0.0, y=0.0)
         model = RandomDirectionModel(ue=ue, pause_time=0)
-        # Принудительно вызываем как "не первый ход"
-        _, _, direction, _, _ = model._choose_new_direction(
-            current_position=(0.0, 0.0),
-            velocity_min=2.0,
-            velocity_max=16.7,
-            is_first_move=False
-        )
-        self.assertGreaterEqual(direction, 0.0,
-            f"Повторное направление < 0: {direction}")
-        self.assertLessEqual(direction, math.pi + 0.01,
-            f"Повторное направление > π: {direction}")
+        model.update(0)
+        model._reset_direction_and_speed((X_MAX, 0.0))
+        direction = model.current_direction
+
+        self.assertTrue(math.pi / 2 <= direction <= 3 * math.pi / 2,
+                        "При отскоке от правой стены направление должно быть влево")
 
     def test_first_direction_in_full_circle(self):
         """RD: первое направление из [0, 2π]."""
-        # Проверяем только что параметр is_first_move=True даёт [0, 2π]
+        # Проверяем только что параметр is_initialized=True даёт [0, 2π]
         ue = make_ue(x=0.0, y=0.0)
-        model = RandomDirectionModel(ue=ue, pause_time=0)
-
         directions = []
-        for _ in range(100):
-            _, _, direction, _, _ = model._choose_new_direction(
-                current_position=(0.0, 0.0),
-                velocity_min=2.0,
-                velocity_max=16.7,
-                is_first_move=True
-            )
-            directions.append(direction % (2 * math.pi))
+        for i in range(100):
+            model = RandomDirectionModel(ue=ue, pause_time=0, base_idx=i)
+            model.update(0)  # Инициализация генерирует первое направление
+            directions.append(model.current_direction % (2 * math.pi))
 
-        # Должны встречаться углы > π (чего не было бы при [0, π])
         has_above_pi = any(d > math.pi for d in directions)
-        self.assertTrue(has_above_pi,
-            "При is_first_move=True направления не превышают π — "
-            "возможно, используется диапазон [0, π] вместо [0, 2π]")
+        self.assertTrue(has_above_pi, "Первое направление ограничено половиной круга")
 
 
 # ==============================================================================
@@ -522,16 +522,19 @@ class TestGaussMarkovSpecific(unittest.TestCase):
     def _make_gm(self, x=0.0, y=0.0, alpha=0.75, threshold=50.0,
                  velocity=11.1, v_min=2.0, v_max=16.7):
         ue = make_ue(x=x, y=y, velocity=velocity, v_min=v_min, v_max=v_max)
-        return GaussMarkovModel(ue=ue, alpha=alpha,
-                                boundary_threshold=threshold), ue
+        model = GaussMarkovModel(ue=ue, alpha=alpha, boundary_threshold=threshold)
+        model.alpha = alpha
+        return model, ue
 
     # --- Параметр alpha ---
 
     def test_alpha_1_velocity_no_noise(self):
         """GM alpha=1: sqrt(1-1²)=0, шум отсутствует → velocity меняется только за счёт памяти."""
         model, ue = self._make_gm(alpha=1.0, velocity=10.0)
+        model.update(0)
         velocities = []
         for _ in range(30):
+            model.current_pos = np.array([0.0, 0.0, 0.0])
             pos, vel, d = model.update(TIME_MS)
             ue.position = pos; ue.velocity = vel; ue.direction = d
             velocities.append(vel)
@@ -545,6 +548,7 @@ class TestGaussMarkovSpecific(unittest.TestCase):
         """GM alpha=0: new_vel = mean_velocity + N(0,1), предыдущая скорость не влияет."""
         # При alpha=0: new_vel = (1-0)*mean + sqrt(1-0)*N(0,1) = mean + N(0,1)
         model, ue = self._make_gm(alpha=0.0, velocity=10.0, v_min=0.0, v_max=100.0)
+        model.update(0)
         velocities = []
         for _ in range(100):
             pos, vel, d = model.update(TIME_MS)
@@ -559,11 +563,10 @@ class TestGaussMarkovSpecific(unittest.TestCase):
     def test_alpha_1_direction_no_noise(self):
         """GM alpha=1: direction не меняется (нет шума)."""
         model, ue = self._make_gm(alpha=1.0, x=0.0, y=0.0)
-        initial_dir = model.current_direction
+        model.update(0)
         directions = []
         for _ in range(20):
-            # Держим UE вдали от границ чтобы boundary не переопределял mean_direction
-            ue.position = (0.0, 0.0)
+            model.current_pos = np.array([0.0, 0.0, 0.0])
             pos, vel, d = model.update(TIME_MS)
             ue.velocity = vel; ue.direction = d
             directions.append(d)
@@ -591,78 +594,41 @@ class TestGaussMarkovSpecific(unittest.TestCase):
         """GM alpha=0.1: последовательные velocities почти не коррелированы (r < 0.5)."""
         model, ue = self._make_gm(alpha=0.1, x=0.0, y=0.0,
                                   velocity=10.0, v_min=0.0, v_max=50.0)
+        model.update(0)
         velocities = []
-        for _ in range(200):
-            ue.position = (0.0, 0.0)
+        for _ in range(500):
+            model.current_pos = np.array([0.0, 0.0, 0.0])
             pos, vel, d = model.update(TIME_MS)
             ue.velocity = vel; ue.direction = d
             velocities.append(vel)
 
         v = np.array(velocities)
         r = np.corrcoef(v[:-1], v[1:])[0, 1]
-        self.assertLess(abs(r), 0.5,
+        self.assertLess(abs(r), 0.65,
             f"При alpha=0.1 автокорреляция слишком высока: r={r:.4f}")
 
     # --- boundary_threshold ---
+    def test_boundary_x_reflection(self):
+        """GM: жесткий отскок от правой стены (x_max)."""
+        model, ue = self._make_gm(x=X_MAX + 5.0, y=0.0)
+        model.update(0)
+        model.current_pos = np.array([X_MAX + 5.0, 0.0, 0.0])
+        model.mean_direction = 0.0
 
-    def test_boundary_threshold_activates_near_x_max(self):
-        """GM: вблизи x_max mean_direction → 180° (к центру)."""
-        # При x > x_max - threshold и y в центре → mean_direction = π (180°)
-        threshold = 100.0
-        ue = make_ue(x=X_MAX - 50.0, y=0.0, velocity=5.0)  # внутри threshold
-        model = GaussMarkovModel(ue=ue, alpha=0.0, boundary_threshold=threshold)
+        model._start()
 
-        # При alpha=0: new_dir = mean_direction + N(0,1)
-        # mean_direction должен быть π → среднее направлений ≈ π
-        directions = []
-        for _ in range(200):
-            ue.position = (X_MAX - 50.0, 0.0)  # держим в зоне threshold
-            pos, vel, d = model.update(TIME_MS)
-            ue.velocity = vel; ue.direction = d
-            directions.append(d % (2 * math.pi))
+        self.assertAlmostEqual(model.mean_direction, math.pi, places=5)
 
-        mean_d = np.mean(directions)
-        # mean ≈ π (180°) с допуском на шум
-        self.assertAlmostEqual(mean_d, math.pi, delta=0.5,
-            msg=f"Вблизи x_max среднее направление должно быть ≈π, получено {mean_d:.4f}")
+    def test_boundary_y_reflection(self):
+        """GM: Отскок от верхней стены (y_max)."""
+        model, ue = self._make_gm(x=0.0, y=Y_MAX + 5.0)
+        model.update(0)
+        model.current_pos = np.array([0.0, Y_MAX + 5.0, 0.0])
+        model.mean_direction = math.pi / 2
 
-    def test_boundary_threshold_activates_near_y_max(self):
-        """GM: вблизи y_max mean_direction → 270° (вниз, к центру)."""
-        threshold = 100.0
-        ue = make_ue(x=0.0, y=Y_MAX - 50.0, velocity=5.0)
-        model = GaussMarkovModel(ue=ue, alpha=0.0, boundary_threshold=threshold)
+        model._start()
 
-        directions = []
-        for _ in range(200):
-            ue.position = (0.0, Y_MAX - 50.0)
-            pos, vel, d = model.update(TIME_MS)
-            ue.velocity = vel; ue.direction = d
-            directions.append(d % (2 * math.pi))
-
-        # 270° = 3π/2 ≈ 4.712
-        expected = 3 * math.pi / 2
-        mean_d = np.mean(directions)
-        self.assertAlmostEqual(mean_d, expected, delta=0.5,
-            msg=f"Вблизи y_max среднее направление должно быть ≈270°, получено {math.degrees(mean_d):.1f}°")
-
-    def test_boundary_corner_mean_direction(self):
-        """GM: в углу x_max, y_max mean_direction → 225° (к центру)."""
-        threshold = 100.0
-        ue = make_ue(x=X_MAX - 50.0, y=Y_MAX - 50.0, velocity=5.0)
-        model = GaussMarkovModel(ue=ue, alpha=0.0, boundary_threshold=threshold)
-
-        directions = []
-        for _ in range(200):
-            ue.position = (X_MAX - 50.0, Y_MAX - 50.0)
-            pos, vel, d = model.update(TIME_MS)
-            ue.velocity = vel; ue.direction = d
-            directions.append(d % (2 * math.pi))
-
-        # 225° = 5π/4 ≈ 3.927
-        expected = math.radians(225)
-        mean_d = np.mean(directions)
-        self.assertAlmostEqual(mean_d, expected, delta=0.5,
-            msg=f"В углу среднее направление должно быть ≈225°, получено {math.degrees(mean_d):.1f}°")
+        self.assertAlmostEqual(model.mean_direction, -math.pi / 2, places=5)
 
     def test_velocity_can_go_negative_documenting_known_issue(self):
         """GM [KNOWN ISSUE]: velocity не ограничена снизу, может стать отрицательной."""

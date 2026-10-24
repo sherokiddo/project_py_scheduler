@@ -297,9 +297,11 @@ class UserEquipment:
         UE_ID: int,
         x: float = 0.0,
         y: float = 0.0,
+        z: float = 0.0,
         buffer_size: int = 1048576,
         ue_class: str = "pedestrian",
         indoor_boundaries: Tuple[float, float, float, float] = (0, 0, 0, 0),
+        **kwargs
     ):
         """
         Инициализация пользовательского устройства.
@@ -316,16 +318,17 @@ class UserEquipment:
 
         """
         self.UE_ID = UE_ID
-        self.position = (x, y)  # Координаты (x, y) в метрах
+        self.position = (x, y, z)  # Координаты (x, y) в метрах
         self.ue_class = ue_class
 
+        self.mean_velocity = 0.0
         self.velocity_min = 0.0  # Минимальная скорость в м/с
         self.velocity_max = 0.0  # Максимальная скорость в м/с
 
         self.is_indoor = False  # Находится ли UE в помещении
         self.indoor_boundaries = indoor_boundaries  # Границы помещения
 
-        self._set_scenario_parameters()
+        self._set_scenario_parameters(**kwargs)
         self.serving_bs = None
         self.mobility_model = None  # Установить позже
         self.velocity = 0.0  # Скорость в м/с
@@ -719,8 +722,9 @@ class UserEquipment:
         """
         x_min, x_max, y_min, y_max = self.indoor_boundaries
 
-        ue_x, ue_y = self.position
-        bs_x, bs_y = self.serving_bs.position
+        ue_x, ue_y = self.position[0], self.position[1]
+        bs_x, bs_y = self.serving_bs.position[0], self.serving_bs.position[1]
+        dz = self.serving_bs.height - self.UE_height
 
         if (x_min <= bs_x <= x_max) and (y_min <= bs_y <= y_max):
             distance = np.hypot(bs_x - ue_x, bs_y - ue_y)
@@ -764,15 +768,21 @@ class UserEquipment:
         self.dist_to_BS_2D = d_total
         self.dist_to_BS_2D_in = d_in
         self.dist_to_BS_2D_out = d_out
-        self.dist_to_BS_3D = np.hypot(self.dist_to_BS_2D, self.serving_bs.height - self.UE_height)
+        self.dist_to_BS_3D = np.hypot(self.dist_to_BS_2D, dz)
 
-    def _set_scenario_parameters(self):
+    def _set_scenario_parameters(self, **kwargs):
         """
         Установка параметров в зависимости от класса UE.
 
         """
         self.mean_direction = np.random.randint(0, 360)
         self.is_indoor = self.ue_class == "indoor"
+
+        if self.ue_class == "custom":
+            self.velocity_min = kwargs.get("velocity_min", 0.0)
+            self.velocity_max = kwargs.get("velocity_max", 0.0)
+            self.mean_velocity = kwargs.get("mean_velocity", 0.0)
+            return
 
         params = {
             "indoor": (0.0, 1.0, 0.5),
@@ -788,7 +798,7 @@ class UserEquipment:
 
         # Значение границ помещения по умолчанию, если параметр не был задан
         if self.is_indoor and self.indoor_boundaries == (0, 0, 0, 0):
-            x, y = self.position
+            x, y = self.position[0], self.position[1]
             self.indoor_boundaries = (x - 10, x + 10, y - 10, y + 10)
 
 
@@ -926,7 +936,10 @@ class UECollection:
         x_max: float = None,
         y_min: float = None,
         y_max: float = None,
+        z_min: float = 0.0,
+        z_max: float = 0.0,
         ue_class: str = "random",
+        **kwargs
     ):
         """
         Добавить указанное количество пользовательских устройств (UE) в
@@ -949,23 +962,29 @@ class UECollection:
             ue_class (str, optional): Класс UE. По умолчанию "random".
 
         """
-        rng = np.random.default_rng(GLOBALS.SEED)
+        use_rng = False
 
-        if ue_class == "random":
-            available_classes = ["pedestrian", "cyclist", "car"]
-            ue_classes = rng.choice(available_classes, size=num_ue, replace=True)
-        else:
-            ue_classes = [ue_class] * num_ue
+        if all(v is not None for v in [x_min, x_max, y_min, y_max]):
+            from RNG import RandomGenerator
+            rng = RandomGenerator(seed=GLOBALS.SEED or 42)
+            use_rng = True
 
+        available_classes = ["pedestrian", "cyclist", "car"]
         start_id = max(self.users.keys(), default=0) + 1
 
         for i in range(num_ue):
             ue_id = start_id + i
-            x_position = rng.uniform(x_min, x_max)
-            y_position = rng.uniform(y_min, y_max)
+            if use_rng:
+                x_pos = rng.uniform(x_min, x_max, stream_offset=i * 3)
+                y_pos = rng.uniform(y_min, y_max, stream_offset=i * 3 + 1)
+                z_pos = rng.uniform(z_min, z_max, stream_offset=i * 3 + 2)
+            else:
+                x_pos, y_pos, z_pos = 0.0, 0.0, 0.0
+
+            current_class = ue_class if ue_class != "random" else available_classes[i % len(available_classes)]
 
             self.users[ue_id] = UserEquipment(
-                UE_ID=ue_id, x=x_position, y=y_position, ue_class=ue_classes[i]
+                UE_ID=ue_id, x=x_pos, y=y_pos, z=z_pos, ue_class=current_class, **kwargs
             )
 
     def SET_MOBILITY_MODEL(self, model, ue_ids: List[int] = None, **kwargs):
@@ -998,9 +1017,24 @@ class UECollection:
             SET_MOBILITY_MODEL('RandomWalk', pause_time=2.0, velocity_min=1.0)
 
         """
-        for ue in self.users.values():
+        streams_per_model = {
+            "RandomWalk": 2,
+            "RandomWaypoint": 4,
+            "RandomDirection": 3,
+            "GaussMarkov": 6,
+        }
+        stride = streams_per_model.get(model, 2)
+
+        for i, ue in enumerate(self.users.values()):
             if ue_ids is None or ue.UE_ID in ue_ids:
-                ue.SET_MOBILITY_MODEL(model, **kwargs)
+                model_params = kwargs.copy()
+
+                if 'seed' not in model_params:
+                    model_params['seed'] = GLOBALS.SEED or 42
+                if 'base_idx' not in model_params:
+                    model_params['base_idx'] = 2 + (i * stride)
+
+                ue.SET_MOBILITY_MODEL(model, **model_params)
 
     def SET_TRAFFIC_MODEL(self, model, ue_ids: List[int] = None):
         """
@@ -1028,6 +1062,36 @@ class UECollection:
         for ue in self.users.values():
             bs.REG_UE(ue)
 
+    def ALLOCATE_POSITIONS_RANDOM(self, x_min: float, x_max: float, y_min: float, y_max: float,
+                                  z_min: float = 0.0, z_max: float = 0.0,
+                                  seed: int = 12345, run: int = 1, ue_ids: list = None):
+        """Распределяет пользователей случайно на карте."""
+        from RNG import RandomGenerator
+        rng = RandomGenerator(seed=seed, run_idx=run)
+
+        for ue in self.users.values():
+            if ue_ids is None or ue.UE_ID in ue_ids:
+                x = rng.uniform(x_min, x_max, stream_offset=0)
+                y = rng.uniform(y_min, y_max, stream_offset=1)
+                z = rng.uniform(z_min, z_max, stream_offset=2)
+                ue.position = (x, y, z)
+                ue.coordinates = [ue.position]
+
+    def ALLOCATE_POSITIONS_FROM_LIST(self, positions_list: list, ue_ids: list = None):
+        """Раздает пользователям позиции строго по заданному списку координат."""
+        if not positions_list:
+            raise ValueError("Список позиций пуст!")
+
+        idx = 0
+        for ue in self.users.values():
+            if ue_ids is None or ue.UE_ID in ue_ids:
+                pos = positions_list[idx]
+                if len(pos) == 2:
+                    pos = (pos[0], pos[1], 0.0)
+
+                ue.position = pos
+                ue.coordinates = [ue.position]
+                idx = (idx + 1) % len(positions_list)
 
 # Далее тесты для проверки работоспособности буфера и примеры работы с ним.
 # Можно удалить или закомментить после того, как будут сделаны генераторы трафика.
