@@ -13,7 +13,7 @@ continue :919) — кейс будет покрыт unit-тестами стра
 from pathlib import Path
 
 import pytest
-from conftest import assert_matches_baseline, load_snapshot
+from baseline_harness import assert_matches_baseline, load_snapshot
 from SCHEDULER import SchedulerInterface
 
 WB_ALGORITHMS = [

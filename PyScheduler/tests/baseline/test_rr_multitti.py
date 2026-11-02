@@ -1,6 +1,6 @@
 """RR-сценарий: ротация rr_ue_offset/rr_rbg_offset, 3+ TTI (раздел 9.3)."""
 
-from conftest import assert_matches_baseline, load_snapshot
+from baseline_harness import assert_matches_baseline, load_snapshot
 
 
 def test_rr_multitti_matches_baseline():

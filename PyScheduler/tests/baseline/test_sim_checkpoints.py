@@ -14,7 +14,7 @@ import json
 
 import baseline_compare
 import pytest
-from conftest import load_snapshot
+from baseline_harness import load_snapshot
 
 sim_checkpoint = importlib.import_module("sim_checkpoint")
 

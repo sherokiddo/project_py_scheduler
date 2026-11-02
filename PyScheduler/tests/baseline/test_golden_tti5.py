@@ -6,7 +6,7 @@
 - pdcch_ue_cce_allocations = {3: 1, 1: 1} (2/25 CCE)
 - извлечено 8004/2404 бита (UE1/UE3), EWMA 16008/4808
 """
-from conftest import assert_matches_baseline, load_snapshot
+from baseline_harness import assert_matches_baseline, load_snapshot
 
 
 def test_golden_tti5_matches_baseline():

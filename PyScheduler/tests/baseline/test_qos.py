@@ -6,7 +6,7 @@
 гранты через буферы, per-QCI throughput QciThroughputTracker).
 """
 
-from conftest import assert_matches_baseline, load_snapshot
+from baseline_harness import assert_matches_baseline, load_snapshot
 
 
 def test_qos_basic_single_bearer_matches_baseline():

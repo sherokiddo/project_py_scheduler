@@ -21,6 +21,18 @@
   `PyScheduler/` в `sys.path` (тот же приём, что в `layered_buffer_tests/
   conftest.py`) и регистрирует маркер `sim` через `pytest_configure`.
   Патч M0 не создаёт и не меняет файлы вне `PyScheduler/tests/baseline/`.
+- Хелперы сравнения снимков (`load_snapshot`, `assert_matches_baseline`,
+  `ALL_SCENARIO_NAMES`) вынесены в `baseline_harness.py`, тесты импортируют их
+  оттуда, а не из `conftest`. Причина: имя модуля `conftest` в дереве
+  `PyScheduler/tests/` не уникально (свой `conftest.py` есть в `baseline/`,
+  `layered_buffer_tests/`, `scheduler_tests/`, а с шага M1 — ещё и в
+  `scheduler_arch_tests/`). Когда pytest собирает несколько таких каталогов
+  одним запуском, `from conftest import ...` может разрешиться в чужой файл:
+  `ImportError: cannot import name 'assert_matches_baseline' from 'conftest'`
+  и падение коллекции. Воспроизведение: `cd PyScheduler && python -m pytest
+  tests/baseline tests/<каталог со своим conftest.py> -q` (и обратный порядок).
+  `conftest.py` переэкспортирует имена хелперов для совместимости.
+  На снимки и поведение правка не влияет: регенерация не требуется.
 
 ## 2. Команды запуска
 
@@ -99,7 +111,7 @@ throughput per QCI), `scheduler_extra` (`rr_*_offset`, `allocation_flow`,
 - `sch_total_time_us` и прочие wall-clock показатели в снимки **не входят**
   и не сравниваются;
 - `meta.env` (версии python/numpy/pytest) — информационное поле, **исключено
-  из сравнения** (`conftest.assert_matches_baseline` отфильтровывает ключ
+  из сравнения** (`baseline_harness.assert_matches_baseline` отфильтровывает ключ
   `env`): снимок обязан проверяться на машине, отличной от той, на которой
   он построен;
 - full-SIM: sha256 полной истории allocation — побитово; агрегаты — по тем
@@ -210,7 +222,8 @@ tests/baseline/
 ├── baseline_compare.py        — правила сравнения (8.2)
 ├── generate_baselines.py      — генератор снимков
 ├── sim_checkpoint.py          — full-SIM контрольные точки
-├── conftest.py                — фикстуры/хелперы тестов
+├── baseline_harness.py        — хелперы сравнения снимков (load/assert)
+├── conftest.py                — фикстуры, sys.path, маркер `sim`
 ├── test_golden_tti5.py        — золотой сценарий (9.1)
 ├── test_matrix.py             — WB/FD-матрица (9, 9.2)
 ├── test_rr_multitti.py        — RR-ротация (9.3)

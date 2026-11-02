@@ -6,7 +6,7 @@
 «нет двойного владения» проверяется явно и должен пережить миграцию.
 """
 import pytest
-from conftest import assert_matches_baseline, load_snapshot
+from baseline_harness import assert_matches_baseline, load_snapshot
 
 CONFLICT_SCENARIOS = ["conflict_rbg_contended", "conflict_pdcch_limited"]
 
