@@ -51,7 +51,7 @@ def assert_matches_baseline(name: str) -> None:
     actual = bsc.SCENARIOS[name]()
 
     # meta.env — информационная подпись окружения, в сравнении не участвует
-    # (RUNBOOK §5): иначе снимок нельзя было бы проверить на другой машине.
+    # (README модуля §4.3): иначе снимок нельзя было бы проверить на другой машине.
     exp_meta = {k: v for k, v in expected["meta"].items() if k != "env"}
     act_meta = {k: v for k, v in actual["meta"].items() if k != "env"}
     diffs = compare(exp_meta, act_meta, path="meta")

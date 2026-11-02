@@ -56,7 +56,7 @@ ABSENT_QCI = 99
 THROUGHPUT_PROBE = 1234.5
 OFFSET_PROBE = (2, 3)
 
-# Алгоритмы, у которых есть поля ротации rr_*_offset (INVENTORY-M1.md §5);
+# Алгоритмы, у которых есть поля ротации rr_*_offset (SPEC-FEAT-SCH-008 §4.2);
 # у остальных шести полей нет, и LegacyStateView читает их как 0 (AS-IS).
 RR_OFFSET_ALGORITHMS = ("RoundRobin", "FD_FGS")
 
@@ -535,8 +535,8 @@ def test_legacy_code_does_not_reference_views(wb_ctx):
 def test_m1_section_appended_after_legacy_code():
     """Раздел M1 — последние узлы модуля: номера строк legacy-кода сохранены (R3).
 
-    Якоря `:NNN` в INVENTORY-M1.md и в запросе владельцу BS_MODULE
-    (BUG-SCH-012) остаются действительными, поэтому новый код не вставляется в
+    Якоря `:NNN` в спецификации FEAT-SCH-008 (§4.2) и в запросе владельцу
+    BS_MODULE (BUG-SCH-012) действительны, поэтому новый код не вставляется в
     середину файла — иначе «съехали» бы все ссылки на чужой код.
 
     Проверяется не номер строки раздела, а порядок узлов: после маркера не
@@ -558,7 +558,7 @@ def test_m1_section_appended_after_legacy_code():
         f"маркер раздела на строке {section}, legacy-код кончается на {legacy_end}")
 
 
-# Цитаты кода, на которые ссылаются docstring адаптеров и INVENTORY-M1.md.
+# Цитаты кода, на которые ссылаются docstring адаптеров и SPEC-FEAT-SCH-008 §4.2.
 DOCUMENTED_QUOTES = (
     "buffer_manager = self.lte_grid.bs.buffer_manager",
     "def _get_wb_cqi",
@@ -579,8 +579,8 @@ def test_documentation_quotes_present_in_module():
     модуля выше по файлу, и тест начал бы падать без изменения поведения —
     то есть стал бы архитектурозависимым. Контроль по содержимому ловит
     главное: цитата перестала соответствовать коду (дух DOC-SCH-003).
-    Фактические номера строк перечислены в INVENTORY-M1.md и перепривязываются
-    при его обновлении (RUNBOOK §8).
+    Фактические номера строк перечислены в спецификации FEAT-SCH-008 (§4.2) и
+    перепривязываются по порядку из README модуля (§4.7).
     """
     source = _module_source()
     missing = [quote for quote in DOCUMENTED_QUOTES if quote not in source]
@@ -650,7 +650,7 @@ def test_views_are_not_registered_as_algorithms():
         f"в реестре появились view-имена: {registry}")
 
 
-# ── 10. Побочные эффекты, выявленные инвентаризацией M1 (INVENTORY-M1.md §4) ─
+# ── 10. Побочные эффекты инвентаризации M1 (SPEC-FEAT-SCH-008 §4.2) ─────────
 
 
 def test_rr_allocator_mutates_shared_bs_buffer_size():

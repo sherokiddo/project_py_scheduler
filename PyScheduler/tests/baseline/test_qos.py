@@ -1,7 +1,7 @@
 """QoS-сценарии: flow grants + per-QCI stats (раздел 9.4).
 
 Эталон полного прогона — sim_with_manager_qos (TEST_MODULES.py :234) —
-вынесен в контрольные точки RUNBOOK.md (full-SIM); здесь — детерминированные
+вынесен в full-SIM контрольные точки (README модуля §4.3); здесь — детерминиров.
 сценарии на уровне schedule(): те же наблюдаемые поля (allocation_flow,
 гранты через буферы, per-QCI throughput QciThroughputTracker).
 """

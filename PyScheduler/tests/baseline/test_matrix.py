@@ -73,7 +73,7 @@ def test_all_baselines_pinned_to_dev_revision():
         meta = load_snapshot(name)["meta"]
         assert meta["dev_revision"] == bsc.DEV_REVISION, name
         assert "seed" in meta and "ttis" in meta, name
-    # full-SIM контрольные точки (RUNBOOK §7) — та же фиксация ревизии:
+    # full-SIM контрольные точки (README модуля §4.3) — та же фиксация ревизии:
     # gate 8.1 требует meta.dev_revision у каждого снимка при регенерации.
     sim_names = sorted(p.stem for p in bsc.BASELINE_DIR.glob("sim*.json"))
     assert sim_names, "нет full-SIM снимков в baselines/"
@@ -88,8 +88,8 @@ def test_all_snapshots_carry_user_contract_fields():
 
     `bs_buffer_size` (этап 1, :593; мутируется RR-аллокатором :2086; читается
     :470 и :739) и `instant_rate` (PF :2143, FD_PF :2614) наблюдаемы после
-    schedule(), но в схему 1 не входили — пробел закрыт 2026-11-01 (RUNBOOK
-    §6.1). `user_dict_keys` добавлен, чтобы появление/исчезновение ЛЮБОГО поля
+    schedule(), но в схему 1 не входили — пробел закрыт 2026-11-01
+    (SPEC-FEAT-SCH-008 §8.2). `user_dict_keys` добавлен, чтобы появление/исчезновение ЛЮБОГО поля
     словаря меняло снимок, а не проходило молчаливо.
     """
     checked = 0
