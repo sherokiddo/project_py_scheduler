@@ -40,11 +40,19 @@ matplotlib.use("Agg")
 
 import GLOBALS  # noqa: E402
 import numpy as np  # noqa: E402
-from baseline_scenarios import DEV_REVISION, env_info  # noqa: E402
+from baseline_scenarios import DEV_REVISION, SIM_SEED, env_info  # noqa: E402
 from BS_MODULE import BaseStation  # noqa: E402
 from MOBILITY_MODEL import MapBorders  # noqa: E402
 from SIMULATION_MANAGER import SimulationManager  # noqa: E402
 from UE_MODULE import UECollection  # noqa: E402
+
+# Границы карты: квадрат 2x2 км, как в sim_with_manager_qos (TEST_MODULES.py
+# :234). Вынесены в константы, чтобы одна и та же пара чисел не повторялась.
+MAP_BORDER_MIN = -1000
+MAP_BORDER_MAX = 1000
+
+# Длительность по умолчанию — та, что зафиксирована снимком sim1000_qosaware.
+DEFAULT_DURATION_TTI = 1000
 
 TRAFFIC_CONFIG = [
     {"ue_id": 1, "bearers": [
@@ -68,20 +76,25 @@ TRAFFIC_CONFIG = [
 class _Recorder:
     """Перехват SchedulerInterface.schedule: полная история allocation по TTI.
 
+    Служебный класс-контекст: используется только функцией `run()`.
+
     Планировщик создаётся внутри start_simulation() (SIMULATION_MANAGER.py
     :1357), поэтому перехват ставится на метод класса, а не на экземпляр.
     """
 
-    def __init__(self):
-        self.history = []
+    def __init__(self) -> None:
+        """Пустая история; оригинал `schedule` сохраняется при входе."""
+        self.history: list = []
         self._orig = None
 
     def __enter__(self):
+        """Подменить `SchedulerInterface.schedule` на обёртку со сбором истории."""
         from SCHEDULER import SchedulerInterface
         self._orig = SchedulerInterface.schedule
         recorder = self
 
         def schedule(self_sched, tti, users):
+            """Обёртка: вызвать оригинал и запомнить allocation этого TTI."""
             result = recorder._orig(self_sched, tti, users)
             recorder.history.append(
                 [tti, {str(k): v for k, v in sorted(result["allocation"].items())}])
@@ -91,12 +104,32 @@ class _Recorder:
         return self
 
     def __exit__(self, *exc):
+        """Вернуть оригинальный `schedule` (в т.ч. при исключении)."""
         from SCHEDULER import SchedulerInterface
         SchedulerInterface.schedule = self._orig
         return False
 
 
-def run(duration, seed, algorithm):
+def run(duration: int, seed: int, algorithm: str) -> dict:
+    """Прогнать full-SIM и вернуть снимок контрольной точки.
+
+    Args:
+        duration: длительность прогона в TTI (должна быть положительной).
+        seed: seed ГСЧ (`GLOBALS.SEED` и `numpy.random.seed`); одинаковый seed
+            обязан давать одинаковый sha256 истории (проверяется тестом
+            test_sim_determinism_same_seed).
+        algorithm: ключ фабрики `SchedulerInterface.create()`.
+
+    Returns:
+        Снимок: `meta`, `allocation_history_sha256`, `tti_count_recorded`,
+        `total_rb_allocated`, `buffer_stats`, `ue_final`.
+    """
+    if duration <= 0:
+        raise ValueError(
+            f"Недопустимая длительность {duration}: нужно целое число TTI > 0")
+    if not isinstance(seed, int):
+        raise TypeError(f"seed должен быть int, передан {type(seed).__name__}")
+
     # Гигиена глобального состояния: ChannelModel хранит кэши в КЛАССОВЫХ
     # dict — SHADOW_FADING_INFO / CHANNEL_COND_INFO / O2I_INFO
     # (CHANNEL_MODEL.py :158-160). Они переживают прогон и на втором запуске
@@ -108,8 +141,14 @@ def run(duration, seed, algorithm):
     ChannelModel.CHANNEL_COND_INFO.clear()
     ChannelModel.O2I_INFO.clear()
 
-    MapBorders._instance = None
-    MapBorders(-1000, 1000, -1000, 1000)
+    # MapBorders — синглтон без публичного сброса (MOBILITY_MODEL.py :37-77):
+    # повторный вызов конструктора с новыми границами игнорируется, поэтому
+    # второй прогон в том же процессе унаследовал бы границы первого. Сброс
+    # приватного `_instance` — вынужденная мера инструмента контрольных точек;
+    # публичный `reset()` для синглона/фабрик просили ещё в ревью апстрима
+    # (PR #12, MOBILITY_MODEL.py:87) — до его появления альтернативы нет.
+    MapBorders._instance = None  # приватный атрибут: публичного reset() нет
+    MapBorders(MAP_BORDER_MIN, MAP_BORDER_MAX, MAP_BORDER_MIN, MAP_BORDER_MAX)
     x_min, x_max, y_min, y_max = MapBorders().get_borders()
 
     bs = BaseStation(x=0, y=0, bandwidth=10, ch_model_type="UMa",
@@ -179,10 +218,11 @@ def run(duration, seed, algorithm):
     }
 
 
-def main():
+def main() -> int:
+    """CLI: построить снимок контрольной точки и записать его в файл или stdout."""
     ap = argparse.ArgumentParser()
-    ap.add_argument("--duration", type=int, default=1000)
-    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--duration", type=int, default=DEFAULT_DURATION_TTI)
+    ap.add_argument("--seed", type=int, default=SIM_SEED)
     ap.add_argument("--algorithm", default="QosAware")
     ap.add_argument("--out", default=None,
                     help="файл снимка (по умолчанию — печать в stdout)")

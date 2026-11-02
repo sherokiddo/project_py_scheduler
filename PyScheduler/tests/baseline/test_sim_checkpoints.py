@@ -13,6 +13,7 @@ import importlib
 import json
 
 import baseline_compare
+import baseline_scenarios as bsc
 import pytest
 from baseline_harness import load_snapshot
 
@@ -25,12 +26,18 @@ CHECKPOINTS = [
     (1000, "BestCQI", "sim1000_bestcqi"),
 ]
 
+# Короткий прогон для проверки детерминизма: 30 TTI достаточно, чтобы ГСЧ
+# успел разойтись (мобильность + o2i/SF), и прогон занимает секунды.
+DETERMINISM_PROBE_TTI = 30
+
 
 @pytest.mark.sim
 @pytest.mark.parametrize("duration,algorithm,name", CHECKPOINTS)
 def test_sim_checkpoint_matches_baseline(duration, algorithm, name):
+    """Прогон на `duration` TTI совпадает с контрольной точкой: sha256 истории
+    allocation побитово, агрегаты — по правилам раздела 8.2."""
     expected = load_snapshot(name)
-    actual = sim_checkpoint.run(duration, seed=42, algorithm=algorithm)
+    actual = sim_checkpoint.run(duration, seed=bsc.SIM_SEED, algorithm=algorithm)
 
     assert actual["allocation_history_sha256"] == \
         expected["allocation_history_sha256"], (
@@ -60,6 +67,8 @@ def _json_norm(obj):
 @pytest.mark.sim
 def test_sim_determinism_same_seed():
     """Два прогона с одним seed в одном процессе дают идентичный снимок."""
-    a = sim_checkpoint.run(30, seed=42, algorithm="QosAware")
-    b = sim_checkpoint.run(30, seed=42, algorithm="QosAware")
+    a = sim_checkpoint.run(DETERMINISM_PROBE_TTI, seed=bsc.SIM_SEED,
+                           algorithm="QosAware")
+    b = sim_checkpoint.run(DETERMINISM_PROBE_TTI, seed=bsc.SIM_SEED,
+                           algorithm="QosAware")
     assert json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)

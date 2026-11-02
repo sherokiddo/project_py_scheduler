@@ -21,8 +21,8 @@
   `PyScheduler/` в `sys.path` (тот же приём, что в `layered_buffer_tests/
   conftest.py`) и регистрирует маркер `sim` через `pytest_configure`.
   Патч M0 не создаёт и не меняет файлы вне `PyScheduler/tests/baseline/`.
-- Хелперы сравнения снимков (`load_snapshot`, `assert_matches_baseline`,
-  `ALL_SCENARIO_NAMES`) вынесены в `baseline_harness.py`, тесты импортируют их
+- Хелперы сравнения снимков (`load_snapshot`, `assert_matches_baseline`)
+  вынесены в `baseline_harness.py`, тесты импортируют их
   оттуда, а не из `conftest`. Причина: имя модуля `conftest` в дереве
   `PyScheduler/tests/` не уникально (свой `conftest.py` есть в `baseline/`,
   `layered_buffer_tests/`, `scheduler_tests/`, а с шага M1 — ещё и в
@@ -31,13 +31,15 @@
   `ImportError: cannot import name 'assert_matches_baseline' from 'conftest'`
   и падение коллекции. Воспроизведение: `cd PyScheduler && python -m pytest
   tests/baseline tests/<каталог со своим conftest.py> -q` (и обратный порядок).
-  `conftest.py` переэкспортирует имена хелперов для совместимости.
+  `conftest.py` имена хелперов НЕ переэкспортирует (переэкспорт «для
+  совместимости» был мёртвым кодом: ни один тест не импортировал их из
+  `conftest`) и фикстур не объявляет — только `sys.path` и маркер `sim`.
   На снимки и поведение правка не влияет: регенерация не требуется.
 
 ## 2. Команды запуска
 
 ```bash
-# Быстрый characterization-набор (42 теста, <1 c) — ОБЯЗАТЕЛЕН после каждого PR:
+# Быстрый characterization-набор (44 теста, <1 c) — ОБЯЗАТЕЛЕН после каждого PR:
 python -m pytest PyScheduler/tests/baseline -q -m "not sim"
 
 # Полный baseline-набор вместе с full-SIM контрольными точками (~9 c):
@@ -97,7 +99,9 @@ TTI. Для full-SIM: seed=42, профиль `sim_with_manager_qos`
 `last_ue_transmitted_bits`, `priority_list` (порядок + метрики), владельцы RB
 в сетке по слотам (`grid_rb_owners`), таблица per-RBG выборов
 (`rbg_choice_table`), состояние UE (`average_throughput`,
-`current_dl_throughput`), `cqi_map` (WB+SB), `buffer_status`
+`current_dl_throughput`), `cqi_map` (WB+SB), контракт словаря `user`
+(`user_dict_keys`) и два его поля, которые алгоритмы пишут поверх этапа 1
+(`bs_buffer_size`, `instant_rate`) — см. §6.1, `buffer_status`
 (per-QCI: размер, lcid, qci, hol_delay), `qci_tracker` (current/average
 throughput per QCI), `scheduler_extra` (`rr_*_offset`, `allocation_flow`,
 параметры QoS).
@@ -132,6 +136,32 @@ throughput per QCI), `scheduler_extra` (`rr_*_offset`, `allocation_flow`,
 
 Если тест падает **до** слияния: миграцию остановить (8.1) — дефект
 исправляется в текущем PR или откатывается.
+
+### 6.1 Расширение схемы снимка (выполнено 2026-11-01)
+
+Расширение схемы — частный случай обновления снимков, но с дополнительным
+требованием: доказать, что добавление полей не совпало с изменением
+поведения. Порядок, который был применён (и который надо повторять при любом
+изменении схемы):
+
+1. Сохранить действующие снимки в отдельный каталог (`cp -r baselines /tmp/base_old`).
+2. Изменить `capture_tti` и перегенерировать сценарии
+   (`generate_baselines.py`); full-SIM точки не трогаются, если их схема не
+   менялась.
+3. Сверить старое и новое: после удаления добавленных ключей все поля старой
+   схемы обязаны совпасть **побайтово** (`json.dumps(..., sort_keys=True)`).
+   Факт на 2026-11-01: 23 сценария, добавленные ключи — ровно
+   `ues[].user_dict_keys`, `ues[].bs_buffer_size`, `ues[].instant_rate`,
+   расхождений по полям схемы 1 — **0**.
+4. Проверить, что регенерация детерминирована: повторный прогон
+   `generate_baselines.py` не меняет файлы (`git status` чист).
+5. Прогнать оба набора тестов и зафиксировать числа в документации.
+
+Что добавлено в схему 2 и зачем — INVENTORY-M1.md §6 (пробел покрытия
+`bs_buffer_size`/`instant_rate`).
+
+Проверка схемы в тестах: `test_matrix.py::test_all_snapshots_carry_user_contract_fields`
+(поля есть в каждом снимке, `bs_buffer_size` — int).
 
 ## 7. Контрольные точки full-SIM (9.6)
 
@@ -213,6 +243,21 @@ throughput per QCI), `scheduler_extra` (`rr_*_offset`, `allocation_flow`,
    обновляется в том же PR (R4: каждый PR запускается изолированно).
    Регенерация снимков при этом не нужна, если поведение сохранено.
 
+10. **Якоря `:NNN` в документации требуют перепривязки при правках чужого кода.**
+    Документы (`INVENTORY-M1.md`, комплект DOC-SCH-001) ссылаются на конкретные
+    строки `SCHEDULER.py`/`BS_MODULE.py`. Порядок перепривязки:
+    1. Найти фактические строки по цитате кода, а не по прежнему номеру:
+       `grep -n "<цитата>" PyScheduler/SCHEDULER.py`.
+    2. Обновить номера в документе одним коммитом с причиной («перепривязка
+       якорей после <PR/коммита>»), не смешивая с содержательными правками.
+    3. Тесты на номера строк НЕ пишутся намеренно: проверяется содержимое
+       (`test_documentation_quotes_present_in_module` — 11 цитат кода из
+       документации M1 присутствуют в модуле). Тест, завязанный на номер
+       строки чужого кода, падал бы на любой правке владельца модуля, то есть
+       был бы архитектурозависимым (такое ревью апстрима отклоняет, PR #37).
+    4. Новый код добавляется в конец файла именно поэтому: якоря на чужой код
+       не сдвигаются (контроль — `test_m1_section_appended_after_legacy_code`).
+
 ## 9. Состав каталога
 
 ```
@@ -223,7 +268,7 @@ tests/baseline/
 ├── generate_baselines.py      — генератор снимков
 ├── sim_checkpoint.py          — full-SIM контрольные точки
 ├── baseline_harness.py        — хелперы сравнения снимков (load/assert)
-├── conftest.py                — фикстуры, sys.path, маркер `sim`
+├── conftest.py                — sys.path + регистрация маркера `sim`
 ├── test_golden_tti5.py        — золотой сценарий (9.1)
 ├── test_matrix.py             — WB/FD-матрица (9, 9.2)
 ├── test_rr_multitti.py        — RR-ротация (9.3)

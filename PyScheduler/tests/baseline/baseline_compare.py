@@ -12,8 +12,18 @@
 FLOAT_REL_TOL = 1e-9
 
 
-def compare(expected, actual, path="$"):
-    """Рекурсивное сравнение; возвращает список человекочитаемых отличий."""
+def compare(expected: object, actual: object, path: str = "$") -> list:
+    """Рекурсивное сравнение; возвращает список человекочитаемых отличий.
+
+    Args:
+        expected: значение из зафиксированного снимка.
+        actual: значение из пересобранного сценария.
+        path: человекочитаемый путь к узлу (`tti5.ues[0].cqi_map_wb`) — по
+            нему расхождение находится без поиска по дереву.
+
+    Returns:
+        Пустой список при совпадении, иначе список строк-отличий.
+    """
     diffs = []
 
     if isinstance(expected, bool) or isinstance(actual, bool):

@@ -11,18 +11,24 @@
     (.../tests/scheduler_arch_tests/conftest.py)
 
 Импорт из `baseline_harness` от порядка каталогов не зависит. `conftest.py`
-продолжает переэкспортировать эти имена для совместимости.
+эти имена НЕ переэкспортирует: тесты импортируют хелперы напрямую, а
+переэкспорт «для совместимости» был бы мёртвым кодом.
 """
 import json
+from typing import Any, Dict
 
 import baseline_scenarios as bsc
 import pytest
 from baseline_compare import compare
 
-ALL_SCENARIO_NAMES = sorted(bsc.SCENARIOS)
 
+def load_snapshot(name: str) -> Dict[str, Any]:
+    """Прочитать зафиксированный снимок `baselines/<name>.json`.
 
-def load_snapshot(name):
+    Отсутствие файла — не ошибка импорта, а внятный провал с командой
+    регенерации: снимок мог не попасть в checkout, и это надо отличать от
+    расхождения поведения.
+    """
     path = bsc.BASELINE_DIR / f"{name}.json"
     if not path.exists():
         pytest.fail(
@@ -31,8 +37,16 @@ def load_snapshot(name):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def assert_matches_baseline(name):
-    """Пересобрать сценарий и побитово сравнить с baseline-снимком."""
+def assert_matches_baseline(name: str) -> None:
+    """Пересобрать сценарий и побитово сравнить с baseline-снимком.
+
+    Args:
+        name: ключ реестра `baseline_scenarios.SCENARIOS` (он же имя файла).
+
+    Raises:
+        AssertionError: с перечнем первых отличий и ревизией dev, на которой
+            снимок зафиксирован.
+    """
     expected = load_snapshot(name)
     actual = bsc.SCENARIOS[name]()
 

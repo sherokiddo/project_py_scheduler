@@ -8,16 +8,18 @@
    параметров) — опечатка в имени параметра ломает структурную типизацию.
 3. Адаптеры ДЕЛЕГИРУЮТ legacy-коду и возвращают те же значения (R5): сверка
    идёт на тех же экземплярах grid/bs/sched, что и baseline-снимки.
-4. Потребители НЕ переключены (R1): все обращения к view-API в SCHEDULER.py
-   лежат внутри нового раздела, номера строк legacy-кода не изменились.
+4. Потребители НЕ переключены (R1): ни один legacy-узел модуля не ссылается на
+   протоколы/адаптеры (контроль по AST, без привязки к номерам строк), а раздел
+   M1 добавлен в конец файла — номера строк legacy-кода сохранены (R3).
 5. AS-IS дефект BUG-SCH-012 воспроизводится через `BuffersView.hol_delay`
    (Simple-буфер не заполняет `qci`/`hol_delay`, BS_MODULE.py :453–457).
 
 Набор намеренно не проверяет поведение восьми алгоритмов — это работа
-`tests/baseline/` (47 characterization-тестов, снимки dev 6c0aae2).
+`tests/baseline/` (49 characterization-тестов, снимки dev 6c0aae2).
 """
+import ast
 import inspect
-import re
+from typing import List, Set
 
 import baseline_scenarios as bsc
 import GLOBALS
@@ -25,6 +27,7 @@ import pytest
 import SCHEDULER
 from arch_support import run_tti, wb_ctx_for
 from BS_MODULE import BufferStatus
+from RES_GRID import RES_GRID_LTE
 from SCHEDULER import (
     AmcView,
     BuffersView,
@@ -43,6 +46,48 @@ from TRAFFIC_MODEL import QCI
 
 SECTION_MARKER = "# ИНТЕРФЕЙСЫ СТРАТЕГИЙ И VIEW-АДАПТЕРЫ"
 
+# Идентификаторы, которых заведомо нет в контексте: проверяется fallback,
+# а не конкретный номер, поэтому любое значение вне профиля подходит.
+ABSENT_UE_ID = 999
+ABSENT_QCI = 99
+
+# Значения-метки. Важна не величина, а то, что адаптер отдаёт поле объекта
+# (не копию и не кэш) и что запись проходит сквозь него в поля планировщика.
+THROUGHPUT_PROBE = 1234.5
+OFFSET_PROBE = (2, 3)
+
+# Алгоритмы, у которых есть поля ротации rr_*_offset (INVENTORY-M1.md §5);
+# у остальных шести полей нет, и LegacyStateView читает их как 0 (AS-IS).
+RR_OFFSET_ALGORITHMS = ("RoundRobin", "FD_FGS")
+
+# Полосы берём из единственного источника — таблицы RES_GRID: формула
+# total_rbg проверяется на всех размерах RBG, а не на трёх выбранных.
+BANDWIDTHS_MHZ = tuple(sorted(RES_GRID_LTE.RBG_SIZE_TABLE))
+
+# Число RBG, на которых сверяется allocate_rbg: достаточно, чтобы покрыть
+# конфликт «тот же RBG — другой UE», и заведомо меньше total_rbg любой полосы.
+TWIN_RBG_COUNT = 4
+
+# Полный набор QCI (GLOBALS.QCI_PROFILES / TRAFFIC_MODEL.QCI).
+ALL_QCI = tuple(range(1, 10))
+# Допустимый диапазон CQI; 0 означает «отчёта нет» и AMC для него бросает
+# ValueError (см. test_amc_view_propagates_invalid_cqi_error).
+VALID_CQI = tuple(range(1, 16))
+# Нижний предел числа проверенных потоков: защищает от «тест прошёл на пустом
+# профиле» (QOS_MULTIFLOW — 5 потоков на трёх UE).
+MIN_FLOWS_CHECKED = 5
+
+# Два алгоритма с метрикой Proportional Fair (:2143 WB-вариант, :2614
+# FD-вариант) — единственные, кто пишет отладочное поле `instant_rate`.
+PF_ALGORITHMS = ("ProportionalFair", "FD_PF")
+
+# Все алгоритмы матрицы, кроме RoundRobin (единственного писателя
+# `bs_buffer_size`) и двух QoS (у них поток несколько, оценка считается
+# по-другому). Выводится из ALL_ALGORITHMS — см. docstring теста.
+NON_RR_NON_QOS_ALGORITHMS = tuple(
+    a for a in bsc.ALL_ALGORITHMS
+    if a != "RoundRobin" and "QosAware" not in a)
+
 # Пары «протокол -> legacy-адаптер» (SPEC §5.7, таблица интерфейсов M1).
 VIEW_PAIRS = [
     (CqiView, LegacyCqiView),
@@ -53,15 +98,6 @@ VIEW_PAIRS = [
     (StateView, LegacyStateView),
 ]
 
-# API view-адаптеров: имена классов и вызовы их методов. Совпадение с этим
-# шаблоном вне нового раздела означало бы, что потребитель уже переключён (R1).
-VIEW_API_RE = re.compile(
-    r"\bLegacy(?:Cqi|Grid|Amc|Buffers|Stats|State)View\b"
-    r"|\.(?:get_wb|get_sb|allocate_rbg|rbg_size|rbg_indices|total_rbg|prb_count"
-    r"|bits_per_rb|has_buffer|buffer_status|hol_delay|ue_throughput"
-    r"|qci_throughput|gbr_of|pdb_of|get_rr_(?:ue|rbg)_offset"
-    r"|set_rr_(?:ue|rbg)_offset)\s*\("
-)
 
 
 # ── 1. Протоколы структурны и runtime_checkable ─────────────────────────────
@@ -104,7 +140,10 @@ def test_protocol_rejects_incomplete_object():
     test_adapters_satisfy_protocols ничего бы не гарантировал.
     """
     class NoSb:
+        """Объект с половиной `CqiView`: есть `get_wb`, нет `get_sb`."""
+
         def get_wb(self, ue_id):
+            """Единственный метод протокола — достаточно для isinstance-ловушки."""
             return 10
 
     assert isinstance(NoSb(), CqiView) is False
@@ -155,8 +194,8 @@ def test_cqi_view_delegates_wb_cqi(algorithm):
 def test_cqi_view_wb_fallback_for_unknown_ue(wb_ctx):
     """UE вне cqi_map -> 0 (AS-IS :1078–1082): адаптер fallback не меняет."""
     view = LegacyCqiView(wb_ctx["sched"])
-    assert view.get_wb(999) == 0
-    assert view.get_sb(999) == []
+    assert view.get_wb(ABSENT_UE_ID) == 0
+    assert view.get_sb(ABSENT_UE_ID) == []
 
 
 def test_cqi_view_delegates_sb_cqi(fd_ctx):
@@ -204,8 +243,8 @@ def test_grid_view_total_rbg_matches_qos_formula():
     Общее FD-выделение на M2 не должно менять число просматриваемых RBG (R2),
     поэтому формула зафиксирована тестом, а не переписана «аккуратнее».
     """
-    for bandwidth in (5, 10, 20):
-        ctx = bsc._new_ctx("QosAware", bandwidth=bandwidth)
+    for bandwidth in BANDWIDTHS_MHZ:
+        ctx = bsc.new_ctx("QosAware", bandwidth=bandwidth)
         grid = ctx["grid"]
         rbg_size = grid.GET_RBG_SIZE()
         expected = (grid.rb_per_slot + rbg_size - 1) // rbg_size
@@ -221,17 +260,17 @@ def test_grid_view_allocate_rbg_delegates_and_mutates_grid():
     построенных сетках (близнецах): последовательность вызовов и результат
     совпадают, итоговое состояние сеток идентично.
     """
-    twin_a, twin_b = bsc._new_ctx("BestCQI"), bsc._new_ctx("BestCQI")
+    twin_a, twin_b = bsc.new_ctx("BestCQI"), bsc.new_ctx("BestCQI")
     view, grid = LegacyGridView(twin_a["grid"]), twin_b["grid"]
     results = []
-    for rbg_idx in range(4):
+    for rbg_idx in range(TWIN_RBG_COUNT):
         results.append((view.allocate_rbg(5, rbg_idx, 1),
                         grid.ALLOCATE_RBG(5, rbg_idx, 1)))
         # повторное выделение того же RBG тому же UE — как в FD-цикле
         results.append((view.allocate_rbg(5, rbg_idx, 2),
                         grid.ALLOCATE_RBG(5, rbg_idx, 2)))
     assert all(a == b for a, b in results), f"расхождение allocate_rbg: {results}"
-    assert bsc._grid_state(twin_a["grid"], 5) == bsc._grid_state(twin_b["grid"], 5)
+    assert bsc.grid_state(twin_a["grid"], 5) == bsc.grid_state(twin_b["grid"], 5)
 
 
 # ── 4. AmcView: делегирование GET_BITS_PER_RB ───────────────────────────────
@@ -240,7 +279,7 @@ def test_grid_view_allocate_rbg_delegates_and_mutates_grid():
 def test_amc_view_matches_get_bits_per_rb(wb_ctx):
     """bits_per_rb(cqi) == amc.GET_BITS_PER_RB(cqi) для CQI 1..15 (:1730)."""
     amc, view = wb_ctx["sched"].amc, LegacyAmcView(wb_ctx["sched"].amc)
-    for cqi in range(1, 16):
+    for cqi in VALID_CQI:
         assert view.bits_per_rb(cqi) == amc.GET_BITS_PER_RB(cqi) > 0
     assert view.bits_per_rb(15) > view.bits_per_rb(1), "AMC немонотонна"
 
@@ -254,7 +293,7 @@ def test_amc_view_propagates_invalid_cqi_error(wb_ctx):
     дефект запрещено (R6), целевая обработка CQI=0 — CQI-трек C1.
     """
     amc, view = wb_ctx["sched"].amc, LegacyAmcView(wb_ctx["sched"].amc)
-    assert LegacyCqiView(wb_ctx["sched"]).get_wb(999) == 0
+    assert LegacyCqiView(wb_ctx["sched"]).get_wb(ABSENT_UE_ID) == 0
     with pytest.raises(ValueError, match="Invalid CQI 0"):
         view.bits_per_rb(0)
     with pytest.raises(ValueError, match="Invalid CQI 0"):
@@ -273,7 +312,7 @@ def test_buffers_view_matches_manager_simple(wb_ctx):
         assert view.has_buffer(ue_id) is True
         assert view.buffer_status(ue_id) == bm.get_buffer_status(ue_id)
         assert all(isinstance(s, BufferStatus) for s in view.buffer_status(ue_id))
-    assert view.has_buffer(999) == bm.ue_has_buffer(999)
+    assert view.has_buffer(ABSENT_UE_ID) == bm.ue_has_buffer(ABSENT_UE_ID)
 
 
 def test_buffers_view_matches_manager_layered(layered_ctx):
@@ -300,8 +339,8 @@ def test_buffers_view_hol_delay_matches_status_layered(layered_ctx):
             assert view.hol_delay(ue_id, qci) == (first.hol_delay if first else None)
             checked += 1
         # QCI, которого у UE нет, — None (AS-IS: метрика такой поток не видит)
-        assert view.hol_delay(ue_id, 99) is None
-    assert checked >= 5, f"проверено всего {checked} потоков"
+        assert view.hol_delay(ue_id, ABSENT_QCI) is None
+    assert checked >= MIN_FLOWS_CHECKED, f"проверено всего {checked} потоков"
 
 
 def test_buffers_view_hol_delay_none_on_simple_reproduces_bug_sch_012(wb_ctx):
@@ -322,7 +361,7 @@ def test_buffers_view_hol_delay_none_on_simple_reproduces_bug_sch_012(wb_ctx):
     assert all(s.qci is None for s in statuses), (
         "SimpleBuffer начал заполнять qci — BUG-SCH-012 закрыт, обновите тест")
     assert all(s.hol_delay is None for s in statuses)
-    assert view.hol_delay(ue_id, 9) is None
+    assert view.hol_delay(ue_id, ALL_QCI[-1]) is None
     with pytest.raises(ValueError, match="None is not a valid QCI"):
         QCI(statuses[0].qci)
 
@@ -335,9 +374,9 @@ def test_stats_view_ue_throughput_matches_ue_field(wb_ctx):
     users_by_id = {u["UE_ID"]: u["ue"] for u in wb_ctx["users"]}
     view = LegacyStatsView(users_by_id, wb_ctx["bs"].buffer_manager)
     for ue_id, ue in users_by_id.items():
-        ue.average_throughput = 1234.5 + ue_id
+        ue.average_throughput = THROUGHPUT_PROBE + ue_id
         assert view.ue_throughput(ue_id) == ue.average_throughput
-    assert view.ue_throughput(999) == 0.0
+    assert view.ue_throughput(ABSENT_UE_ID) == 0.0
     assert LegacyStatsView().ue_throughput(1) == 0.0
 
 
@@ -358,11 +397,11 @@ def test_stats_view_qci_throughput_zero_without_tracker(wb_ctx):
     bm = wb_ctx["bs"].buffer_manager
     assert getattr(bm, "qci_tput_tracker", None) is None
     view = LegacyStatsView({}, bm)
-    assert view.qci_throughput(1, 9) == (0.0, 0.0)
-    assert LegacyStatsView().qci_throughput(1, 9) == (0.0, 0.0)
+    assert view.qci_throughput(1, ALL_QCI[-1]) == (0.0, 0.0)
+    assert LegacyStatsView().qci_throughput(1, ALL_QCI[-1]) == (0.0, 0.0)
 
 
-@pytest.mark.parametrize("qci", [1, 2, 3, 4, 5, 6, 7, 8, 9])
+@pytest.mark.parametrize("qci", ALL_QCI)
 def test_stats_view_gbr_and_pdb_match_globals(qci):
     """gbr_of/pdb_of равны GLOBALS.is_gbr + QCI_PROFILES / QCI.get_delay_budget."""
     view = LegacyStatsView()
@@ -375,7 +414,7 @@ def test_stats_view_gbr_and_pdb_match_globals(qci):
 def test_stats_view_gbr_present_for_gbr_qci():
     """Хотя бы у одного GBR-класса профиль содержит gbr (иначе view бессмысленна)."""
     view = LegacyStatsView()
-    gbr_qcis = [q for q in range(1, 10) if GLOBALS.is_gbr(q)]
+    gbr_qcis = [q for q in ALL_QCI if GLOBALS.is_gbr(q)]
     assert gbr_qcis, "GLOBALS.is_gbr не выделяет ни одного GBR-класса"
     assert any(view.gbr_of(q) is not None for q in gbr_qcis)
 
@@ -385,22 +424,23 @@ def test_stats_view_gbr_present_for_gbr_qci():
 
 def test_state_view_reads_and_writes_scheduler_fields():
     """RR/FD_FGS: get/set работают сквозь адаптер с полями экземпляра."""
-    for algorithm in ("RoundRobin", "FD_FGS"):
+    for algorithm in RR_OFFSET_ALGORITHMS:
         ctx = wb_ctx_for(algorithm)
         sched, view = ctx["sched"], LegacyStateView(ctx["sched"])
         assert view.get_rr_ue_offset() == sched.rr_ue_offset == 0
         assert view.get_rr_rbg_offset() == sched.rr_rbg_offset == 0
-        view.set_rr_ue_offset(2)
-        view.set_rr_rbg_offset(3)
-        assert (sched.rr_ue_offset, sched.rr_rbg_offset) == (2, 3), (
+        view.set_rr_ue_offset(OFFSET_PROBE[0])
+        view.set_rr_rbg_offset(OFFSET_PROBE[1])
+        assert (sched.rr_ue_offset, sched.rr_rbg_offset) == OFFSET_PROBE, (
             f"{algorithm}: адаптер не пишет в поля планировщика")
-        assert (view.get_rr_ue_offset(), view.get_rr_rbg_offset()) == (2, 3)
+        assert (view.get_rr_ue_offset(),
+                view.get_rr_rbg_offset()) == OFFSET_PROBE
 
 
 def test_state_view_absent_fields_read_as_zero():
     """У остальных шести алгоритмов полей нет — чтение даёт 0 (AS-IS, R2)."""
     for algorithm in bsc.ALL_ALGORITHMS:
-        if algorithm in ("RoundRobin", "FD_FGS"):
+        if algorithm in RR_OFFSET_ALGORITHMS:
             continue
         ctx = wb_ctx_for(algorithm)
         sched, view = ctx["sched"], LegacyStateView(ctx["sched"])
@@ -409,110 +449,143 @@ def test_state_view_absent_fields_read_as_zero():
         assert view.get_rr_rbg_offset() == 0
 
 
-# ── 8. R1: потребители не переключены, legacy-строки не сдвинуты ────────────
+# ── 8. R1/R3: legacy-код не знает о views, раздел добавлен в конец ──────────
 
 
-def _module_lines():
-    return inspect.getsource(SCHEDULER).splitlines()
+def _module_source() -> str:
+    """Исходник SCHEDULER.py из checkout (единственный источник для проверок)."""
+    return inspect.getsource(SCHEDULER)
 
 
-def _section_start(lines):
-    for idx, line in enumerate(lines, start=1):
+def _module_lines() -> List[str]:
+    """Строки модуля — нужны только там, где проверяется порядок разделов."""
+    return _module_source().splitlines()
+
+
+def _view_names() -> Set[str]:
+    """Имена протоколов и адаптеров M1: то, чего legacy-код знать не должен."""
+    return ({adapter.__name__ for _proto, adapter in VIEW_PAIRS}
+            | {proto.__name__ for proto, _adapter in VIEW_PAIRS})
+
+
+def _section_start() -> int:
+    """Номер строки маркера раздела M1 (единственная привязка к позиции)."""
+    for idx, line in enumerate(_module_lines(), start=1):
         if line.strip() == SECTION_MARKER:
             return idx
     pytest.fail(f"раздел M1 не найден по маркеру {SECTION_MARKER!r}")
 
 
-def test_no_consumer_switched_yet():
-    """View-API используется только внутри нового раздела (правило R1).
+def _m1_nodes(tree: ast.Module) -> List[ast.AST]:
+    """Узлы раздела M1: view-классы и guard импорта аннотаций.
+
+    Опознаются по составу VIEW_PAIRS и по `if TYPE_CHECKING:`, а не по номеру
+    строки: состав раздела — контракт, позиция раздела в файле — нет.
+    """
+    view_names = _view_names()
+    nodes = []
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name in view_names:
+            nodes.append(node)
+        elif (isinstance(node, ast.If) and isinstance(node.test, ast.Name)
+                and node.test.id == "TYPE_CHECKING"):
+            nodes.append(node)
+    return nodes
+
+
+def _legacy_top_level_nodes() -> List[ast.AST]:
+    """Узлы модуля верхнего уровня, не входящие в раздел M1."""
+    tree = ast.parse(_module_source())
+    m1 = {id(node) for node in _m1_nodes(tree)}
+    return [node for node in tree.body if id(node) not in m1]
+
+
+def test_legacy_code_does_not_reference_views(wb_ctx):
+    """Ни класс, ни функция legacy-части не знают о протоколах и адаптерах (R1).
 
     Если бы оркестратор или один из восьми алгоритмов уже вызывал адаптеры,
-    совпадение нашлось бы до маркера раздела — это означало бы смену
-    поведения в ветке M1, что запрещено (R2) и ломает baseline-снимки.
+    это означало бы смену поведения в ветке M1 (запрещено R2) и ломало бы
+    baseline-снимки. Проверка по AST, а не по исходникам методов: у
+    dataclass-классов часть методов (`SchedulingGrant.__eq__`) синтезирована и
+    исходника не имеет — `inspect.getsource` на них падает с OSError.
+
+    Полнота контроля проверяется содержательно (все восемь реализаций обязаны
+    попасть в проверенный набор), а не счётчиком классов: добавление нового
+    класса владельцем модуля не должно ломать этот тест.
     """
-    lines = _module_lines()
-    section = _section_start(lines)
-    offenders = [(n, text.strip())
-                 for n, text in enumerate(lines, start=1)
-                 if n < section and VIEW_API_RE.search(text)]
-    assert not offenders, (
-        "потребители переключены на views раньше срока (R1):\n"
-        + "\n".join(f"  :{n}: {t}" for n, t in offenders[:20]))
-
-
-def test_legacy_classes_do_not_reference_views():
-    """Ни один legacy-класс не знает о протоколах и адаптерах (R1).
-
-    Проверка по AST, а не по исходникам методов: у dataclass-классов часть
-    методов (`SchedulingGrant.__eq__`) синтезирована и исходника не имеет,
-    `inspect.getsource` на них падает с OSError.
-    """
-    import ast
-
-    view_names = {cls.__name__ for _p, cls in VIEW_PAIRS} | {
-        p.__name__ for p, _c in VIEW_PAIRS}
-    tree = ast.parse(inspect.getsource(SCHEDULER))
-    legacy_classes = [n for n in tree.body
-                      if isinstance(n, ast.ClassDef) and n.name not in view_names]
-    # 5 инфраструктурных классов + 8 алгоритмов; view-классы исключены
-    assert len(legacy_classes) == 13, (
-        f"состав legacy-классов изменился (ожидалось 13): "
-        f"{[c.name for c in legacy_classes]}")
-    for cls in legacy_classes:
-        used = ({node.id for node in ast.walk(cls) if isinstance(node, ast.Name)}
-                | {node.attr for node in ast.walk(cls)
-                   if isinstance(node, ast.Attribute)})
+    nodes = _legacy_top_level_nodes()
+    view_names = _view_names()
+    class_names = {n.name for n in nodes if isinstance(n, ast.ClassDef)}
+    for algorithm in bsc.ALL_ALGORITHMS:
+        impl = type(SCHEDULER.SchedulerInterface.create(
+            algorithm, wb_ctx["grid"], wb_ctx["bs"]))
+        assert impl.__name__ in class_names, (
+            f"{algorithm} ({impl.__name__}) вне контроля: класс не найден "
+            f"среди legacy-узлов модуля")
+    for node in nodes:
+        used = ({n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+                | {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)})
         hits = view_names & used
-        assert not hits, f"{cls.name} (:{cls.lineno}) ссылается на {sorted(hits)}"
+        assert not hits, (
+            f"{getattr(node, 'name', type(node).__name__)} "
+            f"(строка {getattr(node, 'lineno', '?')}) ссылается на "
+            f"{sorted(hits)} — потребитель переключён на views раньше срока")
 
 
 def test_m1_section_appended_after_legacy_code():
-    """Раздел добавлен в конец файла: номера строк legacy-кода сохранены (R3).
+    """Раздел M1 — последние узлы модуля: номера строк legacy-кода сохранены (R3).
 
-    Якоря `:NNN` в документации модуля и в отчётах остаются действительными,
-    поэтому новая кода не вставляется в середину файла.
+    Якоря `:NNN` в INVENTORY-M1.md и в запросе владельцу BS_MODULE
+    (BUG-SCH-012) остаются действительными, поэтому новый код не вставляется в
+    середину файла — иначе «съехали» бы все ссылки на чужой код.
+
+    Проверяется не номер строки раздела, а порядок узлов: после маркера не
+    должно быть ни одного узла, не входящего в раздел M1.
     """
-    lines = _module_lines()
-    section = _section_start(lines)
-    legacy_end = max(cls.end_lineno for cls in _legacy_classes_ast())
+    tree = ast.parse(_module_source())
+    section = _section_start()
+    m1_ids = {id(node) for node in _m1_nodes(tree)}
+    legacy_after = [node for node in tree.body
+                    if node.lineno >= section and id(node) not in m1_ids]
+    assert not legacy_after, (
+        "после раздела M1 идёт legacy-код (R3 нарушен, якоря :NNN съедут): "
+        + ", ".join(f"{getattr(n, 'name', type(n).__name__)}:{n.lineno}"
+                    for n in legacy_after))
+    legacy_end = max((node.end_lineno for node in tree.body
+                      if id(node) not in m1_ids and hasattr(node, "end_lineno")),
+                     default=0)
     assert section > legacy_end, (
-        f"раздел M1 на строке {section}, legacy-код кончается на {legacy_end}")
+        f"маркер раздела на строке {section}, legacy-код кончается на {legacy_end}")
 
 
-def _legacy_classes_ast():
-    import ast
-    tree = ast.parse(inspect.getsource(SCHEDULER))
-    view_names = {cls.__name__ for _p, cls in VIEW_PAIRS} | {
-        p.__name__ for p, _c in VIEW_PAIRS}
-    return [n for n in tree.body
-            if isinstance(n, ast.ClassDef) and n.name not in view_names]
+# Цитаты кода, на которые ссылаются docstring адаптеров и INVENTORY-M1.md.
+DOCUMENTED_QUOTES = (
+    "buffer_manager = self.lte_grid.bs.buffer_manager",
+    "def _get_wb_cqi",
+    "def _get_sb_cqi",
+    "self.rr_rbg_offset = 0",
+    "avg_throughput = user['ue'].average_throughput",
+    "group = buffer_status.hol_delay // self.grouping_parameter",
+    "pdb = QCI(qci).get_delay_budget()",
+    "rbg_size  = self.lte_grid.GET_RBG_SIZE()",
+    "total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size",
+)
 
 
-def test_documentation_anchors_still_valid():
-    """Якоря, на которые ссылается раздел M1, по-прежнему на своих строках.
+def test_documentation_quotes_present_in_module():
+    """Каждая цитата кода из документации M1 действительно есть в модуле.
 
-    Сверяются только те строки, что процитированы в docstring адаптеров;
-    на M2 (перенос кода) тест обновляется вместе с цитатами — молчаливого
-    расхождения документации и кода быть не должно (DOC-SCH-003).
+    Номера строк намеренно не проверяются: их сдвигает любая правка владельца
+    модуля выше по файлу, и тест начал бы падать без изменения поведения —
+    то есть стал бы архитектурозависимым. Контроль по содержимому ловит
+    главное: цитата перестала соответствовать коду (дух DOC-SCH-003).
+    Фактические номера строк перечислены в INVENTORY-M1.md и перепривязываются
+    при его обновлении (RUNBOOK §8).
     """
-    anchors = {
-        574: "buffer_manager = self.lte_grid.bs.buffer_manager",
-        1064: "def _get_wb_cqi",
-        1084: "def _get_sb_cqi",
-        1993: "self.rr_rbg_offset = 0",
-        2133: "avg_throughput = user['ue'].average_throughput",
-        2374: "self.rr_rbg_offset = 0",
-        2790: "group = buffer_status.hol_delay // self.grouping_parameter",
-        3029: "pdb = QCI(qci).get_delay_budget()",
-        3088: "rbg_size  = self.lte_grid.GET_RBG_SIZE()",
-        3089: "total_rbg = (self.lte_grid.rb_per_slot + rbg_size - 1) // rbg_size",
-        3126: "pdb = QCI(qci).get_delay_budget()",
-    }
-    lines = _module_lines()
-    broken = {n: (lines[n - 1].strip(), expected)
-              for n, expected in anchors.items() if expected not in lines[n - 1]}
-    assert not broken, "якоря документации съехали:\n" + "\n".join(
-        f"  :{n}: факт {fact!r}, ожидалось {exp!r}" for n, (fact, exp) in broken.items())
+    source = _module_source()
+    missing = [quote for quote in DOCUMENTED_QUOTES if quote not in source]
+    assert not missing, ("цитаты не найдены в SCHEDULER.py — документация "
+                         "разошлась с кодом:\n  " + "\n  ".join(missing))
 
 
 def test_module_header_version_bumped():
@@ -520,11 +593,13 @@ def test_module_header_version_bumped():
 
     До M1 шапка утверждала «Версия: 2.0.0 / Дата: 2025-10-26», хотя блок
     «Изменения v2.1.0» уже был в файле (:86) — расхождение закрыто в M1.
+    Проверка по содержимому первых строк, без номеров: сдвиг шапки вниз
+    (добавление блока «Изменения v2.1.1») тест не ломает.
     """
     header = "\n".join(_module_lines()[:20])
     assert "Версия: 2.1.1" in header, f"шапка не обновлена:\n{header}"
     assert "Дата последнего изменения: 2026-11-01" in header
-    assert "Изменения v2.1.0" in inspect.getsource(SCHEDULER), (
+    assert "Изменения v2.1.0" in _module_source(), (
         "блок истории v2.1.0 потерян при правке шапки")
 
 
@@ -585,8 +660,12 @@ def test_rr_allocator_mutates_shared_bs_buffer_size():
     подготовленный этапом 1 (:593); остальные работают с локальной копией
     `remaining_buffer`. Значение после schedule() читают `get_stats()` (:470)
     и оценка PDSCH (:739), то есть побочный эффект пересекает этапы —
-    зафиксирован как AS-IS (R2), в baseline-снимки поле не входит
-    (см. INVENTORY-M1.md §6, пробел покрытия).
+    зафиксирован как AS-IS (R2).
+
+    Поле входит в baseline-снимки (схема 2, `ues[].bs_buffer_size`) и
+    сравнивается там на каждом TTI всех 23 сценариев; этот тест дополняет
+    снимок тем, чего сравнение дать не может, — проверкой НАПРАВЛЕНИЯ
+    изменения (оценка не имеет права вырасти) на живом прогоне.
     """
     ctx, pre, result = run_tti("RoundRobin")
     assert any(result["allocation"].values()), "RR ничего не выделил"
@@ -599,24 +678,31 @@ def test_rr_allocator_mutates_shared_bs_buffer_size():
     assert decreased, "ни одна оценка bs_buffer_size не уменьшилась"
 
 
-@pytest.mark.parametrize(
-    "algorithm", ["BestCQI", "ProportionalFair", "FD_BCQI", "FD_PF", "FD_FGS"])
+@pytest.mark.parametrize("algorithm", NON_RR_NON_QOS_ALGORITHMS)
 def test_other_allocators_keep_bs_buffer_size_intact(algorithm):
-    """Остальные пять non-QoS алгоритмов оценку этапа 1 не трогают."""
+    """Остальные non-QoS алгоритмы оценку этапа 1 не трогают.
+
+    Список выводится из `ALL_ALGORITHMS`, а не перечисляется вручную: новый
+    алгоритм в матрице автоматически попадёт под контроль (и упадёт, если
+    начнёт мутировать общее поле — тогда это надо обсуждать, а не молча
+    принимать).
+    """
     ctx, pre, _result = run_tti(algorithm)
     for user in ctx["users"]:
         assert user["bs_buffer_size"] == pre[user["UE_ID"]], (
             f"{algorithm}: UE {user['UE_ID']} — оценка изменена аллокатором")
 
 
-@pytest.mark.parametrize("algorithm", ["ProportionalFair", "FD_PF"])
+@pytest.mark.parametrize("algorithm", PF_ALGORITHMS)
 def test_pf_writes_debug_field_instant_rate(algorithm):
     """PF и FD_PF добавляют отладочное поле `instant_rate` (:2143, :2614).
 
     Поле — часть наблюдаемого контракта `user`-словаря (его читает внешняя
     диагностика), поэтому при переносе метрики в UserRanker (M4b) оно должно
-    остаться на месте (R2). В baseline-снимки поле не входит — пробел покрытия
-    закрыт этим тестом (INVENTORY-M1.md §6).
+    остаться на месте (R2). Значение входит в baseline-снимки (схема 2,
+    `ues[].instant_rate`); здесь оно дополнительно пересчитывается независимо
+    от снимка — по формуле `rb_per_slot * GET_BITS_PER_RB(wb_cqi)`, поэтому
+    тест ловит и подмену значения, и потерю поля.
     """
     ctx, _pre, _result = run_tti(algorithm)
     sched = ctx["sched"]

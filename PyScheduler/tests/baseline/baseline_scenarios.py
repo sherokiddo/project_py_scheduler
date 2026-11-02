@@ -16,12 +16,30 @@ seed не требуется (в full-SIM контрольных точках se
 - qos_basic_single_bearer / qos_aware_multiflow — grants + per-QCI stats;
 - conflict_rbg_contended / conflict_pdcch_limited — сеточный конфликт (§9.5).
 
+Схема снимка TTI (capture_tti)
+------------------------------
+`tti`, `allocation`, `pdcch_stats`, `bitmap`, `statistics_keys`,
+`last_ue_transmitted_bits`, `priority_list`, `grid_rb_owners`,
+`rbg_choice_table`, `buffer_status`, `scheduler_extra`, `qci_tracker`,
+`ues[]` — по каждому UE: `ue_id`, `average_throughput`,
+`current_dl_throughput`, `cqi_map_wb`, `cqi_map_sb`, `user_dict_keys`,
+`bs_buffer_size`, `instant_rate`.
+
+Три последних поля добавлены 2026-11-01 (схема 2) после анализа пробела
+покрытия: `user['bs_buffer_size']` (этап 1, :593; мутируется RR-аллокатором
+:2086; читается :470 и :739) и `user['instant_rate']` (PF :2143, FD_PF :2614)
+наблюдаемы после schedule(), но в схему 1 не входили. `user_dict_keys`
+фиксирует весь контракт словаря `user`, чтобы добавление/удаление поля не
+проходило молчаливо. Все значения схемы 1 при перегенерации совпали
+побайтово (RUNBOOK §6.1) — расширение схемы поведения не меняло.
+
 Запуск генерации снимков:  python tests/baseline/generate_baselines.py
 Запуск тестов:             pytest tests/baseline -q
 """
 import json
 import platform
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import GLOBALS
 from BS_MODULE import BaseStation
@@ -34,8 +52,12 @@ BASELINE_DIR = Path(__file__).resolve().parent / "baselines"
 
 DEV_REVISION = "6c0aae2"
 
+# Seed full-SIM контрольных точек (sim_checkpoint.py): одинаков для всех
+# снимков sim*.json, поэтому тесты сверяют meta.seed с этой константой.
+SIM_SEED = 42
 
-def env_info():
+
+def env_info() -> Dict[str, str]:
     """Информационная подпись окружения, в котором построен снимок.
 
     В сравнении не участвует (RUNBOOK §5): поле нужно, чтобы при расхождении
@@ -89,6 +111,10 @@ SB_FULL = {
     2: [3, 15, 3, 15, 3, 15, 3, 15, 3, 15, 3, 15, 3],
     3: [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9],
 }
+# Режимы subband-CQI в FD-сценариях (единственный источник: из него строится
+# и реестр SCENARIOS, и параметризация тестов).
+SB_MODES = ("full", "missing", "partial")
+
 SB_MISSING = {1: [], 2: [], 3: []}          # fallback SB -> WB
 SB_PARTIAL = {                               # короткий список + нули внутри
     1: [15, 0, 15],
@@ -128,14 +154,28 @@ RR_TTI = [5, 6, 7, 8]        # RR-ротация: 3+ TTI (раздел 9.3)
 
 # ── Построение сценариев ─────────────────────────────────────────────────
 
-def _make_ue(ue_id, x, cqi, sb_cqi):
+def make_ue_with_cqi(ue_id: int, x: float, cqi: int,
+                     sb_cqi: List[int]) -> UserEquipment:
+    """UE с фиксированным WB-CQI и subband-CQI (без модели канала).
+
+    Имя отличается от `make_ue` в `tests/mobility_module_tests/`: там helper
+    создаёт UE для моделей мобильности, здесь — для детерминированных
+    сценариев планировщика. Совпадение имён в разных каталогах уже приводило
+    к конфликту импортов (BUG-SCH-013), поэтому имя расширено.
+    """
     ue = UserEquipment(UE_ID=ue_id, x=x, y=0.0)
     ue.cqi = cqi
     ue.cqi_subband = list(sb_cqi)
     return ue
 
 
-def _mk_users(ues):
+def build_users(ues: List[UserEquipment]) -> List[Dict[str, Any]]:
+    """Список словарей `users` в том виде, в котором его ожидает schedule().
+
+    Этап 1 (`_filter_eligible_ues`, :559-600) дописывает в эти словари
+    `bs_buffer_size` и (для PF/FD_PF) `instant_rate`; оба поля входят в
+    снимок (схема 2, см. docstring модуля).
+    """
     return [
         {
             "UE_ID": ue.UE_ID,
@@ -147,8 +187,23 @@ def _mk_users(ues):
     ]
 
 
-def _new_ctx(algorithm, bandwidth=10, num_frames=2, scheduler_kwargs=None):
-    """Свежие grid/bs/sched — состояние не переиспользуется между снимками."""
+def new_ctx(algorithm: str, bandwidth: int = 10, num_frames: int = 2,
+            scheduler_kwargs: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Свежие grid/bs/sched — состояние не переиспользуется между снимками.
+
+    Args:
+        algorithm: ключ фабрики `SchedulerInterface.create()`; неизвестное имя
+            даёт `ValueError` с перечислением допустимых значений (:266-269).
+        bandwidth: полоса БС, МГц (влияет на `rb_per_slot` и размер RBG).
+        num_frames: число кадров сетки (должно покрывать максимальный TTI
+            сценария, иначе `ALLOCATE_RBG` выйдет за пределы сетки).
+        scheduler_kwargs: параметры конструктора планировщика
+            (`grouping_parameter`, `metric_mode` и т.п.).
+
+    Returns:
+        dict с ключами `algorithm`, `bs`, `grid`, `sched`. Буферы пусты — их
+        заполняют `fill_simple_buffer` / `fill_layered_buffer`.
+    """
     scheduler_kwargs = dict(scheduler_kwargs or {})
     bs = BaseStation(bandwidth=bandwidth, use_simple_buffer=True)
     grid = RES_GRID_LTE(bandwidth=bandwidth, num_frames=num_frames)
@@ -157,7 +212,17 @@ def _new_ctx(algorithm, bandwidth=10, num_frames=2, scheduler_kwargs=None):
     return {"algorithm": algorithm, "bs": bs, "grid": grid, "sched": sched}
 
 
-def _fill_simple_buffer(ctx, ue_id, packets):
+def fill_simple_buffer(ctx: Dict[str, Any], ue_id: int,
+                       packets: List[Tuple[int, Optional[int]]]) -> None:
+    """Создать буфер UE в SimpleBufferManager и добавить пакеты.
+
+    Args:
+        ctx: контекст из `new_ctx`.
+        ue_id: идентификатор UE.
+        packets: пары `(размер в байтах, qci)`; `qci=None` — пакет без QCI
+            (Simple-режим его не использует, `BufferStatus.qci` останется
+            None — см. BUG-SCH-012).
+    """
     bm = ctx["bs"].buffer_manager
     bm.create_ue_buffer(ue_id, ctx["bs"].per_ue_max)
     for size, qci in packets:
@@ -167,8 +232,14 @@ def _fill_simple_buffer(ctx, ue_id, packets):
         bm.add_packet(ue_id, pkt)
 
 
-def _fill_layered_buffer(ctx, ue_id, bearers):
-    """bearers: [(bearer_id, qci, bytes)] — по одному пакету на bearer.
+def fill_layered_buffer(ctx: Dict[str, Any], ue_id: int,
+                        bearers: List[Tuple[int, int, int]]) -> None:
+    """Создать per-QCI буферы UE в LayeredBufferManager и добавить пакеты.
+
+    Args:
+        ctx: контекст из `new_ctx` (построенный с `use_simple_buffer=False`).
+        ue_id: идентификатор UE.
+        bearers: `[(bearer_id, qci, bytes)]` — по одному пакету на bearer.
 
     LayeredBufferManager маршрутизирует пакет по packet.bearer_id
     (BS_MODULE.py :1407), поэтому bearer_id обязателен.
@@ -195,8 +266,8 @@ def _fill_layered_buffer(ctx, ue_id, bearers):
 
 # ── Сбор состояния (снимок) ──────────────────────────────────────────────
 
-def _grid_state(grid, tti):
-    """Владельцы RB в обоих слотах TTI.
+def grid_state(grid: RES_GRID_LTE, tti: int) -> Dict[int, Dict[str, int]]:
+    """Владельцы RB в обоих слотах TTI: `{slot_id: {freq_idx: ue_id}}`.
 
     GET_TTI_STATUS на 6c0aae2 вызывает GET_RB(tti, freq_idx) при сигнатуре
     GET_RB(tti, slot_id, freq_idx) и неприменим; снимок строится напрямую
@@ -210,7 +281,8 @@ def _grid_state(grid, tti):
             for slot, m in sorted(owners.items())}
 
 
-def _rbg_choice_table(grid, tti, rbg_size):
+def _rbg_choice_table(grid: RES_GRID_LTE, tti: int,
+                      rbg_size: int) -> Dict[str, int]:
     """Таблица per-RBG выборов (раздел 9.2): rbg_idx -> UE_ID (слот 0)."""
     slot_id = None
     for (t, s, _f) in grid.rb_map:
@@ -226,7 +298,14 @@ def _rbg_choice_table(grid, tti, rbg_size):
     return {str(k): table[k] for k in sorted(table)}
 
 
-def _scheduler_extra_state(sched):
+def _scheduler_extra_state(sched: Any) -> Dict[str, Any]:
+    """Долгоживущее состояние планировщика, наблюдаемое между TTI.
+
+    Собираются только те атрибуты, что реально есть у экземпляра: offsets
+    ротации (RR/FD_FGS), параметры QoS-метрики, `allocation_flow`
+    (накопленные биты потоков). Отсутствие атрибута — не ошибка: у восьми
+    алгоритмов наборы полей разные (INVENTORY-M1.md §5).
+    """
     extra = {}
     for attr in ("rr_ue_offset", "rr_rbg_offset", "grouping_parameter",
                  "metric_mode"):
@@ -241,7 +320,15 @@ def _scheduler_extra_state(sched):
     return extra
 
 
-def _qci_tracker_state(ctx, ue_ids):
+def _qci_tracker_state(ctx: Dict[str, Any],
+                       ue_ids: List[int]) -> Dict[str, Dict[str, Dict[str, float]]]:
+    """Снимок QciThroughputTracker: current/average throughput по (UE, QCI).
+
+    В Simple-режиме трекера нет — возвращается пустой словарь. Доступ к
+    защищённому `_stats` осознанный: публичного метода «отдать всё состояние»
+    у трекера нет, а снимок обязан ловить изменение любого накопленного
+    значения (иначе регрессия PF/QoS-метрики пройдёт незамеченной).
+    """
     bm = ctx["bs"].buffer_manager
     tracker = getattr(bm, "qci_tput_tracker", None)
     stats = getattr(tracker, "_stats", {}) if tracker is not None else {}
@@ -258,8 +345,15 @@ def _qci_tracker_state(ctx, ue_ids):
     return out
 
 
-def capture_tti(ctx, tti, result, users):
-    """Один снимок TTI: всё наблюдаемое состояние после schedule()."""
+def capture_tti(ctx: Dict[str, Any], tti: int, result: Dict[str, Any],
+                users: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Один снимок TTI: всё наблюдаемое состояние после schedule().
+
+    Снимок строится только из наблюдаемых результатов: возвращаемый
+    `schedule()` словарь, состояние сетки, буферов, трекеров и словарей
+    `users`. Внутренние локальные переменные алгоритмов не снимаются — их
+    изменение без изменения наблюдаемого результата дефектом не считается.
+    """
     sched, grid = ctx["sched"], ctx["grid"]
     rbg_size = grid.GET_RBG_SIZE()
 
@@ -270,7 +364,9 @@ def capture_tti(ctx, tti, result, users):
         "bitmap": {str(k): list(v) for k, v in sorted(result.get("bitmap", {}).items())},
         "statistics_keys": sorted(result.get("statistics", {}).keys()),
         "last_ue_transmitted_bits": {
-            str(k): int(v) for k, v in sorted(getattr(sched, "last_ue_transmitted_bits", {}).items())
+            str(k): int(v)
+            for k, v in sorted(getattr(sched, "last_ue_transmitted_bits",
+                                       {}).items())
         },
         "priority_list": [
             [int(u["UE_ID"]), u.get("priority")]
@@ -285,10 +381,15 @@ def capture_tti(ctx, tti, result, users):
                                if u["UE_ID"] in sched.cqi_map else None),
                 "cqi_map_sb": (list(sched.cqi_map[u["UE_ID"]].sb_cqi)
                                if u["UE_ID"] in sched.cqi_map else None),
+                # Контракт словаря `user` после schedule(): набор ключей +
+                # два поля, которые алгоритмы пишут/мутируют поверх этапа 1.
+                "user_dict_keys": sorted(u.keys()),
+                "bs_buffer_size": u.get("bs_buffer_size"),
+                "instant_rate": u.get("instant_rate"),
             }
             for u in sorted(users, key=lambda x: x["UE_ID"])
         ],
-        "grid_rb_owners": _grid_state(grid, tti),
+        "grid_rb_owners": grid_state(grid, tti),
         "rbg_choice_table": _rbg_choice_table(grid, tti, rbg_size),
         "buffer_status": {
             str(ue_id): [
@@ -310,7 +411,12 @@ def capture_tti(ctx, tti, result, users):
     return json.loads(json.dumps(state))  # нормализация типов в JSON-совместимые
 
 
-def _normalize_pdcch(stats):
+def _normalize_pdcch(stats: Dict[str, Any]) -> Dict[str, Any]:
+    """Привести ключи статистики PDCCH к строкам (JSON не хранит int-ключи).
+
+    Без нормализации `json.dumps` превращает `{1: ...}` в `{"1": ...}`, и
+    снимок перестал бы отличаться от проверяемого значения типом ключа.
+    """
     out = {}
     for k, v in stats.items():
         if k == "pdcch_ue_cce_allocations" and isinstance(v, dict):
@@ -323,7 +429,14 @@ def _normalize_pdcch(stats):
 # ── Сценарии ─────────────────────────────────────────────────────────────
 # Каждый билдер возвращает {"meta": {...}, "ttis": [capture_tti, ...]}.
 
-def _run_ttis(ctx, users, ttis):
+def _run_ttis(ctx: Dict[str, Any], users: List[Dict[str, Any]],
+              ttis: List[int]) -> List[Dict[str, Any]]:
+    """Прогнать TTI по порядку и снять состояние после каждого.
+
+    `GLOBALS.CURRENT_TIME` выставляется явно перед каждым вызовом: буферный
+    менеджер и метрики читают глобальное время (BS_MODULE.py :194, :443),
+    поэтому без фиксации снимок зависел бы от порядка запуска тестов.
+    """
     captures = []
     for tti in ttis:
         GLOBALS.CURRENT_TIME = tti
@@ -332,20 +445,31 @@ def _run_ttis(ctx, users, ttis):
     return captures
 
 
-def _profile_meta(profile):
+def _profile_meta(profile: List[Tuple[int, float, int, List[int], int]]
+                  ) -> List[Dict[str, Any]]:
+    """Профиль UE в meta снимка: по нему сценарий воспроизводится без кода."""
     return [
         {"ue_id": ue_id, "wb_cqi": cqi, "sb_cqi": list(sb), "buffer_bytes": buf}
         for ue_id, _x, cqi, sb, buf in profile
     ]
 
 
-def build_simple_profile(algorithm, profile, ttis, scheduler_kwargs=None,
-                         scenario_name=None, extra_meta=None):
-    ctx = _new_ctx(algorithm, scheduler_kwargs=scheduler_kwargs)
-    ues = [_make_ue(ue_id, x, cqi, sb) for ue_id, x, cqi, sb, _ in profile]
+def build_simple_profile(algorithm: str, profile: List[Tuple], ttis: List[int],
+                         scheduler_kwargs: Optional[Dict[str, Any]] = None,
+                         scenario_name: Optional[str] = None,
+                         extra_meta: Optional[Dict[str, Any]] = None
+                         ) -> Dict[str, Any]:
+    """Сценарий на SimpleBufferManager: профиль UE + список TTI.
+
+    Returns:
+        `{"meta": {...}, "ttis": [capture_tti, ...]}` — содержимое файла
+        baseline-снимка.
+    """
+    ctx = new_ctx(algorithm, scheduler_kwargs=scheduler_kwargs)
+    ues = [make_ue_with_cqi(ue_id, x, cqi, sb) for ue_id, x, cqi, sb, _ in profile]
     for (ue_id, _x, _cqi, _sb, buf), _ue in zip(profile, ues, strict=True):
-        _fill_simple_buffer(ctx, ue_id, [(buf, None)])
-    users = _mk_users(ues)
+        fill_simple_buffer(ctx, ue_id, [(buf, None)])
+    users = build_users(ues)
     meta = {
         "scenario": scenario_name or algorithm,
         "algorithm": algorithm,
@@ -365,7 +489,8 @@ def build_simple_profile(algorithm, profile, ttis, scheduler_kwargs=None,
     return {"meta": meta, "ttis": _run_ttis(ctx, users, ttis)}
 
 
-def build_matrix(algorithm, flow_profile=None):
+def build_matrix(algorithm: str,
+                 flow_profile: Optional[str] = None) -> Dict[str, Any]:
     """Ячейка WB-матрицы (раздел 9).
 
     Шесть «классических» алгоритмов — SimpleBufferManager, TTI 5..7.
@@ -379,7 +504,7 @@ def build_matrix(algorithm, flow_profile=None):
 
     flow_profile = flow_profile or (
         "single_bearer" if algorithm == "BasicQosAware" else "multiflow")
-    ctx = _new_ctx(algorithm)
+    ctx = new_ctx(algorithm)
     bs = BaseStation(bandwidth=10, use_simple_buffer=False)
     grid = RES_GRID_LTE(bandwidth=10, num_frames=2)
     grid.SET_BS(bs)
@@ -391,20 +516,20 @@ def build_matrix(algorithm, flow_profile=None):
         ues = []
         for ue_id in sorted(flows):
             qci, nbytes, cqi = flows[ue_id]
-            ues.append(_make_ue(ue_id, 100.0 * ue_id, cqi, []))
-            _fill_layered_buffer(ctx, ue_id, [(1, qci, nbytes)])
+            ues.append(make_ue_with_cqi(ue_id, 100.0 * ue_id, cqi, []))
+            fill_layered_buffer(ctx, ue_id, [(1, qci, nbytes)])
         flows_meta = {"flows": {str(k): list(v) for k, v in sorted(flows.items())}}
     else:
         flows = QOS_MULTIFLOW
         ues = []
         for ue_id in sorted(flows):
             bearers, cqi = flows[ue_id]
-            ues.append(_make_ue(ue_id, 100.0 * ue_id, cqi, []))
-            _fill_layered_buffer(ctx, ue_id, bearers)
+            ues.append(make_ue_with_cqi(ue_id, 100.0 * ue_id, cqi, []))
+            fill_layered_buffer(ctx, ue_id, bearers)
         flows_meta = {"flows": {
             str(k): [list(b) for b in v[0]] + [v[1]] for k, v in sorted(flows.items())}}
 
-    users = _mk_users(ues)
+    users = build_users(ues)
     meta = {
         "scenario": f"wb_{algorithm}",
         "algorithm": algorithm,
@@ -426,9 +551,12 @@ def build_matrix(algorithm, flow_profile=None):
     return {"meta": meta, "ttis": _run_ttis(ctx, users, MULTI_TTI)}
 
 
-def build_golden():
+def build_golden() -> Dict[str, Any]:
+    """Золотой сценарий README §4: BestCQI, один TTI, три UE."""
     out = build_simple_profile("BestCQI", GOLDEN_UE_PROFILE, [5],
                                scenario_name="golden_tti5")
+    # Эталонные значения README §4 (не из снимка): test_golden_tti5.py
+    # сверяет с ними и снимок, и фактический прогон — независимая проверка.
     out["meta"]["expected_readme"] = {
         "allocation": {"1": list(range(6, 18)), "2": [], "3": list(range(0, 6))},
         "pdcch_ue_cce_allocations": {"3": 1, "1": 1},
@@ -438,7 +566,19 @@ def build_golden():
     return out
 
 
-def build_fd_sb(algorithm, sb_mode):
+def build_fd_sb(algorithm: str, sb_mode: str) -> Dict[str, Any]:
+    """FD-сценарий с одним из трёх режимов subband-CQI (раздел 9.2).
+
+    Args:
+        algorithm: один из `FD_ALGORITHMS` (иначе subband-CQI не потребляется).
+        sb_mode: ключ `SB_MODES` — `full` (SB есть у всех UE), `missing`
+            (SB пустые, проверка fallback на WB), `partial` (короткий список
+            SB с нулями внутри).
+    """
+    if sb_mode not in SB_MODES:
+        raise ValueError(
+            f"Недопустимый sb_mode '{sb_mode}'. "
+            f"Допустимые значения: {', '.join(SB_MODES)}")
     sb_map = {"full": SB_FULL, "missing": SB_MISSING, "partial": SB_PARTIAL}[sb_mode]
     profile = [
         (ue_id, 100.0 * ue_id, SB_WB_CQI[ue_id], sb_map[ue_id], SB_BUFFERS[ue_id])
@@ -464,7 +604,18 @@ def build_qos(algorithm):
     return out
 
 
-def build_conflict(kind):
+def build_conflict(kind: str) -> Dict[str, Any]:
+    """Сценарий конкуренции за ресурсы (раздел 9.5).
+
+    Args:
+        kind: `rbg_contended` — UE претендуют на одни и те же RBG;
+            `pdcch_limited` — не хватает CCE (`max_dl_cce_allowance=1`),
+            часть UE остаётся без гранта.
+    """
+    if kind not in ("rbg_contended", "pdcch_limited"):
+        raise ValueError(
+            f"Недопустимый kind '{kind}'. "
+            f"Допустимые значения: rbg_contended, pdcch_limited")
     if kind == "rbg_contended":
         kwargs, name = {}, "conflict_rbg_contended"
     else:
@@ -480,15 +631,22 @@ def build_conflict(kind):
     return out
 
 
-def build_rr_multitti():
+def build_rr_multitti() -> Dict[str, Any]:
+    """Ротация RR на четырёх TTI: снимает offsets и порядок выдачи (раздел 9.3)."""
     return build_simple_profile("RoundRobin", WB_UE_PROFILE, RR_TTI,
                                 scenario_name="rr_multitti")
 
 
+# Реестр сценариев: имя файла снимка -> билдер. Единственный источник имён
+# (generate_baselines.py и тесты берут ключи отсюда), поэтому расхождение
+# «список сценариев vs список файлов» исключено.
+#
+# default-аргументы в лямбдах (`a=_alg`) обязательны: без них все лямбды
+# замкнули бы одну и ту же переменную цикла и строили последний алгоритм.
 SCENARIOS = {"golden_tti5": build_golden}
 for _alg in ALL_ALGORITHMS:
     SCENARIOS[f"wb_{_alg}"] = (lambda a=_alg: build_matrix(a))
-for _mode in ("full", "missing", "partial"):
+for _mode in SB_MODES:
     for _alg in FD_ALGORITHMS:
         SCENARIOS[f"fd_sb_{_mode}_{_alg}"] = (
             lambda m=_mode, a=_alg: build_fd_sb(a, m))
@@ -499,5 +657,6 @@ SCENARIOS["conflict_pdcch_limited"] = lambda: build_conflict("pdcch_limited")
 SCENARIOS["rr_multitti"] = build_rr_multitti
 
 
-def build_all():
+def build_all() -> Dict[str, Dict[str, Any]]:
+    """Построить снимки всех сценариев реестра (используется generate_baselines)."""
     return {name: builder() for name, builder in SCENARIOS.items()}

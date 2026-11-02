@@ -45,7 +45,7 @@ def wb_ctx():
 @pytest.fixture
 def fd_ctx():
     """Контекст с subband CQI (FD) — проверяет `CqiView.get_sb`."""
-    return ctx_with_users(bsc._new_ctx("FD_BCQI"), FD_UE_PROFILE)
+    return ctx_with_users(bsc.new_ctx("FD_BCQI"), FD_UE_PROFILE)
 
 
 @pytest.fixture

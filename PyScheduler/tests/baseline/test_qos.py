@@ -6,14 +6,17 @@
 гранты через буферы, per-QCI throughput QciThroughputTracker).
 """
 
+import baseline_scenarios as bsc
 from baseline_harness import assert_matches_baseline, load_snapshot
 
 
 def test_qos_basic_single_bearer_matches_baseline():
+    """BasicQosAware (один bearer на UE) совпадает со снимком dev 6c0aae2."""
     assert_matches_baseline("qos_basic_single_bearer")
 
 
 def test_qos_aware_multiflow_matches_baseline():
+    """QosAware (несколько потоков на UE) совпадает со снимком dev 6c0aae2."""
     assert_matches_baseline("qos_aware_multiflow")
 
 
@@ -23,8 +26,12 @@ def test_qos_aware_allocation_flow_present_and_nonzero():
     flow = snap["ttis"][0]["scheduler_extra"]["allocation_flow"]
     assert flow, "allocation_flow пуст"
     assert any(v > 0 for v in flow.values()), f"все гранты нулевые: {flow}"
-    # ключи — потоки (ue_id:qci) из профилей QOS_MULTIFLOW
-    assert set(flow) == {"1:1", "1:9", "2:4", "3:6", "3:9"}
+    # Ключи — потоки (ue_id:qci); набор выводится из профиля QOS_MULTIFLOW,
+    # а не хардкодится: иначе добавление bearer в профиль не обновит тест.
+    expected_flows = {f"{ue_id}:{qci}"
+                      for ue_id, (bearers, _cqi) in bsc.QOS_MULTIFLOW.items()
+                      for _bid, qci, _bytes in bearers}
+    assert set(flow) == expected_flows
 
 
 def test_qos_per_qci_stats_recorded():

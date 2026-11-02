@@ -5,14 +5,19 @@
 собственный rollback не выполняет. Снимок фиксирует AS-IS; инвариант
 «нет двойного владения» проверяется явно и должен пережить миграцию.
 """
+import baseline_scenarios as bsc
 import pytest
 from baseline_harness import assert_matches_baseline, load_snapshot
 
-CONFLICT_SCENARIOS = ["conflict_rbg_contended", "conflict_pdcch_limited"]
+# Имена не хардкодятся: берутся из реестра сценариев, поэтому новый
+# conflict-сценарий попадёт в оба теста автоматически.
+CONFLICT_SCENARIOS = [name for name in sorted(bsc.SCENARIOS)
+                      if name.startswith("conflict_")]
 
 
 @pytest.mark.parametrize("name", CONFLICT_SCENARIOS)
 def test_conflict_matches_baseline(name):
+    """Сценарий конфликта совпадает со снимком dev 6c0aae2."""
     assert_matches_baseline(name)
 
 

@@ -10,6 +10,7 @@ from baseline_harness import assert_matches_baseline, load_snapshot
 
 
 def test_golden_tti5_matches_baseline():
+    """Золотой сценарий TTI 5 совпадает со снимком dev 6c0aae2."""
     assert_matches_baseline("golden_tti5")
 
 

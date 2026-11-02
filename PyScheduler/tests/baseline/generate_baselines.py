@@ -22,7 +22,12 @@ for p in (str(PKG_ROOT), str(HERE)):
 from baseline_scenarios import BASELINE_DIR, SCENARIOS  # noqa: E402
 
 
-def write_snapshot(name, data):
+def write_snapshot(name: str, data: dict) -> Path:
+    """Записать снимок сценария в `baselines/<name>.json` (без форматирования).
+
+    Файл пишется одной строкой без отступов намеренно: снимок — машинный
+    артефакт, а diff по нему всё равно читается через `baseline_compare`.
+    """
     BASELINE_DIR.mkdir(parents=True, exist_ok=True)
     path = BASELINE_DIR / f"{name}.json"
     path.write_text(json.dumps(data, sort_keys=True, ensure_ascii=False),
@@ -30,7 +35,8 @@ def write_snapshot(name, data):
     return path
 
 
-def main(argv):
+def main(argv: list) -> int:
+    """CLI: перегенерировать снимки перечисленных (или всех) сценариев."""
     names = argv or sorted(SCENARIOS)
     unknown = [n for n in names if n not in SCENARIOS]
     if unknown:

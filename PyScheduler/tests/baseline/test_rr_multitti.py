@@ -4,6 +4,7 @@ from baseline_harness import assert_matches_baseline, load_snapshot
 
 
 def test_rr_multitti_matches_baseline():
+    """Четыре TTI ротации совпадают со снимком dev 6c0aae2."""
     assert_matches_baseline("rr_multitti")
 
 
@@ -17,6 +18,9 @@ def test_rr_offsets_sequence_fixed():
     seq = [(t["tti"],
             t["scheduler_extra"]["rr_ue_offset"],
             t["scheduler_extra"]["rr_rbg_offset"]) for t in snap["ttis"]]
+    # Не выводятся из кода, а сняты с dev 6c0aae2 как наблюдаемый факт:
+    # после TTI 5 rr_rbg_offset = 1, затем ротация по RBG возвращается в 0,
+    # rr_ue_offset не меняется (UE в профиле 4, все обслуживаются за TTI).
     baseline = [(5, 0, 1), (6, 0, 0), (7, 0, 0), (8, 0, 0)]
     assert seq == baseline, f"последовательность offsets изменилась: {seq}"
 

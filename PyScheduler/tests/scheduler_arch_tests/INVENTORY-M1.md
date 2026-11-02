@@ -6,8 +6,12 @@ view-адаптеры.
 **Ревизия кода:** `dev 6c0aae2` + ветка `feat/SCH-008-M1-protocols`
 (секция протоколов добавлена в конец `SCHEDULER.py`, номера строк legacy-кода
 не изменились — контроль: `test_views_m1.py::test_m1_section_appended_after_legacy_code`).
-**Все номера строк** ниже сверены с фактическим файлом; сверка зафиксирована
-тестом `test_documentation_anchors_still_valid`.
+**Все номера строк** ниже сверены с фактическим файлом вручную на ревизии
+`6e1b019` + правки кодревью 2026-11-01. Автоматически контролируется не номер,
+а содержимое: тест `test_documentation_quotes_present_in_module` проверяет, что
+каждая цитата кода из документации присутствует в модуле (проверка по номерам
+строк была бы архитектурозависимой: её сдвигает любая правка владельца модуля
+выше по файлу — порядок перепривязки номеров в RUNBOOK §8, п. 10).
 
 > Инвентаризация выполнена чтением кода и AST-разбором (`ast.walk` по классам и
 > методам), а не пересказом документации модуля. Каждый факт снабжён номером
@@ -19,21 +23,35 @@ view-адаптеры.
 
 ```bash
 # из корня репозитория
-python -m pytest PyScheduler/tests/scheduler_arch_tests -q          # 56 passed
-python -m pytest PyScheduler/tests/baseline -q                      # 47 passed, снимки не меняются
+python -m pytest PyScheduler/tests/scheduler_arch_tests -q          # 55 passed
+python -m pytest PyScheduler/tests/baseline -q                      # 49 passed
 ruff check --config .ruff.toml PyScheduler/tests/scheduler_arch_tests   # All checks passed
 
 # из PyScheduler/ — наборы должны собираться вместе и в любом порядке
 cd PyScheduler
-python -m pytest tests/baseline tests/scheduler_arch_tests -q       # 103 passed
-python -m pytest tests/scheduler_arch_tests tests/baseline -q       # 103 passed
+python -m pytest tests/baseline tests/scheduler_arch_tests -q       # 104 passed
+python -m pytest tests/scheduler_arch_tests tests/baseline -q       # 104 passed
 python -m pytest tests -q --ignore=tests/scheduler_tests
-#   -> 263 passed, 1 failed (test_packet_discard — падение существовало на dev)
+#   -> 264 passed, 1 failed (test_packet_discard — падение существовало на dev)
 ```
 
-`ruff` — только из корня репозитория: в `.ruff.toml` не задан `src`, поэтому
-классификация first-party зависит от cwd (запуск из `PyScheduler/` добавляет
-I001, которые были и до M1).
+`ruff` — только из корня репозитория (канонический запуск). Причина в конфиге,
+а не в коде: в `.ruff.toml` не задан `src`, поэтому классификация first-party
+зависит от cwd, и результат различается:
+
+| Запуск | Замечаний по `PyScheduler/` | Из них в новых каталогах M0/M1 |
+|---|---|---|
+| `ruff check --config .ruff.toml PyScheduler` из корня | 1095 | **0** |
+| то же с `src = ["PyScheduler", "."]` | 1102 (I001: 32 → 39) | 4 (только I001) |
+| из `PyScheduler/` с `--config ../.ruff.toml` | — | те же 4 (только I001) |
+
+То есть собственных модулей проекта (`SCHEDULER`, `BS_MODULE`, `GLOBALS`, …)
+ruff считает third-party, а при явном `src` — first-party, и требование к
+порядку импортов меняется на противоположное (две конфигурации несовместимы:
+проверено на probe-файле). Замечания E/F/W/N/B от `src` не зависят.
+Карточка **CFG-SCH-001** (запрос владельцу репозитория) — в
+`MR_doc_SCH-001/PyScheduler/scheduler/`; в M1 конфиг не правится (чужой файл,
+нецелевое изменение).
 
 ### 1.1 Состав каталога
 
@@ -42,7 +60,7 @@ tests/scheduler_arch_tests/
 ├── INVENTORY-M1.md    — этот файл (инвентаризация AS-IS, SPEC §5.4)
 ├── arch_support.py    — построители контекстов (на хелперах baseline_scenarios)
 ├── conftest.py        — sys.path + фикстуры wb_ctx / fd_ctx / layered_ctx
-└── test_views_m1.py   — 56 контрактных тестов (протоколы, адаптеры, R1/R2/R3)
+└── test_views_m1.py   — 55 контрактных тестов (протоколы, адаптеры, R1/R2/R3)
 ```
 
 Общие хелперы лежат в `arch_support.py`, а не в `conftest.py`, и тесты не
@@ -200,44 +218,67 @@ tests/scheduler_arch_tests/
 
 ---
 
-## 6. Пробелы покрытия baseline-снимков (найдено при инвентаризации)
+## 6. Пробел покрытия baseline-снимков — ЗАКРЫТ (2026-11-01)
 
-`capture_tti` (tests/baseline/baseline_scenarios.py :261–311) фиксирует
+`capture_tti` (tests/baseline/baseline_scenarios.py :348–412) фиксирует
 `allocation`, `pdcch_stats`, `bitmap`, `priority_list`, `ues`
-(`average_throughput`, `current_dl_throughput`, `cqi_map_wb/sb`),
-`grid_rb_owners`, `rbg_choice_table`, `buffer_status`, `scheduler_extra`,
-`qci_tracker`, `last_ue_transmitted_bits`.
+(`average_throughput`, `current_dl_throughput`, `cqi_map_wb/sb`,
+`user_dict_keys`, `bs_buffer_size`, `instant_rate`), `grid_rb_owners`,
+`rbg_choice_table`, `buffer_status`, `scheduler_extra`, `qci_tracker`,
+`last_ue_transmitted_bits`.
 
-В снимок **не входят** два наблюдаемых поля user-словаря из §5:
+Инвентаризация M1 нашла два наблюдаемых поля user-словаря (§5), которых в
+схеме 1 не было:
 
 - `user['bs_buffer_size']` (пишется на этапе 1 :593, уменьшается RR :2086,
-  читается `get_stats()` :470 и оценкой PDSCH :739);
-- `user['instant_rate']` (отладочное поле PF :2143).
+  читается `get_stats()` :470 и оценкой PDSCH :739) — побочный эффект,
+  пересекающий этапы;
+- `user['instant_rate']` (отладочное поле PF :2143 и FD_PF :2614) — часть
+  наблюдаемого контракта словаря `user`.
 
-Последствие: регрессия в этих полях не была бы видна по 47 baseline-тестам.
-В M1 пробел закрыт **тестами**, а не снимками:
-`test_rr_allocator_mutates_shared_bs_buffer_size`,
-`test_other_allocators_keep_bs_buffer_size_intact`,
-`test_pf_writes_debug_field_instant_rate` (проверены мутациями: удаление
-декремента :2086 и удаления записи :2143 ловятся соответствующими тестами).
+**Решение (принято 2026-11-01): расширить снимки, а не ограничиться тестами.**
+Обоснование и фактическая проверка — в `MR_doc_SCH-001/PyScheduler/scheduler/`
+(раздел «Пробел покрытия снимков»), коротко:
 
-Расширение `capture_tti` этими полями требует **регенерации всех 27 снимков**
-(меняется структура JSON), поэтому в ветку M1 не включается (R4: одна ветка —
- одна цель) и выносится отдельным шагом — см. DoD-FEAT-SCH-008 §2.2, пункт
-«расширение снимков».
+1. Назначение baseline-набора — ловить ЛЮБОЕ изменение наблюдаемого состояния
+   при переносе кода на шагах M2+. Поля, которых нет в снимке, миграция может
+   изменить незаметно; тесты ловят только то, что в них явно запрограммировано.
+2. Расширение аддитивно: добавлены `ues[].bs_buffer_size`,
+   `ues[].instant_rate` и `ues[].user_dict_keys` (весь набор ключей словаря
+   `user`, чтобы появление/исчезновение любого поля меняло снимок).
+3. Доказательство отсутствия изменения поведения: 23 сценария пересобраны и
+   сверены со снимками схемы 1 — после удаления трёх новых ключей все поля
+   схемы 1 совпадают **побайтово, 0 расхождений** (скрипт сверки и вывод —
+   RUNBOOK §6.1).
+4. Стоимость: регенерация 23 снимков занимает 0,5 с (`generate_baselines.py`),
+   full-SIM контрольные точки (4 файла `sim*.json`) схемы не меняли и не
+   перегенерировались.
 
----
+Тесты, написанные в M1 для этого пробела, сохранены — они проверяют то, чего
+снимок дать не может:
+
+| Тест | Что добавляет поверх снимка |
+|---|---|
+| `test_rr_allocator_mutates_shared_bs_buffer_size` | направление изменения (оценка не может вырасти) на живом прогоне |
+| `test_other_allocators_keep_bs_buffer_size_intact` | список алгоритмов выводится из `ALL_ALGORITHMS`: новый алгоритм попадёт под контроль автоматически |
+| `test_pf_writes_debug_field_instant_rate` | независимый пересчёт `rb_per_slot * GET_BITS_PER_RB(wb_cqi)` и отсутствие поля у BestCQI |
+| `test_all_snapshots_carry_user_contract_fields` | схема 2 присутствует в КАЖДОМ снимке (23 сценария), `bs_buffer_size` — int |
+
+Мутационный контроль (2026-11-01): удаление `bs_buffer_size` из снимка,
+подмена его типа на float, добавление несуществующей цитаты в
+`DOCUMENTED_QUOTES`, отмена съёма `instant_rate` в `capture_tti` — каждая
+мутация ловится соответствующим тестом (4/4 FAIL, после отката — PASS).
 
 ## 7. Соответствие входов и view-протоколов M1
 
 | Вход (§4) | Протокол | Адаптер | Legacy-цель делегирования | Переключение потребителя |
 |---|---|---|---|---|
-| WB/SB CQI | `CqiView` (:3272) | `LegacyCqiView` (:3397) | `_get_wb_cqi` :1064, `_get_sb_cqi` :1084 | M3 (общий аллокатор) / C1 (целевая форма) |
-| Сетка: RBG, индексы, PRB | `GridView` (:3290) | `LegacyGridView` (:3415) | `ALLOCATE_RBG`, `GET_RBG_SIZE`, `GET_RBG_INDICES`, `rb_per_slot` | M3 |
-| Таблица MCS | `AmcView` (:3321) | `LegacyAmcView` (:3442) | `GET_BITS_PER_RB` :1730 | M3 |
-| Буферы БС | `BuffersView` (:3330) | `LegacyBuffersView` (:3452) | `ue_has_buffer`, `get_buffer_status`, `hol_delay`/`qci` статусов | M2b (ранкеры), M6 (QoS) |
-| EWMA, per-QCI, GBR/PDB | `StatsView` (:3349) | `LegacyStatsView` (:3478) | `user['ue'].average_throughput` :2133, `qci_tput_tracker`, `GLOBALS.is_gbr`/`QCI_PROFILES`, `QCI.get_delay_budget` | M4b (PF), M6 (QoS) |
-| Состояние ротации | `StateView` (:3370) | `LegacyStateView` (:3511) | `rr_ue_offset`/`rr_rbg_offset` :1993–1994, :2374–2375 | M2a/M2b → `SchedulerState`, адаптер удаляется |
+| WB/SB CQI | `CqiView` (:3278) | `LegacyCqiView` (:3403) | `_get_wb_cqi` :1064, `_get_sb_cqi` :1084 | M3 (общий аллокатор) / C1 (целевая форма) |
+| Сетка: RBG, индексы, PRB | `GridView` (:3296) | `LegacyGridView` (:3421) | `ALLOCATE_RBG`, `GET_RBG_SIZE`, `GET_RBG_INDICES`, `rb_per_slot` | M3 |
+| Таблица MCS | `AmcView` (:3327) | `LegacyAmcView` (:3448) | `GET_BITS_PER_RB` :1730 | M3 |
+| Буферы БС | `BuffersView` (:3336) | `LegacyBuffersView` (:3458) | `ue_has_buffer`, `get_buffer_status`, `hol_delay`/`qci` статусов | M2b (ранкеры), M6 (QoS) |
+| EWMA, per-QCI, GBR/PDB | `StatsView` (:3355) | `LegacyStatsView` (:3502) | `user['ue'].average_throughput` :2133, `qci_tput_tracker`, `GLOBALS.is_gbr`/`QCI_PROFILES`, `QCI.get_delay_budget` | M4b (PF), M6 (QoS) |
+| Состояние ротации | `StateView` (:3376) | `LegacyStateView` (:3538) | `rr_ue_offset`/`rr_rbg_offset` :1993–1994, :2374–2375 | M2a/M2b → `SchedulerState`, адаптер удаляется |
 
 Номера строк протоколов/адаптеров — в текущей редакции файла; секция добавлена
 в конец, поэтому при правках legacy-кода они сдвигаются последними.
@@ -248,9 +289,9 @@ tests/scheduler_arch_tests/
 
 | Гарантия | Контроль |
 |---|---|
-| Потребители не переключены на views | `test_no_consumer_switched_yet` (скан всех строк до маркера секции), `test_legacy_classes_do_not_reference_views` (AST: ни один из 13 legacy-классов не упоминает 12 view-имён). Проверено мутацией: подстановка `LegacyCqiView(self).get_wb(ue_id)` в :1919 роняет оба теста |
-| Поведение восьми алгоритмов не изменилось | 47 baseline-тестов проходят **без регенерации** снимков (`git status` по `baselines/` чист) |
-| Номера строк legacy-кода сохранены | `test_m1_section_appended_after_legacy_code`, `test_documentation_anchors_still_valid` (11 якорей) |
+| Потребители не переключены на views | `test_legacy_code_does_not_reference_views` (AST: ни один legacy-узел модуля — класс ИЛИ функция — не упоминает 12 view-имён; полнота контроля подтверждается тем, что все восемь реализаций из фабрики попали в проверенный набор). Проверено мутацией 2026-11-01: метод `_mutation_probe_view_use` с `LegacyCqiView(self)` внутри `RoundRobinScheduler` роняет тест (FAIL), после отката — PASS. Скан строк по регулярному выражению (`test_no_consumer_switched_yet`) удалён как архитектурозависимый: шаблон `.hol_delay(` ложно срабатывал бы на легитимный legacy-код, а AST-проверка покрывает то же инвариантом |
+| Поведение восьми алгоритмов не изменилось | 49 baseline-тестов проходят; снимки перегенерированы ТОЛЬКО из-за расширения схемы (§6): после удаления трёх новых ключей все поля схемы 1 совпадают со старыми снимками побайтово (23 сценария, 0 расхождений) |
+| Номера строк legacy-кода сохранены | `test_m1_section_appended_after_legacy_code` (после маркера раздела нет ни одного legacy-узла), `test_documentation_quotes_present_in_module` (11 цитат кода из документации присутствуют в модуле). Проверено мутацией: узел, добавленный после раздела M1, роняет тест |
 | Адаптеры делегируют, а не reimplement | `test_cqi_view_delegates_wb_cqi` (8 алгоритмов), `test_grid_view_allocate_rbg_delegates_and_mutates_grid` (сетки-близнецы), `test_amc_view_matches_get_bits_per_rb`, `test_buffers_view_matches_manager_simple/layered`, `test_stats_view_*`, `test_state_view_reads_and_writes_scheduler_fields`. Проверено мутациями: `+1` в `get_wb`, подмена формулы `total_rbg`, чтение не того поля состояния — каждая ловится |
 | Реестр фабрики не затронут | `test_create_accepts_all_eight_factory_keys`, `test_views_are_not_registered_as_algorithms` |
 | AS-IS дефекты не «подлечены» попутно | `test_buffers_view_hol_delay_none_on_simple_reproduces_bug_sch_012` (BUG-SCH-012), `test_available_algorithms_divergence_pinned_bug_sch_010` (BUG-SCH-010), `test_amc_view_propagates_invalid_cqi_error` (CQI=0 → ValueError :1735) |
@@ -272,9 +313,13 @@ tests/scheduler_arch_tests/
 
 ## 10. Открытые вопросы к согласованию (не блокируют M1)
 
-1. **Расширение baseline-снимков** полями `bs_buffer_size`/`instant_rate`
-   (§6): отдельная ветка с регенерацией 27 снимков — делать до M2 или после
-   переноса аллокаторов?
+1. **Расширение baseline-снимков** полями `bs_buffer_size`/`instant_rate` —
+   **РЕШЕНО 2026-11-01, вопрос снят**: снимки расширены (§6), регенерация
+   23 сценариев выполнена в этой же ветке, все поля схемы 1 совпали побайтово.
+   Исходная формулировка вопроса: «отдельная ветка с регенерацией 27 снимков —
+   делать до M2 или после переноса аллокаторов?». Ответ: **до M2** — иначе M2
+   менял бы одновременно и поведение, и схему снимков, и расхождение нельзя
+   было бы атрибутировать одному шагу.
 2. **Нормализация имён алгоритмов** (BUG-SCH-010): подтвердить, что
    единственное исправление — M8a через `SCHEDULER_REGISTRY`, и что имена
    `FD_BestCQI`/`FD_FF` не используются внешними конфигами (внутри репозитория
