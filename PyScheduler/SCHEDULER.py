@@ -3288,7 +3288,7 @@ class CqiView(Protocol):
         ...
 
     def get_sb(self, ue_id: int) -> List[int]:
-        """Subband CQI per RBG; пустой список — non-FD (fallback на WB)."""
+        """Subband CQI per RBG (копия списка); пустой — non-FD (fallback WB)."""
         ...
 
 
@@ -3417,8 +3417,8 @@ class LegacyCqiView:
         return self._scheduler._get_wb_cqi(ue_id)
 
     def get_sb(self, ue_id: int) -> List[int]:
-        """Делегирует `_get_sb_cqi` (:1084): Subband CQI per RBG, [] — non-FD."""
-        return self._scheduler._get_sb_cqi(ue_id)
+        """Делегирует `_get_sb_cqi` (:1084) с копией: SB CQI per RBG, [] — non-FD."""
+        return list(self._scheduler._get_sb_cqi(ue_id))
 
 
 class LegacyGridView:

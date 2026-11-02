@@ -213,16 +213,27 @@ def test_cqi_view_sb_empty_in_wb_mode(wb_ctx):
         assert view.get_sb(ue.UE_ID) == []
 
 
-def test_cqi_view_returns_same_list_object(wb_ctx):
-    """Адаптер не копирует SB-список: мутация результата видна в cqi_map.
+def test_cqi_view_get_sb_returns_copy_not_live_list(wb_ctx):
+    """View не отдаёт живой список `sb_cqi`: мутация результата не попадает в карту.
 
-    Фиксирует AS-IS (`return self.cqi_map[ueid].sb_cqi`, :1098). Копирование
-    изменило бы семантику для потребителей — в M1 это запрещено (R2).
+    Контракт read-only view (SPEC-FEAT-SCH-008 §2.1, антипаттерн A3): стратегия,
+    отсортировавшая или перезаписавшая SB-список на месте, не должна портить
+    `CQIMap` для последующих FD-аллокаций. AS-IS `_get_sb_cqi` (:1084) возвращает
+    живой список — копию делает адаптер (`list(...)`), legacy-метод и его
+    потребители не тронуты (R2). Замечание внешнего ревью PR #44 (Codex, P2)
+    закрыто этой проверкой: до фикса тест падает на `is not`, после — зелёный.
     """
     sched = wb_ctx["sched"]
     ue_id = 1
     sched.cqi_map[ue_id].sb_cqi = [7, 8, 9]
-    assert LegacyCqiView(sched).get_sb(ue_id) is sched.cqi_map[ue_id].sb_cqi
+    view = LegacyCqiView(sched)
+    sb = view.get_sb(ue_id)
+    assert sb == [7, 8, 9]
+    assert sb is not sched.cqi_map[ue_id].sb_cqi
+    sb[0] = 15
+    sb.sort(reverse=True)
+    assert sched.cqi_map[ue_id].sb_cqi == [7, 8, 9]
+    assert view.get_sb(ue_id) == [7, 8, 9]
 
 
 # ── 3. GridView: делегирование RES_GRID_LTE ─────────────────────────────────
