@@ -3303,7 +3303,7 @@ class GridView(Protocol):
     """
 
     def allocate_rbg(self, tti: int, rbg_idx: int, ue_id: int) -> bool:
-        """Занять RBG под UE; False — отказ (частичный отказ откатывает сетка)."""
+        """Занять RBG под UE; False — отказ; откат группы не owner-safe (BUG-SCH-009)."""
         ...
 
     def rbg_size(self) -> int:
@@ -3433,7 +3433,7 @@ class LegacyGridView:
         self._grid = lte_grid
 
     def allocate_rbg(self, tti: int, rbg_idx: int, ue_id: int) -> bool:
-        """Делегирует `ALLOCATE_RBG`: False — отказ (частичный отказ откатывает сетка)."""
+        """Делегирует `ALLOCATE_RBG`: False — отказ; откат не owner-safe (BUG-SCH-009)."""
         return self._grid.ALLOCATE_RBG(tti, rbg_idx, ue_id)
 
     def rbg_size(self) -> int:

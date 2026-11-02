@@ -270,6 +270,13 @@ def test_grid_view_allocate_rbg_delegates_and_mutates_grid():
     ALLOCATE_RBG меняет владельца RB, поэтому сверка идёт на двух одинаково
     построенных сетках (близнецах): последовательность вызовов и результат
     совпадают, итоговое состояние сеток идентично.
+
+    Фаза 2 — отказ на пересечении с чужой аллокацией: view повторяет семантику
+    отказа `ALLOCATE_RBG` включая откат, который очищает всю группу без
+    проверки владельца (BUG-SCH-009). Контракт view формулирует это явно и не
+    обещает owner-safe rollback: чужой RB освобождается вместе с группой —
+    это AS-IS семантика сетки, зафиксированная здесь, а не исправление
+    (исправление — задача владельца RES_GRID, FEAT-SCH-001).
     """
     twin_a, twin_b = bsc.new_ctx("BestCQI"), bsc.new_ctx("BestCQI")
     view, grid = LegacyGridView(twin_a["grid"]), twin_b["grid"]
@@ -282,6 +289,22 @@ def test_grid_view_allocate_rbg_delegates_and_mutates_grid():
                         grid.ALLOCATE_RBG(5, rbg_idx, 2)))
     assert all(a == b for a, b in results), f"расхождение allocate_rbg: {results}"
     assert bsc.grid_state(twin_a["grid"], 5) == bsc.grid_state(twin_b["grid"], 5)
+
+    # Фаза 2: чужой RB внутри группы -> отказ, и откат освобождает чужой RB.
+    tti = 7
+    grids = (twin_a["grid"], twin_b["grid"])
+    victim = grids[0].GET_RBG_INDICES(0)[0]
+    for g in grids:
+        for slot in (0, 1):
+            assert g.ALLOCATE_RB(tti, f"sub_{tti % 10}_slot_{slot}", victim, 7)
+    rejected = (view.allocate_rbg(tti, 0, 8), grid.ALLOCATE_RBG(tti, 0, 8))
+    assert rejected == (False, False), f"отказ не повторён: {rejected}"
+    for g in grids:
+        # RB жертвы освобождён вместе с группой (откат не owner-safe):
+        # оба слота снова отдаются другому UE — иначе ALLOCATE_RB вернул бы False
+        assert g.ALLOCATE_RB(tti, f"sub_{tti % 10}_slot_0", victim, 9)
+        assert g.ALLOCATE_RB(tti, f"sub_{tti % 10}_slot_1", victim, 9)
+    assert bsc.grid_state(twin_a["grid"], tti) == bsc.grid_state(twin_b["grid"], tti)
 
 
 # ── 4. AmcView: делегирование GET_BITS_PER_RB ───────────────────────────────
