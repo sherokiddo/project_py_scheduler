@@ -7,7 +7,7 @@
 # пользовательскими устройствами (UE) в сети LTE. Реализует алгоритмы
 # планирования Round Robin, Best CQI и Proportional Fair с поддержкой PDCCH.
 #
-# Версия: 2.1.1 (изменения — раздел «ИНТЕРФЕЙСЫ СТРАТЕГИЙ И VIEW-АДАПТЕРЫ», конец модуля)
+# Версия: 2.1.1
 # Дата последнего изменения: 2026-11-01
 # Версия Python Kernel: 3.12.9
 # Автор: Брагин Кирилл, Норицин Иван
@@ -102,6 +102,13 @@
 # - Все новые функции протестированы, тесты сохранены. Результат успешный.
 # - Составлен список дальнейших фич для следующих версий.
 # - Полный лист изменений и документация на текущий момент составляется.
+#
+# Изменения v2.1.1:
+# - Добавлены протоколы CqiView, GridView, AmcView, BuffersView, StatsView и
+#   StateView (typing.Protocol) и тонкие legacy-адаптеры к ним (конец модуля).
+# - Адаптеры только делегируют существующим методам. Поведение алгоритмов не
+#   изменено, потребители на views не переключены.
+# - Подробности: docs/scheduler/specs/SPEC-FEAT-SCH-008.md.
 #------------------------------------------------------------------------------
 """
 
@@ -111,7 +118,8 @@ import math
 from dataclasses import dataclass
 from BS_MODULE import BaseStation, BufferStatus, IBufferManager
 from TRAFFIC_MODEL import QCI
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Tuple, runtime_checkable
+from typing import (TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional,
+                    Protocol, Tuple, runtime_checkable)
 
 @dataclass(slots=True)
 class SchedulingGrant:
@@ -3246,266 +3254,207 @@ class QosAwareScheduler(SchedulerInterface):
 
 
 #------------------------------------------------------------------------------
-# ИНТЕРФЕЙСЫ СТРАТЕГИЙ И VIEW-АДАПТЕРЫ
-# FEAT-SCH-008 (SPEC-FEAT-SCH-008 v4), шаг M1
-#
-# Изменения v2.1.1 (M1):
-# - Добавлены протоколы CqiView / GridView / AmcView / BuffersView / StatsView /
-#   StateView (typing.Protocol — структурная типизация, наследование не
-#   требуется) и тонкие legacy-адаптеры поверх текущих полей оркестратора.
-# - Адаптеры ДЕЛЕГИРУЮТ существующим методам и не дублируют их (правило R5).
-# - Поведение восьми алгоритмов НЕ изменено: потребители на views не
-#   переключены (правила R1/R2). Контроль — тест
-#   tests/scheduler_arch_tests/test_views_m1.py::test_no_consumer_switched_yet.
-# - Раздел намеренно добавлен в конец файла: номера строк существующего кода
-#   сохраняются, поэтому якоря документации модуля (`:NNN`) остаются
-#   действительными без перепривязки.
-# - Инвентаризация фактических входов восьми реализаций (SPEC §4.2, §5.4) —
-#   в документации модуля Scheduler (комплект DOC-SCH-001, вне этого репозитория).
-# - Целевая форма CqiView (get_for_rbg/CqiEstimate) и базовые abc.ABC
-#   аллокаторов в M1 не вводятся: первое — CQI-трек C1 (не раньше M3),
-#   второе — шаги M4+ (SPEC §5.3, §5.7).
+# ИНТЕРФЕЙСЫ СТРАТЕГИЙ И VIEW-АДАПТЕРЫ (v2.1.1)
 #------------------------------------------------------------------------------
 
 if TYPE_CHECKING:
-    # Только для аннотаций адаптеров: runtime-импорт RES_GRID планировщику не
-    # нужен (сетка приходит извне), а в шапке модуля RES_GRID уже указан как
-    # опосредованная зависимость.
+    # Нужен только для аннотаций: сетка приходит извне, runtime-импорт не нужен.
     from RES_GRID import RES_GRID_LTE
+
+
+class SupportsAverageThroughput(Protocol):
+    """Объект UE, у которого есть EWMA-среднее `average_throughput`."""
+
+    average_throughput: float
 
 
 @runtime_checkable
 class CqiView(Protocol):
-    """Доступ к CSI планировщика: что алгоритм вправе потреблять (SPEC §5.7).
-
-    Legacy-форма M1: значения без меток времени и без TTL. Целевая форма
-    (`get_wb(ue_id, tti) -> CqiEstimate`, `get_for_rbg(...)`) вводится
-    CQI-треком C1–C4, не в M-шагах (правило R6: отложенное не маскируется).
-    """
+    """Доступ к CQI-отчётам UE (значения без меток времени и TTL)."""
 
     def get_wb(self, ue_id: int) -> int:
-        """Wideband CQI [1..15]; 0 — отчёта нет (UE отфильтровывается этапом 1)."""
-        ...
+        """Возвращает wideband CQI в диапазоне [1..15]; 0, если отчёта нет."""
 
     def get_sb(self, ue_id: int) -> List[int]:
-        """Subband CQI per RBG (копия списка); пустой — non-FD (fallback WB)."""
-        ...
+        """Возвращает копию списка subband CQI по RBG; пустой список для non-FD."""
 
 
 @runtime_checkable
 class GridView(Protocol):
-    """Занятие ресурсной сетки. Единственная точка записи в сетку для стратегий.
+    """Занятие ресурсной сетки: единственная точка записи для стратегий.
 
-    Отката в контракте нет намеренно (SPEC §5.3): `ALLOCATE_RBG` не считается
-    гарантированно атомарной — при частичном отказе `RELEASE_RBG` освобождает
-    RB без проверки владельца (BUG-SCH-009), поэтому rollback остаётся задачей
-    оркестратора/владельца RES_GRID (FEAT-SCH-001), а не аллокатора.
+    Откат при частичном отказе в контракт не входит: `ALLOCATE_RBG`
+    освобождает группу без проверки владельца (BUG-SCH-009).
     """
 
     def allocate_rbg(self, tti: int, rbg_idx: int, ue_id: int) -> bool:
-        """Занять RBG под UE; False — отказ; откат группы не owner-safe (BUG-SCH-009)."""
-        ...
+        """Занимает RBG под UE; False при отказе (откат не owner-safe)."""
 
     def rbg_size(self) -> int:
-        """Размер RBG в RB (RES_GRID.RBG_SIZE_TABLE по bandwidth)."""
-        ...
+        """Возвращает размер RBG в RB."""
 
     def rbg_indices(self, rbg_idx: int) -> List[int]:
-        """Индексы RB, входящие в RBG."""
-        ...
+        """Возвращает индексы RB, входящих в RBG."""
 
     def total_rbg(self) -> int:
-        """Число RBG в слоте (округление вверх, как в QoS-аллокаторе)."""
-        ...
+        """Возвращает число RBG в слоте (с округлением вверх)."""
 
     def prb_count(self) -> int:
-        """Число RB в слоте (`rb_per_slot`)."""
-        ...
+        """Возвращает число RB в слоте."""
 
 
 @runtime_checkable
 class AmcView(Protocol):
-    """Перевод CQI в ёмкость RB. Единственная точка CQI→биты (этапы 4.5, 6, 7)."""
+    """Перевод CQI в ёмкость ресурсного блока."""
 
     def bits_per_rb(self, cqi: int) -> int:
-        """Бит на RB для CQI; ValueError при cqi вне [1..15] (AS-IS)."""
-        ...
+        """Возвращает число бит на RB; ValueError при cqi вне [1..15]."""
 
 
 @runtime_checkable
 class BuffersView(Protocol):
-    """Чтение состояния буферов BS. Записи (извлечение по грантам) в M1 нет:
-    извлечение остаётся на этапе 7 оркестратора (FEAT-SCH-009 — BufferManager).
-    """
+    """Чтение состояния буферов базовой станции (без записи)."""
 
     def has_buffer(self, ue_id: int) -> bool:
-        """Существует ли буфер UE (CHECK 1 этапа 1)."""
-        ...
+        """Проверяет, что буфер UE существует."""
 
     def buffer_status(self, ue_id: int) -> List[BufferStatus]:
-        """Статусы логических каналов UE (один элемент для Simple-режима)."""
-        ...
+        """Возвращает статусы логических каналов UE."""
 
     def hol_delay(self, ue_id: int, qci: int) -> Optional[int]:
-        """HOL-задержка потока (ue_id, qci); None — потока/поля нет (AS-IS)."""
-        ...
+        """Возвращает HOL-задержку потока (ue_id, qci); None, если потока нет."""
 
 
 @runtime_checkable
 class StatsView(Protocol):
-    """Чтение статистики, нужной метрикам: EWMA UE, per-QCI throughput, GBR/PDB."""
+    """Чтение статистики для метрик: EWMA UE, per-QCI throughput, GBR/PDB."""
 
     def ue_throughput(self, ue_id: int) -> float:
-        """EWMA-среднее UE (`average_throughput`) — знаменатель PF."""
-        ...
+        """Возвращает EWMA-среднее пропускной способности UE."""
 
     def qci_throughput(self, ue_id: int, qci: int) -> Tuple[float, float]:
-        """(current, average) throughput потока из QciThroughputTracker."""
-        ...
+        """Возвращает (текущая, средняя) пропускная способность потока."""
 
     def gbr_of(self, qci: int) -> Optional[float]:
-        """GBR профиля QCI; None для non-GBR (источник — GLOBALS.QCI_PROFILES)."""
-        ...
+        """Возвращает GBR для QCI; None для non-GBR и неизвестных QCI."""
 
     def pdb_of(self, qci: int) -> int:
-        """Packet delay budget QCI (TRAFFIC_MODEL.QCI.get_delay_budget)."""
-        ...
+        """Возвращает packet delay budget для QCI."""
 
 
 @runtime_checkable
 class StateView(Protocol):
-    """Доступ к долгоживущему состоянию планирования (SPEC §5.1).
+    """Доступ к состоянию ротации RR/FD-планировщиков.
 
-    Правило целевой архитектуры: одно поле — один писатель (аллокатор),
-    ранкеры только читают. В M1 состояние ещё живёт на экземплярах
-    RR/FD-планировщиков; владельцем полей становится `SchedulerState` на шаге
-    M2a/M2b — тогда этот протокол получает типизированный адаптер, а
-    `LegacyStateView` удаляется (критерий R8).
+    Одно поле - один писатель (аллокатор), ранкеры только читают.
     """
 
     def get_rr_ue_offset(self) -> int:
-        """Смещение ротации UE (читают RR/FD-ранкеры)."""
-        ...
+        """Возвращает смещение ротации UE."""
 
     def set_rr_ue_offset(self, value: int) -> None:
-        """Запись смещения ротации UE (писатель — RR/FD-аллокатор)."""
-        ...
+        """Записывает смещение ротации UE."""
 
     def get_rr_rbg_offset(self) -> int:
-        """Смещение ротации RBG (читают RR/FD-аллокаторы)."""
-        ...
+        """Возвращает смещение ротации RBG."""
 
     def set_rr_rbg_offset(self, value: int) -> None:
-        """Запись смещения ротации RBG (писатель — RR/FD-аллокатор)."""
-        ...
+        """Записывает смещение ротации RBG."""
 
 
 class LegacyCqiView:
-    """Тонкий адаптер `CqiView` поверх `CQIMap` оркестратора.
+    """Адаптер `CqiView` поверх `CQIMap` планировщика.
 
-    Делегирует `_get_wb_cqi` (:1064) и `_get_sb_cqi` (:1084), не дублируя
-    логику fallback (R5). Доступ к защищённым методам осознанный: адаптер —
-    часть того же модуля и существует только на время миграции.
+    Args:
+        scheduler: Планировщик, чьи `_get_wb_cqi` и `_get_sb_cqi` вызываются.
     """
 
     def __init__(self, scheduler: "SchedulerInterface"):
-        """Сохранить оркестратора; адаптер не копирует его состояние."""
         self._scheduler = scheduler
 
     def get_wb(self, ue_id: int) -> int:
-        """Делегирует `_get_wb_cqi` (:1064): Wideband CQI [1..15], 0 — отчёта нет."""
+        """Делегирует `_get_wb_cqi`."""
         return self._scheduler._get_wb_cqi(ue_id)
 
     def get_sb(self, ue_id: int) -> List[int]:
-        """Делегирует `_get_sb_cqi` (:1084) с копией: SB CQI per RBG, [] — non-FD."""
+        """Делегирует `_get_sb_cqi` и возвращает копию списка."""
         return list(self._scheduler._get_sb_cqi(ue_id))
 
 
 class LegacyGridView:
-    """Тонкий адаптер `GridView` поверх `RES_GRID_LTE`.
+    """Адаптер `GridView` поверх `RES_GRID_LTE`.
 
-    `total_rbg()` повторяет формулу QoS-аллокатора (:3088–3089), чтобы
-    будущее общее FD-выделение не меняло число просматриваемых RBG (R2).
+    Args:
+        lte_grid: Ресурсная сетка LTE.
     """
 
     def __init__(self, lte_grid: "RES_GRID_LTE"):
-        """Сохранить ресурсную сетку; адаптер не копирует её состояние."""
         self._grid = lte_grid
 
     def allocate_rbg(self, tti: int, rbg_idx: int, ue_id: int) -> bool:
-        """Делегирует `ALLOCATE_RBG`: False — отказ; откат не owner-safe (BUG-SCH-009)."""
+        """Делегирует `ALLOCATE_RBG`; откат при отказе не owner-safe."""
         return self._grid.ALLOCATE_RBG(tti, rbg_idx, ue_id)
 
     def rbg_size(self) -> int:
-        """Делегирует `GET_RBG_SIZE`: размер RBG в RB."""
+        """Делегирует `GET_RBG_SIZE`."""
         return self._grid.GET_RBG_SIZE()
 
     def rbg_indices(self, rbg_idx: int) -> List[int]:
-        """Делегирует `GET_RBG_INDICES`: индексы RB, входящие в RBG."""
+        """Делегирует `GET_RBG_INDICES`."""
         return self._grid.GET_RBG_INDICES(rbg_idx)
 
     def total_rbg(self) -> int:
-        """Число RBG в слоте; формула повторяет QoS-аллокатор (:3088-3089)."""
+        """Возвращает число RBG в слоте по формуле QoS-аллокатора."""
         rbg_size = self._grid.GET_RBG_SIZE()
         return (self._grid.rb_per_slot + rbg_size - 1) // rbg_size
 
     def prb_count(self) -> int:
-        """Число RB в слоте — поле `rb_per_slot` сетки."""
+        """Возвращает `rb_per_slot` сетки."""
         return self._grid.rb_per_slot
 
 
 class LegacyAmcView:
-    """Тонкий адаптер `AmcView` поверх `AdaptiveModulationAndCoding`."""
+    """Адаптер `AmcView` поверх `AdaptiveModulationAndCoding`.
+
+    Args:
+        amc: Экземпляр AMC.
+    """
 
     def __init__(self, amc: "AdaptiveModulationAndCoding"):
-        """Сохранить AMC; адаптер не копирует его состояние."""
         self._amc = amc
 
     def bits_per_rb(self, cqi: int) -> int:
-        """Делегирует `GET_BITS_PER_RB`; ValueError при cqi вне [1..15] (AS-IS)."""
+        """Делегирует `GET_BITS_PER_RB`; ValueError при cqi вне [1..15]."""
         return self._amc.GET_BITS_PER_RB(cqi)
 
 
 class LegacyBuffersView:
-    """Тонкий адаптер `BuffersView` поверх `IBufferManager` базовой станции.
+    """Тонкий адаптер `BuffersView` поверх менеджера буферов базовой станции.
 
-    AS-IS (инвентаризация M1, SPEC-FEAT-SCH-008 §4.2): планировщик НЕ хранит
-    ссылку на базовую станцию — `__init__` (:294-304) принимает `bs`, но
-    только передаёт его в `lte_grid.SET_BS(bs)`, поэтому все шесть точек
-    доступа к буферам идут через сетку:
-    `self.lte_grid.bs.buffer_manager` (:574, :900, :2776, :2829, :3015, :3065)
-    и `self.lte_grid.bs.use_simple_buffer` (:834). Адаптер принимает менеджер
-    буферов явно, чтобы на M2 зависимость можно было передать стратегии
-    напрямую, не воспроизводя связь «планировщик -> сетка -> БС» (пункт 2 TODO
-    модуля, :3232).
+    Args:
+        buffer_manager: Менеджер буферов базовой станции.
     """
 
+    # AS-IS: планировщик не хранит ссылку на BS и читает буферы через
+    # `lte_grid.bs.buffer_manager`. Адаптер получает менеджер явно, чтобы
+    # на M2 передать его стратегии напрямую (см. пункт 2 TODO модуля).
     def __init__(self, buffer_manager: IBufferManager):
-        """Сохранить менеджер буферов BS (передаётся явно, см. докстринг класса)."""
         self._buffer_manager = buffer_manager
 
     def has_buffer(self, ue_id: int) -> bool:
-        """Делегирует `ue_has_buffer` — CHECK 1 этапа 1."""
+        """Делегирует `ue_has_buffer`."""
         return self._buffer_manager.ue_has_buffer(ue_id)
 
     def buffer_status(self, ue_id: int) -> List[BufferStatus]:
-        """Делегирует `get_buffer_status`: статусы логических каналов UE."""
+        """Делегирует `get_buffer_status`."""
         return self._buffer_manager.get_buffer_status(ue_id)
 
     def hol_delay(self, ue_id: int, qci: int) -> Optional[int]:
-        """Первый статус канала с данным QCI, как в QoS-метриках.
+        """Возвращает HOL-задержку первого канала UE с данным QCI.
 
-        Семантика «первый подходящий статус» повторяет legacy-обходы списков:
-        BasicQosAware (:2784-2790) и QosAware (:3019-3029, :3072-3126).
-
-        None означает «поля нет» и воспроизводит AS-IS: `SimpleBuffer.
-        get_buffer_status()` не заполняет `qci`/`hol_delay`
-        (BS_MODULE.py :453-457), из-за чего QoS-метрики падают (BUG-SCH-012):
-        `TypeError` на :2790 (`None // grouping_parameter`) и
-        `ValueError: None is not a valid QCI` на :3029/:3126. Поведение
-        намеренно не меняется (R2) — дефект фиксируется карточкой, контроль:
-        tests/scheduler_arch_tests/test_views_m1.py::
-        test_buffers_view_hol_delay_none_on_simple_reproduces_bug_sch_012.
+        Returns:
+            Задержка в мс; None, если канала с таким QCI нет или буфер не
+            заполняет `hol_delay` (Simple-режим, BUG-SCH-012).
         """
         for status in self._buffer_manager.get_buffer_status(ue_id):
             if status.qci == qci:
@@ -3514,29 +3463,40 @@ class LegacyBuffersView:
 
 
 class LegacyStatsView:
-    """Тонкий адаптер `StatsView`.
+    """Адаптер `StatsView` поверх UE, трекера QCI и профилей QCI.
 
-    `users_by_id` — срез `{UE_ID: ue}` на текущий TTI (в legacy EWMA читается
-    из `user['ue'].average_throughput`, :2133); значения — объекты
-    `UserEquipment` (UE_MODULE), из них читается только `average_throughput`,
-    поэтому тип значения не уточняется до класса: планировщик не импортирует
-    UE_MODULE. `buffer_manager` нужен только для per-QCI трекера и может
-    отсутствовать (Simple-режим: трекера нет).
+    Args:
+        users_by_id: Срез `{UE_ID: объект UE}` на текущий TTI. Значения -
+            объекты UE, а не словари `user`; словари преобразует `from_users`.
+        buffer_manager: Менеджер буферов с `qci_tput_tracker`; None в
+            Simple-режиме.
     """
 
-    def __init__(self, users_by_id: Optional[Dict[int, Any]] = None,
+    def __init__(self,
+                 users_by_id: Optional[Mapping[int, SupportsAverageThroughput]] = None,
                  buffer_manager: Optional[IBufferManager] = None):
-        """Сохранить срез `users_by_id` и менеджер буферов (может отсутствовать)."""
         self._users_by_id = users_by_id or {}
         self._buffer_manager = buffer_manager
 
+    @classmethod
+    def from_users(cls, users: Iterable[Dict[str, Any]],
+                   buffer_manager: Optional[IBufferManager] = None
+                   ) -> "LegacyStatsView":
+        """Собирает адаптер из словарей `user` планировщика.
+
+        Args:
+            users: Словари с ключами `UE_ID` и `ue`.
+            buffer_manager: См. конструктор.
+        """
+        return cls({u["UE_ID"]: u["ue"] for u in users}, buffer_manager)
+
     def ue_throughput(self, ue_id: int) -> float:
-        """EWMA-среднее UE из среза; 0.0, если UE в срезе нет (AS-IS, :2133)."""
+        """Возвращает `average_throughput` UE; 0.0, если UE нет в срезе."""
         ue = self._users_by_id.get(ue_id)
         return ue.average_throughput if ue is not None else 0.0
 
     def qci_throughput(self, ue_id: int, qci: int) -> Tuple[float, float]:
-        """(current, average) потока; (0.0, 0.0), если трекера нет (Simple-режим)."""
+        """Возвращает (текущая, средняя) скорость потока; (0.0, 0.0) без трекера."""
         tracker = getattr(self._buffer_manager, "qci_tput_tracker", None)
         if tracker is None:
             return (0.0, 0.0)
@@ -3544,41 +3504,40 @@ class LegacyStatsView:
                 tracker.get_average_throughput(ue_id, qci))
 
     def gbr_of(self, qci: int) -> Optional[float]:
-        """GBR профиля QCI; None для non-GBR (GLOBALS.QCI_PROFILES)."""
-        if not GLOBALS.is_gbr(qci):
-            return None
-        return GLOBALS.QCI_PROFILES[qci].get("gbr")
+        """Возвращает GBR из `QCI_PROFILES`; None, если профиля или GBR нет."""
+        return GLOBALS.QCI_PROFILES.get(qci, {}).get("gbr")
 
     def pdb_of(self, qci: int) -> int:
-        """Packet delay budget QCI (QCI.get_delay_budget)."""
+        """Возвращает packet delay budget через `QCI.get_delay_budget`."""
         return QCI(qci).get_delay_budget()
 
 
 class LegacyStateView:
     """Временный адаптер `StateView` поверх полей экземпляра планировщика.
 
-    Поля `rr_ue_offset`/`rr_rbg_offset` существуют только у RR (:1993–1994) и
-    FD_FGS (:2374–2375); у остальных алгоритмов их нет, и отсутствие
-    трактуется как 0 (AS-IS). Адаптер удаляется на M2a/M2b, когда владельцем
-    полей станет типизированный `SchedulerState` оркестратора.
+    Поля смещений есть только у RR и FD_FGS; у остальных алгоритмов их нет, и
+    чтение возвращает 0. Адаптер удаляется, когда состояние переедет в
+    `SchedulerState` (шаги M2a/M2b).
+
+    Args:
+        scheduler: Планировщик с полями `rr_ue_offset` и `rr_rbg_offset`.
     """
 
     def __init__(self, scheduler: "SchedulerInterface"):
-        """Сохранить планировщик; поля смещений остаются на его экземпляре (AS-IS)."""
         self._scheduler = scheduler
 
     def get_rr_ue_offset(self) -> int:
-        """Смещение ротации UE; 0, если поля у алгоритма нет (AS-IS)."""
+        """Возвращает `rr_ue_offset`; 0, если поля нет."""
         return getattr(self._scheduler, "rr_ue_offset", 0)
 
     def set_rr_ue_offset(self, value: int) -> None:
-        """Запись смещения ротации UE на экземпляре планировщика."""
+        """Записывает `rr_ue_offset` на планировщик."""
         self._scheduler.rr_ue_offset = value
 
     def get_rr_rbg_offset(self) -> int:
-        """Смещение ротации RBG; 0, если поля у алгоритма нет (AS-IS)."""
+        """Возвращает `rr_rbg_offset`; 0, если поля нет."""
         return getattr(self._scheduler, "rr_rbg_offset", 0)
 
     def set_rr_rbg_offset(self, value: int) -> None:
-        """Запись смещения ротации RBG на экземпляре планировщика."""
+        """Записывает `rr_rbg_offset` на планировщик."""
         self._scheduler.rr_rbg_offset = value
