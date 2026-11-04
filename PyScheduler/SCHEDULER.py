@@ -8,7 +8,7 @@
 # планирования Round Robin, Best CQI и Proportional Fair с поддержкой PDCCH.
 #
 # Версия: 2.1.1
-# Дата последнего изменения: 2026-11-01
+# Дата последнего изменения: 2026-11-05
 # Версия Python Kernel: 3.12.9
 # Автор: Брагин Кирилл, Норицин Иван
 #
@@ -104,11 +104,11 @@
 # - Полный лист изменений и документация на текущий момент составляется.
 #
 # Изменения v2.1.1:
-# - Добавлены протоколы CqiView, GridView, AmcView, BuffersView, StatsView и
-#   StateView (typing.Protocol) и тонкие legacy-адаптеры к ним (конец модуля).
-# - Адаптеры только делегируют существующим методам. Поведение алгоритмов не
-#   изменено, потребители на views не переключены.
-# - Подробности: docs/scheduler/specs/SPEC-FEAT-SCH-008.md.
+# - Добавлены протоколы CqiView, GridView, AmcView, BuffersView, StatsView,
+#   ReadOnlyStateView, StateView (typing.Protocol) и legacy-адаптеры
+#   поверх существующих методов планировщика.
+# - Адаптеры только делегируют существующей логике. Планировщики на них пока
+#   не переключены, поведение алгоритмов не изменено.
 #------------------------------------------------------------------------------
 """
 
@@ -116,10 +116,9 @@ import GLOBALS
 import time
 import math
 from dataclasses import dataclass
-from BS_MODULE import BaseStation, BufferStatus, IBufferManager
+from BS_MODULE import BaseStation
 from TRAFFIC_MODEL import QCI
-from typing import (TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional,
-                    Protocol, Tuple, runtime_checkable)
+from typing import Dict, List, Optional, Protocol
 
 @dataclass(slots=True)
 class SchedulingGrant:
@@ -292,9 +291,9 @@ class SchedulerInterface:
         return ['BestCQI',
                 'ProportionalFair',
                 'RoundRobin',
-                'FD_BestCQI',
+                'FD_BCQI',
                 'FD_FGS',
-                'FD_FF',
+                'FD_PF',
                 'BasicQosAware',
                 'QosAware',
                 ]
@@ -3253,213 +3252,278 @@ class QosAwareScheduler(SchedulerInterface):
 #   8) Исследование механизмов защиты голодающих UE
 
 
-#------------------------------------------------------------------------------
-# ИНТЕРФЕЙСЫ СТРАТЕГИЙ И VIEW-АДАПТЕРЫ (v2.1.1)
-#------------------------------------------------------------------------------
-
-if TYPE_CHECKING:
-    # RES_GRID приходит извне; импорт нужен только для аннотаций.
-    from RES_GRID import RES_GRID_LTE
-
-
-class SupportsAverageThroughput(Protocol):
-    """Объект UE, у которого есть EWMA-среднее `average_throughput`."""
-
-    average_throughput: float
-
+#==============================================================================
+#                    ИНТЕРФЕЙСЫ СТРАТЕГИЙ И VIEW-АДАПТЕРЫ
+#==============================================================================
 
 class CqiView(Protocol):
-    """Доступ к wideband и subband CQI."""
+    """Интерфейс чтения широкополосного (WB) и подполосного (SB) CQI."""
 
     def get_wb(self, ue_id: int) -> int:
-        """Вернуть wideband CQI; 0 означает, что отчёта нет."""
+        """Возвращает WB CQI пользователя (1..15 или 0 при отсутствии отчёта)."""
 
     def get_sb(self, ue_id: int) -> List[int]:
-        """Вернуть копию subband CQI по RBG; [] для non-FD."""
+        """Возвращает список SB CQI по всем RBG (пустой список вне FD-режима)."""
 
 
 class GridView(Protocol):
-    """Минимальный доступ стратегии к ресурсной сетке."""
+    """Интерфейс доступа к ресурсной сетке LTE при распределении RBG."""
 
-    def allocate_rbg(self, tti: int, rbg_idx: int, ue_id: int) -> bool:
-        """Занять RBG для UE; False при отказе."""
+    @property
+    def rb_per_slot(self) -> int:
+        """Количество ресурсных блоков в одном слоте."""
 
     def rbg_size(self) -> int:
-        """Вернуть размер RBG в RB."""
+        """Размер одной группы ресурсных блоков (RBG) в RB."""
+
+    def total_rbg(self) -> int:
+        """Общее количество RBG в полосе."""
 
     def rbg_indices(self, rbg_idx: int) -> List[int]:
-        """Вернуть индексы RB, входящих в RBG."""
+        """Список частотных индексов RB, входящих в указанный RBG."""
 
-    def prb_count(self) -> int:
-        """Вернуть число RB в слоте."""
+    def allocate_rbg(self, tti: int, rbg_idx: int, ue_id: int) -> bool:
+        """Пытается выделить RBG пользователю на заданном TTI."""
 
 
 class AmcView(Protocol):
-    """Перевод CQI в ёмкость ресурсного блока."""
+    """Интерфейс расчёта канальной ёмкости через модуль AMC."""
 
-    def bits_per_rb(self, cqi: int) -> int:
-        """Вернуть число бит на RB; ValueError при CQI вне [1..15]."""
+    def bits_per_rb(self, cqi: int, n_ports: int = 1) -> int:
+        """Рассчитывает количество бит на один RB для заданного CQI."""
 
 
 class BuffersView(Protocol):
-    """Чтение статусов буферов UE."""
+    """Интерфейс чтения состояния буферов базовой станции."""
 
     def has_buffer(self, ue_id: int) -> bool:
-        """Проверить, существует ли буфер UE."""
+        """Проверяет наличие буфера для указанного UE."""
 
-    def buffer_status(self, ue_id: int) -> List[BufferStatus]:
-        """Вернуть статусы логических каналов UE, включая LCID и HOL."""
+    def get_status(self, ue_id: int) -> List:
+        """Возвращает список состояний буферов (BufferStatus) пользователя."""
 
 
 class StatsView(Protocol):
-    """Чтение статистики UE и потоков."""
+    """Интерфейс доступа к статистике throughput и параметрам QoS."""
 
     def ue_throughput(self, ue_id: int) -> float:
-        """Вернуть EWMA-пропускную способность UE."""
+        """Историческая средняя пропускная способность UE (бит/с)."""
 
-    def qci_throughput(self, ue_id: int, qci: int) -> Tuple[float, float]:
-        """Вернуть (текущую, среднюю) пропускную способность потока."""
+    def qci_throughput(self, ue_id: int, qci: int) -> float:
+        """Средняя пропускная способность потока (UE, QCI) в бит/с."""
 
-    def pdb_of(self, qci: int) -> int:
-        """Вернуть packet delay budget для QCI."""
+    def is_gbr(
+        self,
+        qci: int,
+        ue_id: Optional[int] = None,
+        lcid: Optional[int] = None,
+    ) -> bool:
+        """Проверяет, является ли поток GBR-потоком."""
+
+    def gbr_of(
+        self,
+        qci: int,
+        ue_id: Optional[int] = None,
+        lcid: Optional[int] = None,
+    ) -> Optional[float]:
+        """Возвращает целевой GBR потока (или дефолт профиля QCI) в бит/с."""
+
+    def delay_budget_of(self, qci: int) -> int:
+        """Возвращает максимально допустимую задержку пакета (PDB) в мс."""
 
 
-class StateReader(Protocol):
-    """Только чтение состояния RR/FD-ротации; подходит ранкерам."""
+class ReadOnlyStateView(Protocol):
+    """Интерфейс чтения смещений ротации для ранкеров (только чтение)."""
 
     def get_rr_ue_offset(self) -> int:
-        """Вернуть смещение ротации UE."""
+        """Текущее смещение ротации очереди пользователей."""
 
     def get_rr_rbg_offset(self) -> int:
-        """Вернуть смещение ротации RBG."""
+        """Текущее смещение ротации по RBG."""
 
 
-class StateWriter(Protocol):
-    """Только запись состояния RR/FD-ротации; подходит аллокаторам."""
+class StateView(ReadOnlyStateView, Protocol):
+    """Интерфейс чтения и обновления смещений ротации для аллокаторов."""
 
-    def set_rr_ue_offset(self, value: int) -> None:
-        """Записать смещение ротации UE."""
+    def set_rr_ue_offset(self, offset: int) -> None:
+        """Обновляет смещение ротации очереди пользователей."""
 
-    def set_rr_rbg_offset(self, value: int) -> None:
-        """Записать смещение ротации RBG."""
+    def set_rr_rbg_offset(self, offset: int) -> None:
+        """Обновляет смещение ротации по RBG."""
 
 
 class LegacyCqiView:
-    """Адаптер `CqiView` поверх CQIMap планировщика."""
+    """Адаптер чтения CQI поверх кэша cqi_map планировщика."""
 
-    def __init__(self, scheduler: "SchedulerInterface"):
+    __slots__ = ("_scheduler",)
+
+    def __init__(self, scheduler: SchedulerInterface):
         self._scheduler = scheduler
 
     def get_wb(self, ue_id: int) -> int:
+        """Возвращает WB CQI пользователя из cqi_map."""
         return self._scheduler._get_wb_cqi(ue_id)
 
     def get_sb(self, ue_id: int) -> List[int]:
-        # Защищаем CQIMap от изменения списка со стороны стратегии.
+        """Возвращает копию списка SB CQI пользователя из cqi_map."""
         return list(self._scheduler._get_sb_cqi(ue_id))
 
 
 class LegacyGridView:
-    """Адаптер `GridView` поверх `RES_GRID_LTE`."""
+    """Адаптер ресурсной сетки поверх RES_GRID_LTE."""
 
-    def __init__(self, lte_grid: "RES_GRID_LTE"):
-        self._grid = lte_grid
+    __slots__ = ("_grid",)
 
-    def allocate_rbg(self, tti: int, rbg_idx: int, ue_id: int) -> bool:
-        # Семантика отказа и отката остаётся семантикой RES_GRID_LTE.
-        return self._grid.ALLOCATE_RBG(tti, rbg_idx, ue_id)
+    def __init__(self, grid):
+        self._grid = grid
+
+    @property
+    def rb_per_slot(self) -> int:
+        """Количество RB в слоте."""
+        return self._grid.rb_per_slot
 
     def rbg_size(self) -> int:
+        """Размер одного RBG в ресурсных блоках."""
         return self._grid.GET_RBG_SIZE()
 
+    def total_rbg(self) -> int:
+        """Общее число RBG в полосе."""
+        # TODO: перенести расчёт общего числа RBG в метод RES_GRID_LTE
+        size = self._grid.GET_RBG_SIZE()
+        return (self._grid.rb_per_slot + size - 1) // size
+
     def rbg_indices(self, rbg_idx: int) -> List[int]:
+        """Список частотных индексов RB для указанного RBG."""
         return self._grid.GET_RBG_INDICES(rbg_idx)
 
-    def prb_count(self) -> int:
-        return self._grid.rb_per_slot
+    def allocate_rbg(self, tti: int, rbg_idx: int, ue_id: int) -> bool:
+        """Выделяет RBG пользователю (откат в RES_GRID_LTE сбрасывает весь RBG)."""
+        return self._grid.ALLOCATE_RBG(tti, rbg_idx, ue_id)
 
 
 class LegacyAmcView:
-    """Адаптер `AmcView` поверх `AdaptiveModulationAndCoding`."""
+    """Адаптер расчёта канальной ёмкости поверх AdaptiveModulationAndCoding."""
 
-    def __init__(self, amc: "AdaptiveModulationAndCoding"):
+    __slots__ = ("_amc",)
+
+    def __init__(self, amc: AdaptiveModulationAndCoding):
         self._amc = amc
 
-    def bits_per_rb(self, cqi: int) -> int:
-        return self._amc.GET_BITS_PER_RB(cqi)
+    def bits_per_rb(self, cqi: int, n_ports: int = 1) -> int:
+        """Возвращает число бит на один RB для заданного CQI."""
+        return self._amc.GET_BITS_PER_RB(cqi, n_ports=n_ports)
 
 
 class LegacyBuffersView:
-    """Адаптер `BuffersView` поверх менеджера буферов BS."""
+    """Адаптер доступа к буферам поверх менеджера буферов базовой станции."""
 
-    def __init__(self, buffer_manager: IBufferManager):
+    __slots__ = ("_buffer_manager",)
+
+    def __init__(self, buffer_manager):
         self._buffer_manager = buffer_manager
 
     def has_buffer(self, ue_id: int) -> bool:
+        """Проверяет наличие буфера у пользователя."""
         return self._buffer_manager.ue_has_buffer(ue_id)
 
-    def buffer_status(self, ue_id: int) -> List[BufferStatus]:
+    def get_status(self, ue_id: int) -> List:
+        """Возвращает список состояний буферов пользователя."""
         return self._buffer_manager.get_buffer_status(ue_id)
 
 
 class LegacyStatsView:
-    """Адаптер статистики поверх UE и QCI throughput tracker.
+    """Адаптер чтения статистики throughput и параметров QoS."""
 
-    GBR здесь намеренно не предоставляется: профиль QCI содержит значение по
-    умолчанию, а не гарантированный битрейт конкретного bearer. Для GBR нужен
-    контракт, адресующий конкретный bearer/LCID.
-    """
+    __slots__ = ("_ues", "_buffer_manager", "_tracker")
 
-    def __init__(self,
-                 users_by_id: Optional[Mapping[int, SupportsAverageThroughput]] = None,
-                 buffer_manager: Optional[IBufferManager] = None):
-        self._users_by_id = users_by_id or {}
+    def __init__(self, ues_by_id: Optional[Dict] = None, buffer_manager=None):
+        """
+        Args:
+            ues_by_id: Словарь {UE_ID: объект UE}. Не user-dict планировщика:
+                чтобы получить из списка users, используйте
+                {u['UE_ID']: u['ue'] for u in users}.
+            buffer_manager: Менеджер буферов BS. Для per-QCI throughput.
+
+        Raises:
+            TypeError: Если значение словаря не имеет average_throughput.
+        """
+        ues_by_id = ues_by_id or {}
+        for ue_id, ue in ues_by_id.items():
+            if not hasattr(ue, "average_throughput"):
+                raise TypeError(
+                    f"UE {ue_id}: expected an object with 'average_throughput', "
+                    f"got {type(ue).__name__}. "
+                    f"Pass {{u['UE_ID']: u['ue']}}, not the user dict."
+                )
+
+        self._ues = ues_by_id
         self._buffer_manager = buffer_manager
-
-    @classmethod
-    def from_users(cls, users: Iterable[Dict[str, Any]],
-                   buffer_manager: Optional[IBufferManager] = None
-                   ) -> "LegacyStatsView":
-        """Собрать адаптер из словарей с ключами `UE_ID` и `ue`."""
-        return cls({u["UE_ID"]: u["ue"] for u in users}, buffer_manager)
+        self._tracker = (
+            getattr(buffer_manager, "qci_tput_tracker", None)
+            if buffer_manager is not None
+            else None
+        )
 
     def ue_throughput(self, ue_id: int) -> float:
-        ue = self._users_by_id.get(ue_id)
+        """Возвращает исторический средний throughput UE (бит/с) или 0.0."""
+        ue = self._ues.get(ue_id)
         return ue.average_throughput if ue is not None else 0.0
 
-    def qci_throughput(self, ue_id: int, qci: int) -> Tuple[float, float]:
-        tracker = getattr(self._buffer_manager, "qci_tput_tracker", None)
-        if tracker is None:
-            return (0.0, 0.0)
-        return (tracker.get_current_throughput(ue_id, qci),
-                tracker.get_average_throughput(ue_id, qci))
+    def qci_throughput(self, ue_id: int, qci: int) -> float:
+        """Возвращает средний throughput потока (UE, QCI) из трекера буфера."""
+        if self._tracker is None:
+            return 0.0
+        return self._tracker.get_average_throughput(ue_id, qci)
 
-    def pdb_of(self, qci: int) -> int:
+    def is_gbr(
+        self,
+        qci: int,
+        ue_id: Optional[int] = None,
+        lcid: Optional[int] = None,
+    ) -> bool:
+        """Поток GBR, если для него задан целевой GBR."""
+        return self.gbr_of(qci, ue_id=ue_id, lcid=lcid) is not None
+
+    def gbr_of(
+        self,
+        qci: int,
+        ue_id: Optional[int] = None,
+        lcid: Optional[int] = None,
+    ) -> Optional[float]:
+        """Возвращает целевой GBR из QCI_PROFILES или None (non-GBR/неизвестный QCI)."""
+        return GLOBALS.QCI_PROFILES.get(qci, {}).get("gbr")
+
+    def delay_budget_of(self, qci: int) -> int:
+        """Возвращает Packet Delay Budget (мс) для указанного QCI."""
         return QCI(qci).get_delay_budget()
 
 
-class LegacyStateView:
-    """Переходный адаптер чтения и записи полей ротации планировщика.
+class LegacyReadOnlyStateView:
+    """Адаптер чтения смещений ротации планировщика (без права записи)."""
 
-    Сам адаптер реализует оба узких контракта, но потребитель должен получать
-    только `StateReader` или только `StateWriter` в зависимости от своей роли.
-    Состояние переедет в SchedulerState на следующих этапах миграции.
-    """
+    __slots__ = ("_scheduler",)
 
-    def __init__(self, scheduler: "SchedulerInterface"):
+    def __init__(self, scheduler: SchedulerInterface):
         self._scheduler = scheduler
 
     def get_rr_ue_offset(self) -> int:
+        """Возвращает текущее смещение ротации пользователей."""
         return getattr(self._scheduler, "rr_ue_offset", 0)
 
-    def set_rr_ue_offset(self, value: int) -> None:
-        if not hasattr(self._scheduler, "rr_ue_offset"):
-            raise AttributeError("This scheduler does not own rr_ue_offset")
-        self._scheduler.rr_ue_offset = value
-
     def get_rr_rbg_offset(self) -> int:
+        """Возвращает текущее смещение ротации RBG."""
         return getattr(self._scheduler, "rr_rbg_offset", 0)
 
-    def set_rr_rbg_offset(self, value: int) -> None:
-        if not hasattr(self._scheduler, "rr_rbg_offset"):
-            raise AttributeError("This scheduler does not own rr_rbg_offset")
-        self._scheduler.rr_rbg_offset = value
+
+class LegacyStateView(LegacyReadOnlyStateView):
+    """Адаптер чтения и записи смещений ротации планировщика для аллокаторов."""
+
+    __slots__ = ()
+
+    def set_rr_ue_offset(self, offset: int) -> None:
+        """Устанавливает смещение ротации пользователей."""
+        self._scheduler.rr_ue_offset = offset
+
+    def set_rr_rbg_offset(self, offset: int) -> None:
+        """Устанавливает смещение ротации RBG."""
+        self._scheduler.rr_rbg_offset = offset
