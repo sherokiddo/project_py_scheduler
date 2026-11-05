@@ -3302,11 +3302,16 @@ class StatsView(Protocol):
     def qci_throughput(self, ue_id: int, qci: int) -> float:
         """Вернуть средний throughput потока (UE, QCI) в бит/с."""
 
-    def gbr_of(self, qci: int) -> Optional[float]:
-        """Вернуть целевой GBR из профиля QCI в бит/с (None для non-GBR)."""
+    def gbr_of(self, qci: int, ue_id: Optional[int] = None, lcid: Optional[int] = None) -> Optional[float]:
+        """
+        Вернуть целевой GBR потока в бит/с (None для non-GBR).
 
-    def is_gbr(self, qci: int) -> bool:
-        """Проверить, относится ли QCI к GBR."""
+        ue_id и lcid идентифицируют конкретный bearer, чтобы GBR можно было
+        привязать к потоку, а не только к классу QCI.
+        """
+
+    def is_gbr(self, qci: int, ue_id: Optional[int] = None, lcid: Optional[int] = None) -> bool:
+        """Проверить, относится ли поток (ue_id, lcid, qci) к GBR."""
 
     def delay_budget_of(self, qci: int) -> int:
         """Вернуть максимально допустимую задержку пакета (PDB) для QCI в мс."""
@@ -3403,8 +3408,6 @@ class LegacyStatsView:
     __slots__ = ("_ues", "_tracker")
 
     def __init__(self, ues_by_id: Dict[int, Any], buffer_manager=None):
-        # Значения ues_by_id — объекты UE ({u['UE_ID']: u['ue']}), а не словари user.
-        # Копия, чтобы проверка ниже не обходилась правкой исходного словаря.
         self._ues = dict(ues_by_id)
         for ue_id, ue in self._ues.items():
             if not hasattr(ue, "average_throughput"):
@@ -3428,11 +3431,11 @@ class LegacyStatsView:
             return 0.0
         return self._tracker.get_average_throughput(ue_id, qci)
 
-    def gbr_of(self, qci: int) -> Optional[float]:
+    def gbr_of(self, qci: int, ue_id: Optional[int] = None, lcid: Optional[int] = None) -> Optional[float]:
         return GLOBALS.QCI_PROFILES.get(qci, {}).get("gbr")
 
-    def is_gbr(self, qci: int) -> bool:
-        return self.gbr_of(qci) is not None
+    def is_gbr(self, qci: int, ue_id: Optional[int] = None, lcid: Optional[int] = None) -> bool:
+        return self.gbr_of(qci, ue_id=ue_id, lcid=lcid) is not None
 
     def delay_budget_of(self, qci: int) -> int:
         return QCI(qci).get_delay_budget()
