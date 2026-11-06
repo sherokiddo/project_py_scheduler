@@ -1,37 +1,247 @@
 """
 #------------------------------------------------------------------------------
-# Модуль: RNG - Генераторы псевдослучайных чисел и распределений
+# Модуль: RNG - Генераторы псевдослучайных чисел и случайных величин
 #------------------------------------------------------------------------------
 # Описание:
-# Математическая реализация генератора псевдослучайных чисел
-# Модуль обеспечивает
-# побитовую совместимость генерации чисел и поддержку независимых
-# потоков (streams) и прогонов (runs) для обеспечения повторяемости
-# симуляций. Также включает классы случайных величин (Uniform, Normal,
-# Exponential).
+#   Математическая реализация генераторов псевдослучайных чисел (ПСЧ) и
+#   статистических распределений для моделей трафика, мобильности и канала
+#   в симуляторе планировщика беспроводной сети (PyScheduler).
+#   Модуль обеспечивает детерминированную генерацию, побитовую совместимость
+#   с эталонной реализацией MRG32k3a и поддержку независимых потоков
+#   (streams) и прогонов (runs) для воспроизводимости экспериментов.
 #
-# Версия: 1.2.0
-# Дата последнего изменения: 2026-10-02
+# Версия: 2.0.0
+# Дата последнего изменения: 2026-11-06
 # Автор: Шаимов Богдан
 # Версия Python Kernel: 3.12.9
-#
-# Изменения:
-# v1.1.0 - 2026-09-25:
-# - Добавлен алгоритм генерации псевдослучайных чисел - Philox4x64
-# v1.2.0 - 2026-10-02:
-# - Добавлен DataStream для чтения датасетов (.json, .csv)
+# v.1.1.0:
+# - Добавлен алгоритм генерации псевдослучайных чисел Philox4x64.
+# v.2.0.0:
+# - Введены статические контракты typing.Protocol (UniformEngine, RandomProvider).
+# - Выбор математического ядра в RandomGenerator переведен на паттерн «Стратегия».
+# - Нормализация в PhiloxStream приведена к стандарту IEEE-754: (val >> 11) * (2.0 ** -53).
+# - В get_integer() усечение int() заменено на math.floor() для отрицательных границ.
+# - Добавлена строгая валидация параметров распределений, индексов потоков и прогонов.
+# - Вычисление стандартного отклонения в normal() вынесено до цикла генерации.
 #------------------------------------------------------------------------------
 """
 
 import math
-import csv
-import json
-import os
-from collections import deque
+from typing import Dict, List, Protocol, Tuple, Type
+
+
+# ==============================================================================
+#                          КОНТРАКТЫ МОДУЛЯ (PROTOCOLS)
+# ==============================================================================
+
+
+class UniformEngine(Protocol):
+    """
+    Контракт математического ядра генератора псевдослучайных чисел.
+
+    Определяет интерфейс базового источника равномерно распределенных чисел
+    на полуинтервале [0.0, 1.0), используемого внутри фасада распределений.
+    """
+
+    def rand_u01(self) -> float:
+        """
+        Генерация очередного псевдослучайного числа на полуинтервале [0.0, 1.0).
+
+        Returns:
+            float: Псевдослучайное число из диапазона [0.0, 1.0).
+
+        """
+        pass
+
+
+class RandomProvider(Protocol):
+    """
+    Внешний контракт источника случайных распределений для моделей симулятора.
+
+    Используется для передачи генератора в модели мобильности, радиоканала
+    и трафика через внедрение зависимостей (Dependency Injection).
+    """
+
+    def uniform(
+        self, min_val: float = 0.0, max_val: float = 1.0, stream_offset: int = 0
+    ) -> float:
+        """
+        Генерация случайного числа с равномерным распределением на [min_val, max_val).
+
+        Args:
+            min_val (float, optional): Нижняя граница диапазона. По умолчанию 0.0.
+            max_val (float, optional): Верхняя граница диапазона. По умолчанию 1.0.
+            stream_offset (int, optional): Смещение индекса подпотока (>= 0).
+                По умолчанию 0.
+
+        Returns:
+            float: Случайное число из диапазона [min_val, max_val).
+
+        Raises:
+            ValueError: Если min_val > max_val или stream_offset < 0.
+
+        """
+        pass
+
+    def normal(
+        self,
+        mean: float = 0.0,
+        variance: float = 1.0,
+        bound: float = float("inf"),
+        stream_offset: int = 0,
+    ) -> float:
+        """
+        Генерация случайного числа с нормальным распределением.
+
+        Args:
+            mean (float, optional): Математическое ожидание. По умолчанию 0.0.
+            variance (float, optional): Дисперсия распределения (>= 0.0).
+                По умолчанию 1.0.
+            bound (float, optional): Максимальное допустимое отклонение от среднего (>= 0.0).
+                По умолчанию inf.
+            stream_offset (int, optional): Смещение индекса подпотока (>= 0).
+                По умолчанию 0.
+
+        Returns:
+            float: Случайное число из нормального распределения.
+
+        Raises:
+            ValueError: Если variance < 0, bound < 0 или stream_offset < 0.
+
+        """
+        pass
+
+    def exponential(
+        self, mean: float = 1.0, bound: float = 0.0, stream_offset: int = 0
+    ) -> float:
+        """
+        Генерация случайного числа с экспоненциальным распределением.
+
+        Args:
+            mean (float, optional): Математическое ожидание (> 0.0). По умолчанию 1.0.
+            bound (float, optional): Верхний предел значения (>= 0.0, при 0.0 не ограничен).
+                По умолчанию 0.0.
+            stream_offset (int, optional): Смещение индекса подпотока (>= 0).
+                По умолчанию 0.
+
+        Returns:
+            float: Случайное число из экспоненциального распределения.
+
+        Raises:
+            ValueError: Если mean <= 0, bound < 0 или stream_offset < 0.
+
+        """
+        pass
+
+    def get_integer(
+        self, min_val: int, max_val: int, stream_offset: int = 0
+    ) -> int:
+        """
+        Генерация равновероятного целого числа в диапазоне [min_val, max_val] включительно.
+
+        Args:
+            min_val (int): Нижняя целочисленная граница диапазона.
+            max_val (int): Верхняя целочисленная граница диапазона.
+            stream_offset (int, optional): Смещение индекса подпотока (>= 0).
+                По умолчанию 0.
+
+        Returns:
+            int: Случайное целое число из отрезка [min_val, max_val].
+
+        Raises:
+            ValueError: Если min_val или max_val не int (или bool),
+                min_val > max_val или stream_offset < 0.
+
+        """
+        pass
+
+
+# ==============================================================================
+#                        ВСПОМОГАТЕЛЬНАЯ ВАЛИДАЦИЯ
+# ==============================================================================
+
+
+def _validate_int_param(value: int, name: str, min_allowed: int) -> int:
+    """
+    Проверка целочисленного параметра на тип int (не bool) и нижнюю границу.
+
+    Args:
+        value (int): Проверяемое значение.
+        name (str): Имя параметра для формирования сообщения об ошибке.
+        min_allowed (int): Минимально допустимое значение параметра.
+
+    Returns:
+        int: Проверенное целочисленное значение.
+
+    Raises:
+        ValueError: Если значение не является int (или является bool)
+            либо меньше min_allowed.
+
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"Parameter '{name}' must be an integer (int). "
+            f"The obtained value: {value!r}"
+        )
+    if value < min_allowed:
+        raise ValueError(
+            f"Parameter '{name}' must be >= {min_allowed}. "
+            f"The obtained value: {value}"
+        )
+    return value
+
+
+def _validate_seed(seed: int) -> int:
+    """
+    Проверка начального зерна генератора (seed).
+
+    Запрещает отрицательные и булевы значения. При передаче 0 возвращает
+    стандартное значение 12345 (соглашение алгоритма MRG32k3a).
+
+    Args:
+        seed (int): Начальное зерно генератора.
+
+    Returns:
+        int: Валидное ненулевое зерно генератора.
+
+    Raises:
+        ValueError: Если seed не является int (или является bool) либо меньше 0.
+
+    """
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError(
+            f"Parameter 'seed' must be an integer (int). "
+            f"The obtained value: {seed!r}"
+        )
+    if seed < 0:
+        raise ValueError(
+            f"Parameter 'seed' cannot be negative. "
+            f"The obtained value: {seed}"
+        )
+    return seed if seed != 0 else 12345
+
+
+# ==============================================================================
+#                        МАТЕМАТИЧЕСКИЕ ЯДРА (STRATEGIES)
+# ==============================================================================
+
+
 class RngStream:
     """
-    Математическое ядро: Генератор MRG32k3a.
+    Математическое ядро генератора ПСЧ по алгоритму MRG32k3a.
+
+    Обеспечивает побитовую совместимость с генератором RngStream из ns-3.
+    Разделение последовательности на независимые потоки (шаг 2^127) и прогоны (шаг 2^76)
+    выполняется с помощью предвычисленного кэша матриц перехода.
+
+    Attributes:
+        seed (int): Зерно генератора (>= 0; 0 заменяется на 12345).
+        stream_idx (int): Индекс независимого потока (>= 0).
+        run_idx (int): Номер прогона внутри потока (>= 1).
+        state (List[float]): Вектор текущего состояния из 6 элементов.
+
     """
+
     m1 = 4294967087.0
     m2 = 4294944443.0
     norm = 1.0 / (m1 + 1.0)
@@ -43,21 +253,24 @@ class RngStream:
     A1p0 = [
         [0.0, 1.0, 0.0],
         [0.0, 0.0, 1.0],
-        [-810728.0, 1403580.0, 0.0]
+        [-810728.0, 1403580.0, 0.0],
     ]
 
     A2p0 = [
         [0.0, 1.0, 0.0],
         [0.0, 0.0, 1.0],
-        [-1370589.0, 0.0, 527612.0]
+        [-1370589.0, 0.0, 527612.0],
     ]
 
     _cache_built = False
-    _cache_A1 = []
-    _cache_A2 = []
+    _cache_A1: List[List[List[float]]] = []
+    _cache_A2: List[List[List[float]]] = []
 
     @classmethod
-    def _build_cache(cls):
+    def _build_cache(cls) -> None:
+        """
+        Заполнение кэша двоичных степеней матриц перехода A1 и A2 при первом вызове.
+        """
         if cls._cache_built:
             return
         curr_a1 = [[cls.A1p0[i][j] for j in range(3)] for i in range(3)]
@@ -69,39 +282,70 @@ class RngStream:
             cls._cache_A2.append(curr_a2)
         cls._cache_built = True
 
-    def __init__(self, seed=12345, stream_idx=0, run_idx=1):
-        self.seed = seed if seed != 0 else 12345
-        self.stream_idx = stream_idx
-        self.run_idx = run_idx
+    def __init__(self, seed: int = 12345, stream_idx: int = 0, run_idx: int = 1):
+        """
+        Инициализация состояния потока MRG32k3a и сдвиг к заданному потоку и прогону.
+
+        Args:
+            seed (int, optional): Начальное зерно генератора (>= 0, 0 заменяется на 12345).
+                По умолчанию 12345.
+            stream_idx (int, optional): Индекс потока (>= 0). По умолчанию 0.
+            run_idx (int, optional): Номер прогона (>= 1). По умолчанию 1.
+
+        Raises:
+            ValueError: Если параметры имеют некорректный тип или выходят за допустимые границы.
+
+        """
+        self.seed = _validate_seed(seed)
+        self.stream_idx = _validate_int_param(stream_idx, "stream_idx", min_allowed=0)
+        self.run_idx = _validate_int_param(run_idx, "run_idx", min_allowed=1)
         self.state = [float(self.seed)] * 6
 
-        target_stream = (1 << 63) + self.stream_idx if self.stream_idx >= 0 else 0
+        target_stream = (1 << 63) + self.stream_idx
         self._build_cache()
         self._advance_nth_by(target_stream, 127, self.state)
         self._advance_nth_by(self.run_idx, 76, self.state)
 
-    def rand_u01(self):
+    def rand_u01(self) -> float:
+        """
+        Выполнение одного шага алгоритма MRG32k3a и возврат числа из [0.0, 1.0).
+
+        Returns:
+            float: Псевдослучайное число на полуинтервале [0.0, 1.0).
+
+        """
         p1 = self.a12 * self.state[1] - self.a13n * self.state[0]
         k1 = int(p1 / self.m1)
         p1 -= k1 * self.m1
-        if p1 < 0.0: p1 += self.m1
+        if p1 < 0.0:
+            p1 += self.m1
         self.state[0], self.state[1], self.state[2] = self.state[1], self.state[2], p1
 
         p2 = self.a21 * self.state[5] - self.a23n * self.state[3]
         k2 = int(p2 / self.m2)
         p2 -= k2 * self.m2
-        if p2 < 0.0: p2 += self.m2
+        if p2 < 0.0:
+            p2 += self.m2
         self.state[3], self.state[4], self.state[5] = self.state[4], self.state[5], p2
 
-        if p1 > p2: return (p1 - p2) * self.norm
-        else: return (p1 - p2 + self.m1) * self.norm
+        if p1 > p2:
+            return (p1 - p2) * self.norm
+        return (p1 - p2 + self.m1) * self.norm
 
     @staticmethod
-    def _mult_mod_m(a, s, c, m):
+    def _mult_mod_m(a: float, s: float, c: float, m: float) -> float:
+        """
+        Вычисление (a * s + c) mod m в точной целочисленной арифметике.
+        """
         return float((int(a) * int(s) + int(c)) % int(m))
 
     @classmethod
-    def _mat_vec_mod_m(cls, A, s, m):
+    def _mat_vec_mod_m(
+        cls, A: List[List[float]], s: List[float], m: float
+    ) -> List[float]:
+        """
+        Умножение матрицы 3x3 на вектор-столбец длины 3 по модулю m.
+        """
         v = [0.0] * 3
         for i in range(3):
             x = cls._mult_mod_m(A[i][0], s[0], 0.0, m)
@@ -111,7 +355,12 @@ class RngStream:
         return v
 
     @classmethod
-    def _mat_mat_mod_m(cls, A, B, m):
+    def _mat_mat_mod_m(
+        cls, A: List[List[float]], B: List[List[float]], m: float
+    ) -> List[List[float]]:
+        """
+        Перемножение двух матриц 3x3 по модулю m.
+        """
         C = [[0.0] * 3 for _ in range(3)]
         for i in range(3):
             for j in range(3):
@@ -122,10 +371,18 @@ class RngStream:
         return C
 
     @classmethod
-    def _power_of_two_matrix(cls, n):
+    def _power_of_two_matrix(
+        cls, n: int
+    ) -> Tuple[List[List[float]], List[List[float]]]:
+        """
+        Получение предвычисленных матриц перехода для сдвига на 2^n шагов.
+        """
         return cls._cache_A1[n - 1], cls._cache_A2[n - 1]
 
-    def _advance_nth_by(self, nth, by, state):
+    def _advance_nth_by(self, nth: int, by: int, state: List[float]) -> None:
+        """
+        Сдвиг вектора состояния state вперед на nth * (2^by) шагов.
+        """
         for i in range(64):
             nbit = 63 - i
             bit = (int(nth) >> nbit) & 1
@@ -136,33 +393,68 @@ class RngStream:
                 state[0:3] = s1
                 state[3:6] = s2
 
+
 class PhiloxStream:
     """
-    Математическое ядро: Генератор Philox4x64.
+    Ядро Philox4x64: counter-based генератор, 10 раундов.
+
+    За один инкремент счётчика выдаёт 4 псевдослучайных 64-битных числа.
+    Приведение к [0.0, 1.0): берутся старшие 53 бита числа (размер мантиссы
+    double в IEEE-754) и умножаются на 2**-53, поэтому результат всегда
+    строго меньше 1.0.
+
+    Attributes:
+        seed (int): Зерно генератора (>= 0; 0 заменяется на 12345).
+        stream_idx (int): Индекс независимого потока (>= 0).
+        run_idx (int): Номер прогона внутри потока (>= 1).
+        key (List[int]): Ключ потока: [seed, stream_idx].
+        counter (List[int]): Счётчик из четырёх 64-битных слов,
+            начальное значение [0, 0, 0, run_idx].
+
     """
+
     PHILOX_M4x64_0 = 0xD2E7470EE14C6C93
     PHILOX_M4x64_1 = 0xCA5A826395121157
     PHILOX_W64_0 = 0x9E3779B97F4A7C15
     PHILOX_W64_1 = 0xBB67AE8584CAA73B
+    _NORM_53 = 2.0 ** -53
 
-    def __init__(self, seed=12345, stream_idx=0, run_idx=1):
-        self.seed = seed if seed != 0 else 12345
-        self.stream_idx = stream_idx
-        self.run_idx = run_idx
+    def __init__(self, seed: int = 12345, stream_idx: int = 0, run_idx: int = 1):
+        """
+        Инициализация ключа и счетчика потока Philox4x64.
 
-        self.key = [self.seed & 0xFFFFFFFFFFFFFFFF, self.stream_idx & 0xFFFFFFFFFFFFFFFF]
+        Args:
+            seed (int, optional): Начальное зерно генератора (>= 0, 0 заменяется на 12345).
+                По умолчанию 12345.
+            stream_idx (int, optional): Индекс потока (>= 0). По умолчанию 0.
+            run_idx (int, optional): Номер прогона (>= 1). По умолчанию 1.
 
+        Raises:
+            ValueError: Если параметры имеют некорректный тип или выходят за допустимые границы.
+
+        """
+        self.seed = _validate_seed(seed)
+        self.stream_idx = _validate_int_param(stream_idx, "stream_idx", min_allowed=0)
+        self.run_idx = _validate_int_param(run_idx, "run_idx", min_allowed=1)
+
+        self.key = [
+            self.seed & 0xFFFFFFFFFFFFFFFF,
+            self.stream_idx & 0xFFFFFFFFFFFFFFFF,
+        ]
         self.counter = [0, 0, 0, self.run_idx & 0xFFFFFFFFFFFFFFFF]
+        self._buffer: List[int] = []
 
-        self._buffer = []
-
-    def _mulhilo(self, a, b):
-        """Умножение двух 64-битных чисел."""
+    def _mulhilo(self, a: int, b: int) -> Tuple[int, int]:
+        """
+        Умножение двух 64-битных целых чисел с возвратом старших и младших 64 бит.
+        """
         product = a * b
         return (product >> 64) & 0xFFFFFFFFFFFFFFFF, product & 0xFFFFFFFFFFFFFFFF
 
-    def _philox_round(self):
-        """Генерация 4-х псевдослучайных 64-битных чисел."""
+    def _philox_round(self) -> None:
+        """
+        Инкремент 256-битного счетчика, выполнение 10 раундов Philox и обновление буфера.
+        """
         self.counter[0] = (self.counter[0] + 1) & 0xFFFFFFFFFFFFFFFF
         if self.counter[0] == 0:
             self.counter[1] = (self.counter[1] + 1) & 0xFFFFFFFFFFFFFFFF
@@ -190,140 +482,195 @@ class PhiloxStream:
 
         self._buffer = [c3, c2, c1, c0]
 
-    def rand_u01(self):
-        """Нормализует 64-битное число до [0.0, 1.0) делением на 2^64"""
+    def rand_u01(self) -> float:
+        """
+        Извлечение 64-битного числа из буфера и нормализация к полуинтервалу [0.0, 1.0).
+
+        Returns:
+            float: Псевдослучайное число из диапазона [0.0, 1.0).
+
+        """
         if not self._buffer:
             self._philox_round()
         val = self._buffer.pop()
-        return val / 18446744073709551616.0
+        return (val >> 11) * self._NORM_53
 
-class DataStream:
-    """
-    Чтение заранее известных данных из .json или .csv.
-    Используется для подмены генерируемых чисел датасетами.
-    """
-    def __init__(self, filepath, loop=True):
-        self.filepath = filepath
-        self.loop = loop
-        self._buffer = deque()
-        self._initial_data = []
 
-        if not os.path.exists(self.filepath):
-            raise FileNotFoundError(f"Файл с датасетом не найден: {self.filepath}")
+# ==============================================================================
+#                  ФАСАД МАТЕМАТИЧЕСКИХ РАСПРЕДЕЛЕНИЙ (PROVIDER)
+# ==============================================================================
 
-        self._load_data()
-
-    def _load_data(self):
-        ext = os.path.splitext(self.filepath)[1].lower()
-        if ext == '.json':
-            self._load_from_json()
-        elif ext == '.csv':
-            self._load_from_csv()
-        else:
-            raise ValueError(f"Неподдерживаемый формат файла: {ext}. Требуется .json или .csv")
-
-        if not self._buffer:
-            raise ValueError(f"Файл {self.filepath} пуст или не содержит числовых данных.")
-
-        if self.loop:
-            self._initial_data = list(self._buffer)
-
-    def _load_from_json(self):
-        with open(self.filepath, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            if isinstance(data, list):
-                for item in data:
-                    self._buffer.append(float(item))
-            elif isinstance(data, dict):
-                for key, val in data.items():
-                    if isinstance(val, list):
-                        for item in val:
-                            self._buffer.append(float(item))
-                        break
-
-    def _load_from_csv(self):
-        with open(self.filepath, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f)
-            for row in reader:
-                for item in row:
-                    try:
-                        self._buffer.append(float(item.strip()))
-                    except ValueError:
-                        continue
-
-    def get_next_value(self):
-        """Возвращает следующее значение из буфера."""
-        if not self._buffer:
-            if self.loop and self._initial_data:
-                self._buffer.extend(self._initial_data)
-            else:
-                raise StopIteration(f"Данные в файле {self.filepath} закончились.")
-        return self._buffer.popleft()
 
 class RandomGenerator:
     """
-    Единая точка входа для генерации случайных распределений.
-    Поддерживает алгоритмы: 'MRG32k3a', 'Philox' и 'File'.
+    Фасад генерации случайных величин из математических распределений.
+
+    Реализует контракт RandomProvider. Управляет созданием независимых подпотоков
+    по смещению stream_offset и делегирует базовую генерацию выбранной стратегии
+    из реестра _ENGINES ('MRG32k3a' или 'Philox').
+
+    Attributes:
+        seed (int): Зерно генератора (>= 0; 0 заменяется на 12345).
+        base_stream_idx (int): Базовый индекс потока для данной подсистемы симулятора (>= 0).
+        run_idx (int): Номер независимого прогона симуляции (>= 1).
+        engine (str): Имя активной математической стратегии ('MRG32k3a' или 'Philox').
+
     """
 
-    def __init__(self, seed=12345, base_stream_idx=0, run_idx=1, engine='MRG32k3a', filepath=None):
-        self.seed = seed if seed != 0 else 12345
-        self.base_stream_idx = base_stream_idx
-        self.run_idx = run_idx
-        self.engine = engine
-        self.filepath = filepath
-        self._streams = {}
-        self._normal_cache = {}
+    _ENGINES: Dict[str, Type[UniformEngine]] = {
+        "MRG32k3a": RngStream,
+        "Philox": PhiloxStream,
+    }
 
-    def _get_stream(self, stream_offset):
+    def __init__(
+        self,
+        seed: int = 12345,
+        base_stream_idx: int = 0,
+        run_idx: int = 1,
+        engine: str = "MRG32k3a",
+    ):
+        """
+        Инициализация фасада распределений и валидация параметров конфигурации.
+
+        Args:
+            seed (int, optional): Начальное зерно генератора (>= 0, 0 заменяется на 12345).
+                По умолчанию 12345.
+            base_stream_idx (int, optional): Базовый индекс потока (>= 0).
+                По умолчанию 0.
+            run_idx (int, optional): Номер прогона симуляции (>= 1).
+                По умолчанию 1.
+            engine (str, optional): Название стратегии ('MRG32k3a' или 'Philox').
+                По умолчанию 'MRG32k3a'.
+
+        Raises:
+            ValueError: Если переданы некорректные параметры индексации или неизвестный движок.
+
+        """
+        self.seed = _validate_seed(seed)
+        self.base_stream_idx = _validate_int_param(
+            base_stream_idx, "base_stream_idx", min_allowed=0
+        )
+        self.run_idx = _validate_int_param(run_idx, "run_idx", min_allowed=1)
+
+        if not isinstance(engine, str) or engine not in self._ENGINES:
+            allowed = ", ".join(self._ENGINES.keys())
+            raise ValueError(
+                f"Unknown mathematical engine '{engine}'. "
+                f"Available strategies: {allowed}"
+            )
+
+        self.engine = engine
+        self._engine_cls: Type[UniformEngine] = self._ENGINES[engine]
+        self._streams: Dict[int, UniformEngine] = {}
+        self._normal_cache: Dict[int, Tuple[float, float]] = {}
+
+    def _get_stream(self, stream_offset: int) -> UniformEngine:
+        """
+        Получение потока ПСЧ для заданного смещения.
+
+        Args:
+            stream_offset (int): Неотрицательное смещение подпотока (>= 0).
+
+        Returns:
+            UniformEngine: Экземпляр потока с индексом base_stream_idx + stream_offset.
+
+        Raises:
+            ValueError: Если stream_offset не является целым числом >= 0.
+
+        """
+        _validate_int_param(stream_offset, "stream_offset", min_allowed=0)
         if stream_offset not in self._streams:
-            if self.engine == 'File':
-                if not self.filepath:
-                    raise ValueError("Для режима 'File' необходимо указать filepath")
-                self._streams[stream_offset] = DataStream(filepath=self.filepath)
-            elif self.engine == 'Philox':
-                self._streams[stream_offset] = PhiloxStream(
-                    seed=self.seed,
-                    stream_idx=self.base_stream_idx + stream_offset,
-                    run_idx=self.run_idx
-                )
-            else:
-                self._streams[stream_offset] = RngStream(
-                    seed=self.seed,
-                    stream_idx=self.base_stream_idx + stream_offset,
-                    run_idx=self.run_idx
-                )
+            self._streams[stream_offset] = self._engine_cls(
+                seed=self.seed,
+                stream_idx=self.base_stream_idx + stream_offset,
+                run_idx=self.run_idx,
+            )
         return self._streams[stream_offset]
 
-    def uniform(self, min_val=0.0, max_val=1.0, stream_offset=0):
+    def uniform(
+        self, min_val: float = 0.0, max_val: float = 1.0, stream_offset: int = 0
+    ) -> float:
+        """
+        Генерация случайного числа с равномерным распределением на [min_val, max_val).
+
+        Args:
+            min_val (float, optional): Нижняя граница диапазона. По умолчанию 0.0.
+            max_val (float, optional): Верхняя граница диапазона. По умолчанию 1.0.
+            stream_offset (int, optional): Смещение индекса подпотока (>= 0).
+                По умолчанию 0.
+
+        Returns:
+            float: Случайное число из диапазона [min_val, max_val).
+
+        Raises:
+            ValueError: Если min_val > max_val или stream_offset < 0.
+
+        """
+        if min_val > max_val:
+            raise ValueError(
+                f"Lower bound min_val ({min_val}) cannot be greater than "
+                f"max_val ({max_val})"
+            )
         stream = self._get_stream(stream_offset)
-        if self.engine == 'File':
-            return stream.get_next_value()
         return min_val + stream.rand_u01() * (max_val - min_val)
 
-    def normal(self, mean=0.0, variance=1.0, bound=float('inf'), stream_offset=0):
-        stream = self._get_stream(stream_offset)
+    def normal(
+        self,
+        mean: float = 0.0,
+        variance: float = 1.0,
+        bound: float = float("inf"),
+        stream_offset: int = 0,
+    ) -> float:
+        """
+        Генерация случайного числа с нормальным распределением (полярный метод Бокса — Мюллера).
 
-        if self.engine == 'File':
-            return stream.get_next_value()
+        Args:
+            mean (float, optional): Математическое ожидание. По умолчанию 0.0.
+            variance (float, optional): Дисперсия распределения (>= 0.0).
+                По умолчанию 1.0.
+            bound (float, optional): Максимальное отклонение от mean (>= 0.0).
+                По умолчанию inf.
+            stream_offset (int, optional): Смещение индекса подпотока (>= 0).
+                По умолчанию 0.
+
+        Returns:
+            float: Случайное число из усеченного нормального распределения.
+
+        Raises:
+            ValueError: Если variance < 0, bound < 0 или stream_offset < 0.
+
+        """
+        if variance < 0.0:
+            raise ValueError(
+                f"Variance must be >= 0. "
+                f"The obtained value: {variance}"
+            )
+        if bound < 0.0:
+            raise ValueError(
+                f"Deviation bound must be >= 0. "
+                f"The obtained value: {bound}"
+            )
+
+        stream = self._get_stream(stream_offset)
+        std = math.sqrt(variance)
 
         if stream_offset in self._normal_cache:
             y, v2 = self._normal_cache.pop(stream_offset)
-            x2 = mean + v2 * y * math.sqrt(variance)
+            x2 = mean + v2 * y * std
             if abs(x2 - mean) <= bound:
                 return x2
 
         while True:
             u1 = stream.rand_u01()
             u2 = stream.rand_u01()
-            v1 = 2 * u1 - 1
-            v2 = 2 * u2 - 1
+            v1 = 2.0 * u1 - 1.0
+            v2 = 2.0 * u2 - 1.0
             w = v1 * v1 + v2 * v2
 
-            if 0 < w <= 1.0:
-                y = math.sqrt((-2 * math.log(w)) / w)
-                x1 = mean + v1 * y * math.sqrt(variance)
-                x2 = mean + v2 * y * math.sqrt(variance)
+            if 0.0 < w <= 1.0:
+                y = math.sqrt((-2.0 * math.log(w)) / w)
+                x1 = mean + v1 * y * std
+                x2 = mean + v2 * y * std
 
                 if abs(x1 - mean) <= bound:
                     self._normal_cache[stream_offset] = (y, v2)
@@ -331,28 +678,82 @@ class RandomGenerator:
                 elif abs(x2 - mean) <= bound:
                     return x2
 
-    def exponential(self, mean=1.0, bound=0.0, stream_offset=0):
-        stream = self._get_stream(stream_offset)
+    def exponential(
+        self, mean: float = 1.0, bound: float = 0.0, stream_offset: int = 0
+    ) -> float:
+        """
+        Генерация случайного числа с экспоненциальным распределением.
 
-        if self.engine == 'File':
-            return stream.get_next_value()
+        Args:
+            mean (float, optional): Математическое ожидание (> 0.0). По умолчанию 1.0.
+            bound (float, optional): Верхний предел значения (>= 0.0, при 0.0 не ограничен).
+                По умолчанию 0.0.
+            stream_offset (int, optional): Смещение индекса подпотока (>= 0).
+                По умолчанию 0.
+
+        Returns:
+            float: Случайное число из экспоненциального распределения.
+
+        Raises:
+            ValueError: Если mean <= 0, bound < 0 или stream_offset < 0.
+
+        """
+        if mean <= 0.0:
+            raise ValueError(
+                f"Mean value for exponential distribution must be > 0. "
+                f"The obtained value: {mean}"
+            )
+        if bound < 0.0:
+            raise ValueError(
+                f"Upper bound must be >= 0. "
+                f"The obtained value: {bound}"
+            )
+
+        stream = self._get_stream(stream_offset)
 
         while True:
             v = stream.rand_u01()
-            if v == 0:
+            if v == 0.0:
                 continue
             r = -mean * math.log(v)
-            if bound == 0 or r <= bound:
+            if bound == 0.0 or r <= bound:
                 return r
 
-    def get_integer(self, min_val, max_val, stream_offset=0):
+    def get_integer(
+        self, min_val: int, max_val: int, stream_offset: int = 0
+    ) -> int:
         """
-        Генерирует целое число в диапазоне [min_val, max_val] включительно.
-        """
+        Генерация равновероятного целого числа в диапазоне [min_val, max_val] включительно.
 
-        stream = self._get_stream(stream_offset)
-        if self.engine == 'File':
-            return int(stream.get_next_value())
+        Args:
+            min_val (int): Нижняя целочисленная граница диапазона.
+            max_val (int): Верхняя целочисленная граница диапазона.
+            stream_offset (int, optional): Смещение индекса подпотока (>= 0).
+                По умолчанию 0.
+
+        Returns:
+            int: Случайное целое число из отрезка [min_val, max_val].
+
+        Raises:
+            ValueError: Если min_val или max_val не int (или bool),
+                min_val > max_val или stream_offset < 0.
+
+        """
+        if isinstance(min_val, bool) or not isinstance(min_val, int):
+            raise ValueError(
+                f"Parameter 'min_val' must be an integer (int). "
+                f"The obtained value: {min_val!r}"
+            )
+        if isinstance(max_val, bool) or not isinstance(max_val, int):
+            raise ValueError(
+                f"Parameter 'max_val' must be an integer (int). "
+                f"The obtained value: {max_val!r}"
+            )
+        if min_val > max_val:
+            raise ValueError(
+                f"Lower bound min_val ({min_val}) cannot be greater than "
+                f"max_val ({max_val})"
+            )
 
         v = self.uniform(0.0, 1.0, stream_offset=stream_offset)
-        return int(min_val + v * (max_val - min_val + 1))
+        return math.floor(min_val + v * (max_val - min_val + 1))
