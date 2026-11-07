@@ -194,7 +194,62 @@ class TestMobilityFactory(unittest.TestCase):
         for model in models:
             self.assertTrue(callable(getattr(model, "update", None)))
 
+class TestMobilityModelsRngIntegration(unittest.TestCase):
 
+    def setUp(self):
+        reset_borders()
+        MapBorders(-500, 500, -500, 500)
+
+    def tearDown(self):
+        reset_borders()
+
+    def test_all_models_use_injected_rng_with_ue_stream_offset(self):
+        class RecordingRng:
+            def __init__(self):
+                self.calls = []
+
+            def uniform(self, min_val=0.0, max_val=1.0, stream_offset=0):
+                self.calls.append(("uniform", stream_offset))
+                return (min_val + max_val) / 2
+
+            def normal(
+                self, mean=0.0, variance=1.0,
+                bound=float("inf"), stream_offset=0
+            ):
+                self.calls.append(("normal", stream_offset))
+                return mean
+
+        model_cases = [
+            (RandomWalkModel, {}, ["uniform"] * 4),
+            (RandomWaypointModel, {}, ["uniform"] * 5),
+            (RandomDirectionModel, {}, ["uniform"] * 4),
+            (GaussMarkovModel, {}, ["uniform", "uniform", "normal", "normal"]),
+            (
+                DiagonalWalkModel,
+                {"bs": make_bs(), "pause_time": 0},
+                ["uniform", "uniform"],
+            ),
+        ]
+
+        for model_class, extra_args, expected_methods in model_cases:
+            with self.subTest(model=model_class.__name__):
+                ue = make_ue(x=100.0, y=100.0)
+                ue.UE_ID = 37
+                rng = RecordingRng()
+
+                model = model_class(ue=ue, rng=rng, **extra_args)
+                model.update(100)
+
+                self.assertIs(model.rng, rng)
+                self.assertEqual(
+                    [method for method, _ in rng.calls],
+                    expected_methods,
+                )
+                self.assertTrue(
+                    all(offset == 37 for _, offset in rng.calls),
+                    f"{model_class.__name__} не передала UE_ID как stream_offset",
+                )
+                
 # ==============================================================================
 # 3. ТЕСТЫ ВОЗВРАЩАЕМЫХ ЗНАЧЕНИЙ (все модели)
 # ==============================================================================

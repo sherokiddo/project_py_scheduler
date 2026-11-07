@@ -27,12 +27,12 @@
 """
 
 import inspect
-from typing import Tuple
+from typing import Tuple, Optional
 
 import numpy as np
 from BS_MODULE import BaseStation
 from UE_MODULE import UserEquipment
-from RNG import RandomProvider
+from RNG import RandomProvider, RandomGenerator
 
 class MapBorders:
     """
@@ -100,38 +100,31 @@ class MobilityInterface:
     Класс-фабрика для моделей мобильности
     """
 
-    def __init__(self, ue: UserEquipment, rng: RandomProvider = None, **kwargs):
+    def __init__(self, ue: UserEquipment, rng: Optional[RandomProvider] = None, **kwargs):
         """
         Инициализация фабрики для моделей мобильности.
         Получает границы карты и назначает объект UserEquipment.
 
         Args:
             ue: Объект пользователя.
-            rng: Источник случайных чисел, реализующий контракт RandomProvider.
+            rng: Источник случайных чисел RandomProvider; если не передан, базовый класс создаёт RandomGenerator.
             Иные аргументы для моделей.
         """
         self.x_min, self.x_max, self.y_min, self.y_max = MapBorders().get_borders()
         self.ue = ue
-        self.rng = rng
-        self.stream_offset = int(self.ue.UE_ID)
+        self.rng: RandomProvider = rng if rng is not None else RandomGenerator()
+        self.stream_offset: int = int(self.ue.UE_ID)
 
-        if self.rng is None:
-            # Остальные модели пока не переведены на RNG.
-            self.current_velocity = np.random.uniform(
-                self.ue.velocity_min, self.ue.velocity_max
-            )
-            self.current_direction = np.random.uniform(0, 2 * np.pi)
-        else:
-            self.current_velocity = self.rng.uniform(
-                self.ue.velocity_min,
-                self.ue.velocity_max,
-                stream_offset=self.stream_offset,
-            )
-            self.current_direction = self.rng.uniform(
-                0,
-                2 * np.pi,
-                stream_offset=self.stream_offset,
-            )
+        self.current_velocity = self.rng.uniform(
+            min_val=self.ue.velocity_min,
+            max_val=self.ue.velocity_max,
+            stream_offset=self.stream_offset,
+        )
+        self.current_direction = self.rng.uniform(
+            min_val=0.0,
+            max_val=2 * np.pi,
+            stream_offset=self.stream_offset,
+        )
 
     @staticmethod
     def validate_params(cls, kwargs):
@@ -224,7 +217,7 @@ class RandomWalkModel(MobilityInterface):
     Устройство движется в случайном направлении в пределах заданных границ.
     """
 
-    def __init__(self, ue: UserEquipment, rng: RandomProvider = None, **kwargs):
+    def __init__(self, ue: UserEquipment, rng: Optional[RandomProvider] = None, **kwargs):
         """
         Инициализация модели случайного блуждания.
 
@@ -232,8 +225,6 @@ class RandomWalkModel(MobilityInterface):
             ue: Объект пользователя.
             rng: Источник случайных чисел, реализующий RandomProvider.
         """
-        if rng is None:
-            raise RuntimeError("Для RandomWalkModel необходимо передать генератор rng.")
         super().__init__(ue=ue, rng=rng, **kwargs)
         self.is_first_move = True
         
@@ -287,15 +278,16 @@ class RandomWaypointModel(MobilityInterface):
     Устройство движется к случайным пунктам назначения с паузами между движениями.
     """
 
-    def __init__(self, ue: UserEquipment, **kwargs):
+    def __init__(self, ue: UserEquipment, rng: Optional[RandomProvider] = None, **kwargs):
         """
         Инициализация модели Random Waypoint.
 
         Args:
             ue: Объект пользователя.
+            rng: Источник случайных чисел RandomProvider. Если не передан, используется RandomGenerator по умолчанию.
             pause_time: Время паузы между движениями (в мс)
         """
-        super().__init__(ue=ue, **kwargs)
+        super().__init__(ue=ue, rng=rng, **kwargs)
         self.pause_time = kwargs.get("pause_time", 5.0)
         self.is_paused = False
         self.pause_timer = 0.0
@@ -322,11 +314,10 @@ class RandomWaypointModel(MobilityInterface):
             is_paused: Флаг, указывающий, находится ли устройство в режиме паузы
         """
         new_destination = (
-            np.random.uniform(self.x_min, self.x_max),
-            np.random.uniform(self.y_min, self.y_max),
-        )
+            self.rng.uniform(min_val=self.x_min, max_val=self.x_max, stream_offset=self.stream_offset),
+            self.rng.uniform(min_val=self.y_min,max_val=self.y_max,stream_offset=self.stream_offset))
 
-        new_velocity = np.random.uniform(velocity_min, velocity_max)
+        new_velocity = self.rng.uniform(min_val=velocity_min, max_val=velocity_max, stream_offset=self.stream_offset)
 
         delta_x = new_destination[0] - current_position[0]
         delta_y = new_destination[1] - current_position[1]
@@ -397,15 +388,16 @@ class RandomDirectionModel(MobilityInterface):
     делает паузу, а затем выбирает новое направление.
     """
 
-    def __init__(self, ue: UserEquipment, pause_time=5.0, **kwargs):
+    def __init__(self, ue: UserEquipment, pause_time=5.0, rng: Optional[RandomProvider] = None, **kwargs):
         """
         Инициализация модели Random Waypoint.
 
         Args:
             ue: Объект пользователя
+            rng: Источник случайных чисел RandomProvider. Если не передан, используется RandomGenerator по умолчанию.
             pause_time: Время паузы между движениями (в мс)
         """
-        super().__init__(ue=ue, **kwargs)
+        super().__init__(ue=ue, rng=rng, **kwargs)
         self.pause_time = pause_time
         self.is_paused = False
         self.pause_timer = 0.0
@@ -440,10 +432,10 @@ class RandomDirectionModel(MobilityInterface):
             is_first_move: Обновленный флаг, указывающий, завершено ли первое движение.
         """
         if is_first_move:
-            new_direction = np.random.uniform(0, 2 * np.pi)
+            new_direction = self.rng.uniform(min_val=0.0, max_val=2 * np.pi, stream_offset=self.stream_offset)
             is_first_move = False
         else:
-            new_direction = np.random.uniform(0, np.pi)
+            new_direction = self.rng.uniform(min_val=0.0, max_val=np.pi, stream_offset=self.stream_offset)
 
         new_destination = self._calculate_boundary_point(current_position, new_direction)
 
@@ -452,10 +444,10 @@ class RandomDirectionModel(MobilityInterface):
             self.x_min <= new_destination[0] <= self.x_max
             and self.y_min <= new_destination[1] <= self.y_max
         ):
-            new_direction = np.random.uniform(0, 2 * np.pi)
+            new_direction = self.rng.uniform(min_val=0.0, max_val=2 * np.pi, stream_offset=self.stream_offset)
             new_destination = self._calculate_boundary_point(current_position, new_direction)
 
-        new_velocity = np.random.uniform(velocity_min, velocity_max)
+        new_velocity = self.rng.uniform(min_val=velocity_min, max_val=velocity_max, stream_offset=self.stream_offset)
 
         return new_destination, new_velocity, new_direction, False, is_first_move
 
@@ -551,7 +543,7 @@ class GaussMarkovModel(MobilityInterface):
     """
 
     def __init__(
-        self, ue: UserEquipment, alpha: float = 0.75, boundary_threshold: float = 5.0, **kwargs
+        self, ue: UserEquipment, alpha: float = 0.75, boundary_threshold: float = 5.0, rng: Optional[RandomProvider] = None, **kwargs
     ):
         """
         Инициализация модели Gauss-Markov.
@@ -560,8 +552,9 @@ class GaussMarkovModel(MobilityInterface):
             ue: Объект пользователя
             alpha: Параметр памяти модели (влияет на зависимость текущих значений от предыдущих).
             boundary_threshold: Расстояние до границы, при котором начинается корректировка направления.
+            rng: Источник случайных чисел RandomProvider; если не передан, базовый класс создаёт RandomGenerator.
         """
-        super().__init__(ue=ue, **kwargs)
+        super().__init__(ue=ue, rng=rng, **kwargs)
         self.alpha = alpha
         self.boundary_threshold = boundary_threshold
         self.mean_velocity = self.current_velocity
@@ -613,16 +606,18 @@ class GaussMarkovModel(MobilityInterface):
         elif y > self.y_max - self.boundary_threshold:
             mean_direction = np.deg2rad(270)
 
+        velocity_noise = self.rng.normal(mean=0.0, variance=1.0, stream_offset=self.stream_offset)
         new_velocity = max(0.0, (
                     self.alpha * current_velocity
                     + (1 - self.alpha) * mean_velocity
-                    + np.sqrt(1 - self.alpha**2) * np.random.normal(0, 1)
+                    + np.sqrt(1 - self.alpha**2) * velocity_noise
                 ))
 
+        direction_noise = self.rng.normal(mean=0.0, variance=1.0, stream_offset=self.stream_offset)
         new_direction = (
             self.alpha * current_direction
             + (1 - self.alpha) * mean_direction
-            + np.sqrt(1 - self.alpha**2) * np.random.normal(0, 1)
+            + np.sqrt(1 - self.alpha**2) * direction_noise
         )
         #FIXME: при определенных условиях vel\dir может стать отрицательной
         new_x = x + new_velocity * np.cos(new_direction) * time_s
@@ -652,7 +647,7 @@ class DiagonalWalkModel(MobilityInterface):
     станции (BS).
     """
 
-    def __init__(self, ue: UserEquipment, bs: BaseStation, pause_time: int, **kwargs):
+    def __init__(self, ue: UserEquipment, bs: BaseStation, pause_time: int, rng: Optional[RandomProvider] = None, **kwargs):
         """
         Инициализация модели DiagonalWalk.
 
@@ -660,9 +655,10 @@ class DiagonalWalkModel(MobilityInterface):
             ue: Объект пользователя
             bs: Объект базовой станции
             pause_time: Время паузы между движениями (в мс)
+            rng: Источник случайных чисел RandomProvider; если не передан, базовый класс создаёт RandomGenerator.
         """
 
-        super().__init__(ue=ue, **kwargs)
+        super().__init__(ue=ue, rng=rng, **kwargs)
         self.bs_x = bs.position[0]
         self.bs_y = bs.position[1]
         self.pause_time = pause_time
