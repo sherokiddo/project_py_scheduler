@@ -1,7 +1,7 @@
 # Диаграммы модуля SCHEDULER.py
 
-> Ответственный: Тимур (Scheduler) | Проверено по коду: `6c0aae2` (ветка `dev`) | Обновлено: `2026-11-02`  
-> Все схемы соответствуют коммиту `6c0aae2`; поведение подтверждено чтением кода и фактическими прогонами (сценарий TTI 5 из [README §4.1](README.md), pytest). Элементы, фактически добавленные шагом M1 [FEAT-SCH-008](features.md#feat-sch-008) в ветке `feat/SCH-008-M1-protocols` (коммиты `2472cb8`…`9379b3d`, строки :3246–3584), отмечены в §3 отдельной пометкой «реализовано в M1» — остальные элементы §3 остаются целевым черновиком. Baseline-снимки, которыми подтверждаются прогоны: состав и команды — [README §4.3](README.md), схема снимка и правила сравнения — [SPEC-FEAT-SCH-008 §8.2](specs/SPEC-FEAT-SCH-008.md). Наблюдения, упомянутые на схемах (BUG/OPT/DOC-SCH-xxx), — в [audit.md](audit.md); планируемые изменения (FEAT/OPT-SCH-xxx) — в [features.md](features.md). В метках переходов диаграмм состояний строки кода указаны как «стр. NNN»: второе двоеточие в метке перехода синтаксис Mermaid не допускает.
+> Ответственный: Тимур (Scheduler) | Проверено по коду: `6c0aae2` (ветка `dev`) и актуальной ветке `feat/SCH-008-M1-protocols` | Обновлено: `2026-11-07`  
+> Схемы §1–§2 соответствуют коммиту `6c0aae2` (AS-IS); поведение подтверждено чтением кода и фактическими прогонами (сценарий TTI 5 из [README §4.1](README.md)). Элементы, фактически добавленные шагом M1 [FEAT-SCH-008](features.md#feat-sch-008) в ветке `feat/SCH-008-M1-protocols` (строки :3248–3469), отмечены в §3 пометкой «реализовано в M1» — остальные элементы §3 остаются целевым черновиком. Наблюдения, упомянутые на схемах (BUG/OPT/DOC-SCH-xxx), — в [audit.md](audit.md); планируемые изменения (FEAT/OPT-SCH-xxx) — в [features.md](features.md). В метках переходов диаграмм состояний строки кода указаны как «стр. NNN»: второе двоеточие в метке перехода синтаксис Mermaid не допускает.
 
 ## 1. Текущая структура (AS-IS)
 
@@ -20,7 +20,7 @@ flowchart LR
     SCH -->|"этап 1: ue_has_buffer :530,<br/>get_buffer_status :492"| BS["BS_MODULE<br/>IBufferManager :472<br/>(Simple :580 / Layered :1356)"]
     SCH -->|"этап 7: get_packets(grants) :507 —<br/>физическое извлечение пакетов"| BS
     SCH -->|"этап 7 (с 6c0aae2, PR #39):<br/>update_all_qcis :223 — per-QCI throughput"| QCI["BS_MODULE<br/>QciThroughputTracker"]
-    SCH -->|"этап 6: ALLOCATE_RBG :430 (атомарно,<br/>откат RELEASE_RBG :440); этап 8: GENERATE_BITMAP :567"| GRID["RES_GRID<br/>lte_grid"]
+    SCH -->|"этап 6: ALLOCATE_RBG :430 (при отказе<br/>RELEASE_RBG :440, BUG-SCH-009); этап 8: GENERATE_BITMAP :567"| GRID["RES_GRID<br/>lte_grid"]
     SCH -->|"bytes_to_bits :217,<br/>BITS_PER_BYTE :140"| GL["GLOBALS"]
 ```
 
@@ -147,7 +147,7 @@ classDiagram
 
 ## 2. Типовой сценарий (AS-IS)
 
-Сценарий: один TTI — вызов `schedule(tti, users)` из `SIMULATION_MANAGER.run_tti()`, включая все выходы за границы модуля. Порядок этапов подтверждён кодом :346–436 и прогоном ([README §4.1](README.md)); полный набор контрольных точек — 27 baseline-снимков ([README §4.3](README.md)).
+Сценарий: один TTI — вызов `schedule(tti, users)` из `SIMULATION_MANAGER.run_tti()`, включая все выходы за границы модуля. Порядок этапов подтверждён кодом :346–436 и прогоном ([README §4.1](README.md)).
 
 ### 2.1. Последовательность вызовов
 
@@ -396,7 +396,7 @@ classDiagram
     SchedulerInterface o-- CustomSchedulingPolicy : экспериментальный путь
 ```
 
-**Реализовано в M1 (факт, не черновик):** узел `views-протоколы` — шесть `typing.Protocol` с `@runtime_checkable` (`CqiView` :3278, `GridView` :3296, `AmcView` :3327, `BuffersView` :3336, `StatsView` :3355, `StateView` :3376) и шесть тонких legacy-адаптеров (`LegacyCqiView` :3403, `LegacyGridView` :3424, `LegacyAmcView` :3457, `LegacyBuffersView` :3469, `LegacyStatsView` :3516, `LegacyStateView` :3557) введены в ветке `feat/SCH-008-M1-protocols` разделом в конце `SCHEDULER.py`; адаптеры делегируют существующим методам и не дублируют их (правило R5), потребители на views **не переключены** (правила R1/R2) — ни одна стрелка от оркестратора или алгоритмов к протоколам на схеме AS-IS (§1) не появилась. Целевая форма `CqiView` (`CqiEstimate`/`get_for_rbg`) и `abc.ABC`-иерархии `UserRanker`/`ResourceAllocator` в M1 не вводились: первое — CQI-трек C1 (не раньше M3), второе — шаги M4+ ([SPEC §5.3, §5.7, §8.3](specs/SPEC-FEAT-SCH-008.md)). Состав узлов и гарантии шага — [README §5](README.md) и [SPEC §4.3–4.4](specs/SPEC-FEAT-SCH-008.md).
+**Реализовано в M1 (факт, не черновик):** узел `views-протоколы` — семь статических протоколов `typing.Protocol` (`CqiView` :3252, `GridView` :3262, `AmcView` :3279, `BuffersView` :3286, `StatsView` :3296, `ReadOnlyStateView` :3315, `StateView` :3325) и семь тонких legacy-адаптеров с `__slots__` (`LegacyCqiView` :3335, `LegacyGridView` :3351, `LegacyAmcView` :3373, `LegacyBuffersView` :3385, `LegacyStatsView` :3400, `LegacyReadOnlyStateView` :3441, `LegacyStateView` :3456) введены в ветке `feat/SCH-008-M1-protocols` разделом в конце `SCHEDULER.py` (:3248–3469); адаптеры делегируют существующим методам и не дублируют их (правило R5), потребители на views **не переключены** (правила R1/R2) — ни одна стрелка от оркестратора или алгоритмов к протоколам на схеме AS-IS (§1) не появилась. Целевая форма `CqiView` (`CqiEstimate`/`get_for_rbg`) и `abc.ABC`-иерархии `UserRanker`/`ResourceAllocator` в M1 не вводились: первое — CQI-трек C1 (не раньше M3), второе — шаги M4+ ([SPEC §5.3, §5.7, §8.3](specs/SPEC-FEAT-SCH-008.md)). Состав узлов и гарантии шага — [README §5](README.md) и [SPEC §4.3–4.4](specs/SPEC-FEAT-SCH-008.md).
 
 Что изменится относительно AS-IS: общая механика аллокации (`remaining_buffer`, вызов `ALLOCATE_RBG`, сборка индексов RB, условия прерывания), продублированная сейчас в восьми `_allocate_pdsch`, уходит в иерархию `ResourceAllocator`; первоначальный порядок UE — в иерархию `UserRanker`, при этом ranker возвращает `prioritized_ues` как сейчас, а вторая сортировка, tie-break и top-N остаются в `_form_priority_list` (:684) — поведение отбора не меняется; долговременные RR-смещения (`rr_*_offset`) собираются в `SchedulerState` с правилом «один писатель на поле», `served_in_round` остаётся локальной переменной FD_FGS; переопределения оценки PDSCH становятся методом `prefilter` стратегии аллокатора (до M3 стратегии подключаются без реестра); per-flow решения QoS (`allocation_flow` :3087/:3149) переносятся в явное поле `AllocationResult.flow_budget_bits` и доходят до мультиплексирования без побочного канала, а само QoS-переопределение `_logical_channel_multiplexing` (:3175–3222) становится компонентом `MultiplexingPolicy` — необязательным четвёртым элементом дескриптора пары: оркестратор вызывает компонент из дескриптора на этапе 7 вместо `self._logical_channel_multiplexing`, внешняя форма грантов не меняется (M7b); дальнейшая эволюция QoS-мультиплексирования — карточки QoS-направления. Старые имена фабрики (`'BestCQI'`, `'FD_PF'`, `'QosAware'`, …) сохраняются через реестр с тремя видами маршрутов: `legacy` (делегирование старым классам — до переноса имени), `pair` (ranker+allocator плюс необязательный компонент мультиплексирования) и `custom` (целостная экспериментальная policy по схеме propose→validate→commit: точка запуска после этапа PDCCH, план на снимке свободных ресурсов, проверка до изменений, commit только оркестратором) — обратная совместимость с `SchedulerConfig` (SIMULATION_MANAGER.py:1044); совместимость фабрики с ядром подтверждается при интеграции, переписывания Simulation Manager не требуется. Перенос выполняется по одному алгоритму за PR (план M0–M8, v4: M4c/M4d, M5a/M5b, M8a–M8e, [specs/SPEC-FEAT-SCH-008.md](specs/SPEC-FEAT-SCH-008.md) §8) — на любом промежуточном шаге все восемь имён остаются рабочими; mock custom policy в M8e — proposal-only до реализации propose→validate→commit; синхронизация `available_algorithms()` (M8a) меняет наблюдаемый результат метода и сливается после отдельного согласования (R2). В ту же схему без изменения оркестратора встраиваются: DRL-ранжирование из ветки `feature/drl-scheduler` (PPO/DQN-ranker — как pair, либо как `CustomSchedulingPolicy`, если разложение на две стратегии искусственно) и венгерский бенчмарк ([FEAT-SCH-004](features.md#feat-sch-004) — офлайн эталонный Allocator; batch-путь `GridView.snapshot_free()/commit(plan)` — точка расширения, реализуемая после [BUG-SCH-009](audit.md#bug-sch-009)). Доступ к CQI стратегии получают через `CqiView`: на период миграции — legacy-адаптер поверх `cqi_map` с прежней семантикой WB/SB и fallback (поведение `6c0aae2` сохраняется), целевой контракт `CqiEstimate` с метками `measurement_tti`/`received_tti` и независимые политики reporting/consumption внедряются отдельным CQI-треком C1–C4; каждый алгоритм явно декларирует потребляемый набор CSI (`channel_awareness`), автоматического переключения режимов нет. Контракт без собственного rollback не отменяет [FEAT-SCH-001](features.md#feat-sch-001): откат CCE при провале PDSCH остаётся задачей оркестратора/менеджера контроля в точке отказа аллокатора.
 
@@ -408,7 +408,7 @@ classDiagram
 flowchart LR
     subgraph FLAT["AS-IS: плоская раскладка (dev@6c0aae2)"]
         P["PyScheduler/<br/>SCHEDULER.py · SIMULATION_MANAGER.py<br/>CHANNEL_MODEL.py · MOBILITY_MODEL.py · TRAFFIC_MODEL.py<br/>BS_MODULE.py · UE_MODULE.py · RES_GRID.py<br/>GLOBALS.py · ENVIRONMENT.py · PLOT_METRICS.py · TEST_MODULES.py"]
-        T["PyScheduler/tests/<br/>baseline/ · scheduler_arch_tests/ · scheduler_tests/ · …"]
+        T["PyScheduler/tests/<br/>layered_buffer_tests/ · mobility_module_tests/ · scheduler_tests/"]
     end
     subgraph V2["Целевая раскладка v2 (обсуждается)"]
         MM["models/<br/>мобильность, трафик, канал"]
@@ -425,8 +425,8 @@ flowchart LR
 Что уже не зависит от этого решения:
 
 - **Документация** размещается по принятому принципу «общая папка `docs/` + папка модуля»: `docs/scheduler/` с четырьмя документами и `specs/SPEC-FEAT-SCH-008.md` ([README §8](README.md)). Перенос в другую раскладку — `git mv` плюс правка относительных ссылок; внешних ресурсов в комплекте нет.
-- **Код шагов M0–M7** живёт в `SCHEDULER.py` (добавления в конец файла, якоря legacy-кода не сдвигаются — [README §4.7](README.md)) и в каталогах `tests/`; на раскладку v2 это не завязано.
-- **Контракты** (`AmcView`, `GridView`, `CqiView`, `BuffersView`, `StatsView`, `StateView` — :3278–3401, адаптеры :3403–3584) — точка независимости: при переезде в пакет меняются маршруты импортов, а не интерфейсы.
+- **Код шагов M1–M7** живёт в `SCHEDULER.py` (добавления в конец файла, якоря legacy-кода не сдвигаются — [README §4.4](README.md)); на раскладку v2 это не завязано.
+- **Контракты** (`CqiView`, `GridView`, `AmcView`, `BuffersView`, `StatsView`, `ReadOnlyStateView`, `StateView` — :3252–3332, адаптеры :3335–3469) — точка независимости: при переезде в пакет меняются маршруты импортов, а не интерфейсы.
 - **Версионирование** пакетов и релизов отложено; правило R8 (удаление legacy не ранее одного релизного цикла) до определения схемы версионирования опирается на решение владельца репозитория.
 
 ## 4. Ссылки на исходники
@@ -445,7 +445,6 @@ flowchart LR
 - `PyScheduler/RES_GRID.py::ALLOCATE_RBG/RELEASE_RBG/GET_RBG_INDICES/GET_RBG_SIZE/GENERATE_BITMAP` (:430/:440/:424/:421/:567), `BANDWIDTH_TO_RB` (:283), `RBG_SIZE_TABLE` (:293); `RELEASE_RB/RELEASE_RBG` (:399/:440) — освобождение без проверки владельца (BUG-SCH-009)
 - `PyScheduler/BS_MODULE.py::QciThroughputTracker.update_all_qcis` (:223) — per-QCI throughput, точка встраивания этапа 7
 - `PyScheduler/GLOBALS.py::bytes_to_bits` (:217), `BITS_PER_BYTE` (:140), `is_gbr` (:185)
-- `PyScheduler/SCHEDULER.py` :3246–3584 — раздел M1 (протоколы и view-адаптеры), существует только в ветке `feat/SCH-008-M1-protocols` (коммит `9379b3d`); в `dev@6c0aae2` файл заканчивается на строке 3245, поэтому якоря §1–§2 действительны в обоих случаях
-- `PyScheduler/tests/baseline/` и `PyScheduler/tests/scheduler_arch_tests/` — characterization-снимки и контрактные тесты шагов M0/M1 (в `dev` отсутствуют, поставка патчами — [README §4.3–4.6](README.md))
+- `PyScheduler/SCHEDULER.py` :3248–3469 — раздел M1 (протоколы и view-адаптеры) в ветке `feat/SCH-008-M1-protocols`; в `dev@6c0aae2` файл заканчивается на строке 3245, поэтому якоря §1–§2 действительны в обоих случаях
 
 Правила: схемы хранить **текстом Mermaid** в Markdown; AS-IS и TO-BE не смешивать; не рисовать каждую функцию; схема должна соответствовать конкретному коммиту.
