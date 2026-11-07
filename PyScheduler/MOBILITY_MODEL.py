@@ -63,9 +63,6 @@ class MapBorders:
         for val in [x_min, x_max, y_min, y_max]:
             if val is not None and not isinstance(val, (int, float)):
                 raise TypeError("Границы карты должны быть числами")
-        if x_min is not None:
-            if x_max <= x_min:
-                raise ValueError("x_max должен быть больше x_min")
 
         if cls._instance is None:
             if any(v is None for v in (x_min, x_max, y_min, y_max)):
@@ -593,11 +590,11 @@ class GaussMarkovModel(MobilityInterface):
         elif y > self.y_max - self.boundary_threshold:
             mean_direction = np.deg2rad(270)
 
-        new_velocity = (
-            self.alpha * current_velocity
-            + (1 - self.alpha) * mean_velocity
-            + np.sqrt(1 - self.alpha**2) * np.random.normal(0, 1)
-        )
+        new_velocity = max(0.0, (
+                    self.alpha * current_velocity
+                    + (1 - self.alpha) * mean_velocity
+                    + np.sqrt(1 - self.alpha**2) * np.random.normal(0, 1)
+                ))
 
         new_direction = (
             self.alpha * current_direction

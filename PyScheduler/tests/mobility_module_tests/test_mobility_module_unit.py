@@ -114,6 +114,12 @@ class TestMapBorders(unittest.TestCase):
         borders = mb.get_borders()
         self.assertEqual(len(borders), 4)
 
+    def test_partial_initial_bounds_raise_clear_error(self):
+        with self.assertRaisesRegex(
+            RuntimeError, "MapBorders не инициализированы"
+        ):
+            MapBorders(x_min=0)
+
 
 # ==============================================================================
 # 2. ТЕСТЫ MobilityInterface (Factory)
