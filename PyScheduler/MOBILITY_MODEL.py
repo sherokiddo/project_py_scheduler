@@ -32,7 +32,7 @@ from typing import Tuple
 import numpy as np
 from BS_MODULE import BaseStation
 from UE_MODULE import UserEquipment
-
+from RNG import RandomProvider
 
 class MapBorders:
     """
@@ -100,19 +100,38 @@ class MobilityInterface:
     Класс-фабрика для моделей мобильности
     """
 
-    def __init__(self, ue: UserEquipment, **kwargs):
+    def __init__(self, ue: UserEquipment, rng: RandomProvider = None, **kwargs):
         """
         Инициализация фабрики для моделей мобильности.
         Получает границы карты и назначает объект UserEquipment.
 
         Args:
             ue: Объект пользователя.
+            rng: Источник случайных чисел, реализующий контракт RandomProvider.
             Иные аргументы для моделей.
         """
         self.x_min, self.x_max, self.y_min, self.y_max = MapBorders().get_borders()
         self.ue = ue
-        self.current_velocity = np.random.uniform(self.ue.velocity_min, self.ue.velocity_max)
-        self.current_direction = np.random.uniform(0, 2 * np.pi)
+        self.rng = rng
+        self.stream_offset = int(self.ue.UE_ID)
+
+        if self.rng is None:
+            # Остальные модели пока не переведены на RNG.
+            self.current_velocity = np.random.uniform(
+                self.ue.velocity_min, self.ue.velocity_max
+            )
+            self.current_direction = np.random.uniform(0, 2 * np.pi)
+        else:
+            self.current_velocity = self.rng.uniform(
+                self.ue.velocity_min,
+                self.ue.velocity_max,
+                stream_offset=self.stream_offset,
+            )
+            self.current_direction = self.rng.uniform(
+                0,
+                2 * np.pi,
+                stream_offset=self.stream_offset,
+            )
 
     @staticmethod
     def validate_params(cls, kwargs):
@@ -205,15 +224,19 @@ class RandomWalkModel(MobilityInterface):
     Устройство движется в случайном направлении в пределах заданных границ.
     """
 
-    def __init__(self, ue: UserEquipment, **kwargs):
+    def __init__(self, ue: UserEquipment, rng: RandomProvider = None, **kwargs):
         """
         Инициализация модели случайного блуждания.
 
         Args:
             ue: Объект пользователя.
+            rng: Источник случайных чисел, реализующий RandomProvider.
         """
-        super().__init__(ue=ue, **kwargs)
+        if rng is None:
+            raise RuntimeError("Для RandomWalkModel необходимо передать генератор rng.")
+        super().__init__(ue=ue, rng=rng, **kwargs)
         self.is_first_move = True
+        
 
     def update(self, time_ms: int, **kwargs) -> Tuple[Tuple[float, float], float, float]:
         """
@@ -250,9 +273,9 @@ class RandomWalkModel(MobilityInterface):
         if hit_x or hit_y:
             new_x, new_y = self._apply_boundary_reflection(new_x, new_y)
         else:
-            new_direction = np.random.uniform(0, 2 * np.pi)
+            new_direction = self.rng.uniform(0, 2 * np.pi, stream_offset=self.stream_offset)
 
-        new_velocity = np.random.uniform(velocity_min, velocity_max)
+        new_velocity = self.rng.uniform(velocity_min, velocity_max, stream_offset=self.stream_offset)
         new_position = (new_x, new_y)
 
         return new_position, new_velocity, new_direction
