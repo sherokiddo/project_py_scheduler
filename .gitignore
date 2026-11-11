@@ -12,3 +12,14 @@ PyScheduler/output.txt
 .spyproject/**
 *.log
 logs/
+.git.accidental-backup/
+# Результаты запуска из корня репозитория
+/emp_stats.csv
+/emp_stats_detailed.csv
+/emp_stats_qos.csv
+/emp_stats.json
+/emp_stats_detailed.json
+/output.txt
+
+# Кэш pytest
+.pytest_cache/
