@@ -339,7 +339,7 @@ def sim_with_manager_qos():
         scheduler_level="full",
         amc_level="full",
         pdcch_level="basic",
-        qos_level="basic",
+        qos_level="basic",      # Вот за это тапками санными не кидайтесь, что полез не в свой модуль, согласовывать одну строку было крайне бы... излишним
         file_prefix="emp_stats",
     )
 
