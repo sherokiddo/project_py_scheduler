@@ -102,6 +102,11 @@
 # - Все новые функции протестированы, тесты сохранены. Результат успешный.
 # - Составлен список дальнейших фич для следующих версий.
 # - Полный лист изменений и документация на текущий момент составляется.
+#
+# Изменения 2.1.1:
+# - M1: Protocol-контракты и Legacy*View-адаптеры в конце файла.
+# - M1a: оценка PDSCH вынесена в стратегии ResourcePrefilter (DefaultPrefilter /
+#   PassThroughPrefilter); каждый алгоритм задаёт стратегию явно в __init__.
 #------------------------------------------------------------------------------
 """
 
@@ -342,7 +347,10 @@ class SchedulerInterface:
         self._cqi_view = LegacyCqiView(self)
         self._grid_view = LegacyGridView(self.lte_grid)
         self._amc_view = LegacyAmcView(self.amc)
-        self.prefilter_strategy: ResourcePrefilter = DefaultPrefilter()
+        # Стратегию prefilter каждый алгоритм задаёт явно в своём __init__
+        # (DefaultPrefilter или PassThroughPrefilter): неявного значения по умолчанию нет,
+        # чтобы новый планировщик не унаследовал 95%-фильтрацию случайно.
+        self.prefilter_strategy: Optional[ResourcePrefilter] = None
 
         if self.verbose:
             print(f"[SCHEDULER] Initialized {self.__class__.__name__}")
@@ -717,7 +725,15 @@ class SchedulerInterface:
         """
         Предварительная фильтрация priority_list по оценке ёмкости PDSCH.
         Делегирует вычисление стратегии self.prefilter_strategy через view-адаптеры.
+
+        Raises:
+            NotImplementedError: алгоритм не задал prefilter_strategy в __init__.
         """
+        if self.prefilter_strategy is None:
+            raise NotImplementedError(
+                f"{self.__class__.__name__}: не задана prefilter_strategy "
+                f"(используйте DefaultPrefilter() или PassThroughPrefilter(...) в __init__)"
+            )
         return self.prefilter_strategy.prefilter(
             priority_list,
             tti,
@@ -1865,6 +1881,7 @@ class BestCQIScheduler(SchedulerInterface):
             lte_grid=lte_grid,
             bs=bs,
             **kwargs)
+        self.prefilter_strategy = DefaultPrefilter()
 
     def _calculate_priorities(self, eligible_ues: List[Dict], tti: int) -> List[Dict]:
         """
@@ -2057,6 +2074,7 @@ class ProportionalFairScheduler(SchedulerInterface):
 
     def __init__(self, lte_grid, bs, **kwargs):
         super().__init__(lte_grid, bs, **kwargs)
+        self.prefilter_strategy = DefaultPrefilter()
 
     def _calculate_priorities(self, eligible_ues: List[Dict], tti: int) -> List[Dict]:
         """
@@ -3187,21 +3205,16 @@ class StatsView(Protocol):
     def qci_throughput(self, ue_id: int, qci: int) -> float:
         """Вернуть средний throughput потока (UE, QCI) в бит/с."""
 
-    def gbr_of(
-        self,
-        qci: int,
-        ue_id: Optional[int] = None,
-        lcid: Optional[int] = None,
-    ) -> Optional[float]:
-        """Вернуть целевой GBR из профиля QCI в бит/с (None для non-GBR)."""
+    def gbr_of(self, qci: int, ue_id: Optional[int] = None, lcid: Optional[int] = None) -> Optional[float]:
+        """
+        Вернуть целевой GBR потока в бит/с (None для non-GBR).
 
-    def is_gbr(
-        self,
-        qci: int,
-        ue_id: Optional[int] = None,
-        lcid: Optional[int] = None,
-    ) -> bool:
-        """Проверить, относится ли QCI к GBR."""
+        ue_id и lcid идентифицируют конкретный bearer, чтобы GBR можно было
+        привязать к потоку, а не только к классу QCI.
+        """
+
+    def is_gbr(self, qci: int, ue_id: Optional[int] = None, lcid: Optional[int] = None) -> bool:
+        """Проверить, относится ли поток (ue_id, lcid, qci) к GBR."""
 
     def delay_budget_of(self, qci: int) -> int:
         """Вернуть максимально допустимую задержку пакета (PDB) для QCI в мс."""
@@ -3399,8 +3412,6 @@ class LegacyStatsView:
     __slots__ = ("_ues", "_tracker")
 
     def __init__(self, ues_by_id: Dict[int, Any], buffer_manager=None):
-        # Значения ues_by_id — объекты UE ({u['UE_ID']: u['ue']}), а не словари user.
-        # Копия, чтобы проверка ниже не обходилась правкой исходного словаря.
         self._ues = dict(ues_by_id)
         for ue_id, ue in self._ues.items():
             if not hasattr(ue, "average_throughput"):
@@ -3424,20 +3435,10 @@ class LegacyStatsView:
             return 0.0
         return self._tracker.get_average_throughput(ue_id, qci)
 
-    def gbr_of(
-        self,
-        qci: int,
-        ue_id: Optional[int] = None,
-        lcid: Optional[int] = None,
-    ) -> Optional[float]:
+    def gbr_of(self, qci: int, ue_id: Optional[int] = None, lcid: Optional[int] = None) -> Optional[float]:
         return GLOBALS.QCI_PROFILES.get(qci, {}).get("gbr")
 
-    def is_gbr(
-        self,
-        qci: int,
-        ue_id: Optional[int] = None,
-        lcid: Optional[int] = None,
-    ) -> bool:
+    def is_gbr(self, qci: int, ue_id: Optional[int] = None, lcid: Optional[int] = None) -> bool:
         return self.gbr_of(qci, ue_id=ue_id, lcid=lcid) is not None
 
     def delay_budget_of(self, qci: int) -> int:
