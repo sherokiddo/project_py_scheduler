@@ -44,6 +44,7 @@
 
 from dataclasses import dataclass, field
 import AMC
+from TRAFFIC_MODEL import Packet
 
 @dataclass
 class TransportBlock:
@@ -51,7 +52,7 @@ class TransportBlock:
     tbs: int
     mcs: int
     rb: int
-    buffer: list[int] = field(default_factory=list)
+    buffer: list[Packet] = field(default_factory=list)
     ndi: int = 1
     rv: int = 0
     harq_id: int = 0        
