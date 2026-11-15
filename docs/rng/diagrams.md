@@ -1,10 +1,10 @@
 # Диаграммы модуля RNG
 
-> Ответственный: Шаимов Богдан | Проверено по коду: `RNG.py` (v2.0.0)
+> Ответственный: Шаимов Богдан | Проверено по коду: `RNG.py` (v2.0.1)
 
-## 1. Структура классов и контрактов модуля (`RNG.py` v2.0.0)
+## 1. Структура классов и контрактов модуля (`RNG.py` v2.0.1)
 
-Фасад `RandomGenerator` реализует внешний контракт `RandomProvider` и создаёт подпотоки через внутренний контракт `UniformEngine` по выбранной стратегии из словаря `_ENGINES`.
+Фасад `RandomGenerator` реализует внешний контракт `RandomProvider` и создаёт подпотоки через внутренний контракт `UniformEngine` по выбранной стратегии из словаря `_ENGINES`. Реестр `StreamAllocator` управляет бесколлизионной выдачей потоков по ключу `(domain, purpose, entity_id)`.
 
 ```mermaid
 classDiagram
@@ -52,16 +52,28 @@ classDiagram
         +get_integer(min_val, max_val, stream_offset) int
     }
 
+    class StreamAllocator {
+        +int seed
+        +int run_idx
+        +str engine
+        -dict _registry
+        -int _next_stream_idx
+        +allocate_stream_idx(domain, purpose, entity_id) int
+        +get_provider(domain, purpose, entity_id) RandomGenerator
+        +get_registered_streams() dict
+    }
+
     RngStream ..|> UniformEngine : реализует
     PhiloxStream ..|> UniformEngine : реализует
     RandomGenerator ..|> RandomProvider : реализует
     RandomGenerator "1" *-- "0..*" UniformEngine : создаёт в _streams
+    StreamAllocator ..> RandomGenerator : создаёт с уникальным base_stream_idx
 ```
+
 
 ## 2. Сценарий вызова `RandomGenerator.normal()`
 
-Показаны ленивая инициализация подпотока `stream_offset` и работа кэша пары чисел Бокса — Мюллера `_normal_cache`.
-
+Показаны строгая валидация параметров (NaN/Inf, variance, bound), ленивая инициализация подпотока stream_offset и работа кэша пары чисел Бокса — Мюллера _normal_cache.
 ```mermaid
 sequenceDiagram
     autonumber
@@ -71,7 +83,7 @@ sequenceDiagram
 
     Note over Caller,RG: Вызов №1 (подпоток stream_offset=1 ещё не создан)
     Caller->>RG: normal(mean=0.0, variance=1.0, bound=3.0, stream_offset=1)
-    RG->>RG: Проверка variance >= 0, bound >= 0, расчёт std
+    RG->>RG: Валидация float (не NaN/Inf), variance >= 0, bound > 0 (при variance > 0)
     RG->>RG: _get_stream(stream_offset=1)
     alt Поток отсутствует в _streams
         RG->>Engine: __init__(seed, base_stream_idx + 1, run_idx)
@@ -98,14 +110,14 @@ sequenceDiagram
     end
 ```
 
-## 3. Схема целевой интеграции с `SimulationManager` и моделями (TO-BE)
+## 3. Схема целевой интеграции через StreamAllocator (TO-BE, Этап M2)
 
 ```mermaid
 flowchart LR
-    SM["SimulationManager\n(назначает base_stream_idx:\n1000, 2000, 3000)"] -->|"Создаёт"| RG["RandomGenerator\n(seed, base_stream_idx, run_idx, engine)"]
-    RG -.->|"Передаётся как\nRandomProvider (DI)"| MOB["MobilityModel\n(stream_offset = UE_ID)"]
-    RG -.->|"Передаётся как\nRandomProvider (DI)"| CH["ChannelModel\n(stream_offset = UE_ID)"]
-    RG -.->|"Передаётся как\nRandomProvider (DI)"| TR["TrafficModel\n(stream_offset = UE_ID)"]
+    SM["SimulationManager"] -->|"Инициализирует"| SA["StreamAllocator\n(seed, run_idx, engine)"]
+    SA -->|"get_provider('MOBILITY', 'WAYPOINT', ue_id)"| MOB["MobilityModel\n(rng: RandomProvider)"]
+    SA -->|"get_provider('CHANNEL', 'SHADOW_FADING', ue_id)"| CH["ChannelModel\n(rng: RandomProvider)"]
+    SA -->|"get_provider('TRAFFIC', 'INTERARRIVAL', ue_id)"| TR["TrafficModel\n(rng: RandomProvider)"]
 ```
 
 ## 4. Ссылки на исходники
@@ -114,3 +126,4 @@ flowchart LR
 - `RNG.py::RngStream` — ядро `MRG32k3a` (`_build_cache`, `_advance_nth_by`, `rand_u01`).
 - `RNG.py::PhiloxStream` — ядро `Philox4x64` (`_philox_round`, `_mulhilo`, `rand_u01`).
 - `RNG.py::RandomGenerator` — фасад распределений (`_get_stream`, `uniform`, `normal`, `exponential`, `get_integer`).
+- `RNG.py::StreamAllocator` — централизованный реестр и аллокатор потоков (`allocate_stream_idx, get_provider, get_registered_streams`).

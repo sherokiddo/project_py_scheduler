@@ -66,23 +66,38 @@ self.mobility_rng: RandomProvider = RandomGenerator(
 )
 ```
 
-### 4.2. Для моделей `Mobility`, `Channel`, `Traffic` (Андрей К.)
-Модели принимают `rng: RandomProvider` через конструктор. Для обратной совместимости со старыми тестами допускается дефолтный `RandomGenerator()`:
+### 4.2. Для моделей `Mobility, Channel, Traffic` (Андрей К.) — Явная инъекция зависимости
+Модели принимают `rng: RandomProvider` через конструктор как явную обязательную зависимость. Немой `fallback` вида `rng if rng is not None else RandomGenerator()` запрещён, так как при пропущенном аргументе разные модели молча создадут генераторы с одинаковыми (`seed=12345, base_stream_idx=0, run_idx=1`) и начнут выдавать искусственно скоррелированные последовательности:
 
 ```python
-from typing import Optional
-from RNG import RandomProvider, RandomGenerator
+from RNG import RandomProvider
 
 class MobilityInterface:
-    def __init__(self, ue: UserEquipment, rng: Optional[RandomProvider] = None, **kwargs):
+    def __init__(self, ue: UserEquipment, rng: RandomProvider, **kwargs):
+        if rng is None:
+            raise ValueError(
+                "Parameter 'rng' (RandomProvider) must be explicitly provided via Dependency Injection."
+            )
         self.ue = ue
-        self.rng: RandomProvider = rng if rng is not None else RandomGenerator()
-        self.stream_offset: int = int(self.ue.UE_ID)
+        self.rng: RandomProvider = rng
 ```
 
 ---
+### 4.3. Правила миграции вызовов `np.random` на RandomProvider (Этап M2)
+При переводе `CHANNEL_MODEL.py, TRAFFIC_MODEL.py, MOBILITY_MODEL.py и UE_MODULE.py` с `np.random на RandomProvider` необходимо учитывать различия в семантике параметров:
+
+# Таблица перевода вызовов `np.random` → `RandomProvider` (RNG.py)
+
+| Вызов в существующем коде (`np.random`) | Семантика в `np.random` | Корректный вызов `RandomProvider` (`RNG.py`) | Важное правило перевода |
+|---|---|---|---|
+| `np.random.uniform(a, b)` | Полуинтервал [a, b) | `rng.uniform(a, b)` | Семантика границ совпадает: [a, b). |
+| `np.random.normal(loc=mu, scale=sigma)` | `scale` — это СКО (σ, stddev) | `rng.normal(mean=mu, variance=sigma ** 2)` | Метод `normal()` принимает **дисперсию** (σ²), а не σ! Обязательно возводить `sigma` в квадрат. |
+| `np.random.exponential(scale=beta)` | Математическое ожидание β > 0 | `rng.exponential(mean=beta)` | Семантика параметра совпадает (`mean = beta`). |
+| `np.random.randint(low, high)` | Целое из [low, high) (верхняя граница exclusive) | `rng.get_integer(low, high - 1)` | В `get_integer(min_val, max_val)` **обе границы inclusive** ([min_val, max_val]). Верхнюю границу нужно уменьшать на `1`. |
+| `rng.choice(seq)` (в `UE_MODULE`, `CHANNEL_MODEL`) | Выбор случайного элемента последовательности | `seq[rng.get_integer(0, len(seq) - 1)]` | Равновероятный выбор индекса через `get_integer(0, len(seq) - 1)`. |
+| Векторные генерации `size=N` (в `CHANNEL_MODEL`, `TRAFFIC_MODEL`) | Массив из N случайных чисел | `np.array([rng.normal(...) for _ in range(N)])` | Последовательный вызов в генераторе списков сохраняет детерминированный порядок чтения из потока. |
 
 ## 5. Проверка (Definition of Done)
+### 1. Добавление `RNG.py` не изменяет существующие файлы симулятора и не нарушает работу Legacy-кода.
 
-1. Добавление `RNG.py` не изменяет существующие файлы симулятора и не нарушает работу Legacy-кода.
-2. Локальными модульными тестами подтверждены: воспроизводимость генерации `MRG32k3a` и `Philox4x64`, строгий полуинтервал `[0.0, 1.0)` у `PhiloxStream`, равномерность `get_integer` на отрицательных границах и выброс `ValueError` при невалидных аргументах.
+### 2. Локальными модульными тестами подтверждены: воспроизводимость генерации `MRG32k3a` и `Philox4x64`, строгий полуинтервал `[0.0, 1.0)` у `PhiloxStream`, равномерность `get_integer` на отрицательных границах, защита от NaN/Inf и бесконечного цикла при `bound=0.0`, соблюдение верхних границ `seed <= 4294944442, stream_idx <= 2^63 - 1, run_idx <= 2^63 - 1,` а также работа реестра `StreamAllocator`.

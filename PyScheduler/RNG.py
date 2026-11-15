@@ -10,8 +10,19 @@
 #   с эталонной реализацией MRG32k3a и поддержку независимых потоков
 #   (streams) и прогонов (runs) для воспроизводимости экспериментов.
 #
-# Версия: 2.0.0
-# Дата последнего изменения: 2026-11-06
+# Происхождение алгоритмов (Provenance):
+#   - RngStream (MRG32k3a): независимая реализация на языке Python по
+#     опубликованной математической спецификации P. L'Ecuyer, R. Simard,
+#     E. J. Chen, W. D. Kelton, "An Object-Oriented Random-Number Package with
+#     Many Long Streams and Substreams", Operations Research, 50(6), 2002.
+#     Схема индексации потоков и подпотоков согласована с контрактом ns-3 для
+#     обеспечения воспроизводимости кросс-валидационных сценариев.
+#   - PhiloxStream (Philox4x64-10): независимая реализация на языке Python по
+#     спецификации J. K. Salmon et al., "Parallel Random Numbers: As Easy as
+#     1, 2, 3", SC'11, 2011.
+#
+# Версия: 2.0.1
+# Дата последнего изменения: 2026-11-15
 # Автор: Шаимов Богдан
 # Версия Python Kernel: 3.12.9
 # v.1.1.0:
@@ -23,11 +34,29 @@
 # - В get_integer() усечение int() заменено на math.floor() для отрицательных границ.
 # - Добавлена строгая валидация параметров распределений, индексов потоков и прогонов.
 # - Вычисление стандартного отклонения в normal() вынесено до цикла генерации.
+# v.2.0.1:
+# - Добавлена защита от NaN/Inf во всех float-параметрах и блокировка bound <= 0
+#   при variance > 0 в normal() для предотвращения бесконечного цикла отбраковки.
+# - Установлены строгие верхние границы для seed (< m2), stream_idx и run_idx (<= 2^63 - 1).
+# - Добавлен реестр и аллокатор потоков StreamAllocator по ключу (domain, purpose, entity_id).
 #------------------------------------------------------------------------------
 """
 
 import math
-from typing import Dict, List, Protocol, Tuple, Type
+from typing import Dict, List, Optional, Protocol, Tuple, Type
+
+
+# ==============================================================================
+#                     КОНСТАНТЫ ГРАНИЦ МАТЕМАТИЧЕСКОГО КОНТРАКТА
+# ==============================================================================
+
+MRG_M1: int = 4294967087
+MRG_M2: int = 4294944443
+
+MAX_SEED: int = MRG_M2 - 1  # 4294944442
+
+MAX_STREAM_IDX: int = (1 << 63) - 1
+MAX_RUN_IDX: int = (1 << 63) - 1
 
 
 # ==============================================================================
@@ -78,17 +107,18 @@ class RandomProvider(Protocol):
             float: Случайное число из диапазона [min_val, max_val).
 
         Raises:
-            ValueError: Если min_val > max_val или stream_offset < 0.
+            ValueError: Если параметры содержат NaN/Inf, min_val > max_val
+                или stream_offset выходит за допустимые границы.
 
         """
         pass
 
     def normal(
-        self,
-        mean: float = 0.0,
-        variance: float = 1.0,
-        bound: float = float("inf"),
-        stream_offset: int = 0,
+            self,
+            mean: float = 0.0,
+            variance: float = 1.0,
+            bound: float = float("inf"),
+            stream_offset: int = 0,
     ) -> float:
         """
         Генерация случайного числа с нормальным распределением.
@@ -97,7 +127,8 @@ class RandomProvider(Protocol):
             mean (float, optional): Математическое ожидание. По умолчанию 0.0.
             variance (float, optional): Дисперсия распределения (>= 0.0).
                 По умолчанию 1.0.
-            bound (float, optional): Максимальное допустимое отклонение от среднего (>= 0.0).
+            bound (float, optional): Максимальное допустимое отклонение от среднего
+                (> 0.0 при variance > 0.0, либо >= 0.0 при variance == 0.0).
                 По умолчанию inf.
             stream_offset (int, optional): Смещение индекса подпотока (>= 0).
                 По умолчанию 0.
@@ -106,7 +137,8 @@ class RandomProvider(Protocol):
             float: Случайное число из нормального распределения.
 
         Raises:
-            ValueError: Если variance < 0, bound < 0 или stream_offset < 0.
+            ValueError: Если параметры содержат NaN/Inf, variance < 0,
+                bound <= 0 (при variance > 0) или stream_offset некорректен.
 
         """
         pass
@@ -128,7 +160,8 @@ class RandomProvider(Protocol):
             float: Случайное число из экспоненциального распределения.
 
         Raises:
-            ValueError: Если mean <= 0, bound < 0 или stream_offset < 0.
+            ValueError: Если параметры содержат NaN/Inf, mean <= 0, bound < 0
+                или stream_offset некорректен.
 
         """
         pass
@@ -150,7 +183,7 @@ class RandomProvider(Protocol):
 
         Raises:
             ValueError: Если min_val или max_val не int (или bool),
-                min_val > max_val или stream_offset < 0.
+                min_val > max_val или stream_offset некорректен.
 
         """
         pass
@@ -161,21 +194,28 @@ class RandomProvider(Protocol):
 # ==============================================================================
 
 
-def _validate_int_param(value: int, name: str, min_allowed: int) -> int:
+def _validate_int_param(
+    value: int,
+    name: str,
+    min_allowed: int,
+    max_allowed: Optional[int] = None,
+) -> int:
     """
     Проверка целочисленного параметра на тип int (не bool) и нижнюю границу.
 
     Args:
         value (int): Проверяемое значение.
         name (str): Имя параметра для формирования сообщения об ошибке.
-        min_allowed (int): Минимально допустимое значение параметра.
+        min_allowed (int): Минимально допустимое значение параметра (включительно).
+        max_allowed (Optional[int], optional): Максимально допустимое значение
+            параметра (включительно). По умолчанию None.
 
     Returns:
         int: Проверенное целочисленное значение.
 
     Raises:
         ValueError: Если значение не является int (или является bool)
-            либо меньше min_allowed.
+            либо выходит за границы [min_allowed, max_allowed].
 
     """
     if isinstance(value, bool) or not isinstance(value, int):
@@ -188,15 +228,61 @@ def _validate_int_param(value: int, name: str, min_allowed: int) -> int:
             f"Parameter '{name}' must be >= {min_allowed}. "
             f"The obtained value: {value}"
         )
+    if max_allowed is not None and value > max_allowed:
+        raise ValueError(
+            f"Parameter '{name}' must be <= {max_allowed}. "
+            f"The obtained value: {value}"
+        )
     return value
+
+
+def _validate_float_param(
+    value: float,
+    name: str,
+    allow_pos_inf: bool = False,
+) -> float:
+    """
+    Проверка вещественного параметра на числовой тип и отсутствие NaN/Inf.
+
+    Args:
+        value (float): Проверяемое числовое значение.
+        name (str): Имя параметра для сообщения об ошибке.
+        allow_pos_inf (bool, optional): Разрешить ли значение +inf (например,
+            для параметра bound в normal()). По умолчанию False.
+
+    Returns:
+        float: Проверенное значение, приведенное к float.
+
+    Raises:
+        ValueError: Если значение не является int/float (или является bool),
+            равно NaN или недопустимой бесконечности.
+
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(
+            f"Parameter '{name}' must be a real number (int or float). "
+            f"The obtained value: {value!r}"
+        )
+    val = float(value)
+    if math.isnan(val):
+        raise ValueError(f"Parameter '{name}' cannot be NaN.")
+    if math.isinf(val):
+        if allow_pos_inf and val > 0.0:
+            return val
+        raise ValueError(
+            f"Parameter '{name}' must be finite. "
+            f"The obtained value: {value}"
+        )
+    return val
 
 
 def _validate_seed(seed: int) -> int:
     """
     Проверка начального зерна генератора (seed).
 
-    Запрещает отрицательные и булевы значения. При передаче 0 возвращает
-    стандартное значение 12345 (соглашение алгоритма MRG32k3a).
+    Запрещает отрицательные, булевы значения и значения >= MRG_M2 (4294944443),
+    чтобы гарантировать невырожденность обоих компонент состояния MRG32k3a.
+    При передаче 0 возвращает стандартное значение 12345.
 
     Args:
         seed (int): Начальное зерно генератора.
@@ -205,7 +291,8 @@ def _validate_seed(seed: int) -> int:
         int: Валидное ненулевое зерно генератора.
 
     Raises:
-        ValueError: Если seed не является int (или является bool) либо меньше 0.
+        ValueError: Если seed не является int (или является bool),
+            меньше 0 или больше MAX_SEED (4294944442).
 
     """
     if isinstance(seed, bool) or not isinstance(seed, int):
@@ -213,9 +300,9 @@ def _validate_seed(seed: int) -> int:
             f"Parameter 'seed' must be an integer (int). "
             f"The obtained value: {seed!r}"
         )
-    if seed < 0:
+    if seed < 0 or seed > MAX_SEED:
         raise ValueError(
-            f"Parameter 'seed' cannot be negative. "
+            f"Parameter 'seed' must be in range [0, {MAX_SEED}] (< m2={MRG_M2}). "
             f"The obtained value: {seed}"
         )
     return seed if seed != 0 else 12345
@@ -228,22 +315,21 @@ def _validate_seed(seed: int) -> int:
 
 class RngStream:
     """
-    Математическое ядро генератора ПСЧ по алгоритму MRG32k3a.
+    Математическое ядро генератора ПСЧ по алгоритму MRG32k3a (L'Ecuyer, 2002).
 
-    Обеспечивает побитовую совместимость с генератором RngStream из ns-3.
     Разделение последовательности на независимые потоки (шаг 2^127) и прогоны (шаг 2^76)
     выполняется с помощью предвычисленного кэша матриц перехода.
 
     Attributes:
-        seed (int): Зерно генератора (>= 0; 0 заменяется на 12345).
-        stream_idx (int): Индекс независимого потока (>= 0).
-        run_idx (int): Номер прогона внутри потока (>= 1).
+        seed (int): Зерно генератора в диапазоне [1, 4294944442] (0 заменяется на 12345).
+        stream_idx (int): Индекс независимого потока в диапазоне [0, 2^63 - 1].
+        run_idx (int): Номер прогона внутри потока в диапазоне [1, 2^63 - 1].
         state (List[float]): Вектор текущего состояния из 6 элементов.
 
     """
 
-    m1 = 4294967087.0
-    m2 = 4294944443.0
+    m1 = float(MRG_M1)
+    m2 = float(MRG_M2)
     norm = 1.0 / (m1 + 1.0)
     a12 = 1403580.0
     a13n = 810728.0
@@ -287,18 +373,22 @@ class RngStream:
         Инициализация состояния потока MRG32k3a и сдвиг к заданному потоку и прогону.
 
         Args:
-            seed (int, optional): Начальное зерно генератора (>= 0, 0 заменяется на 12345).
-                По умолчанию 12345.
-            stream_idx (int, optional): Индекс потока (>= 0). По умолчанию 0.
-            run_idx (int, optional): Номер прогона (>= 1). По умолчанию 1.
+            seed (int, optional): Начальное зерно генератора в [0, 4294944442]
+                (0 заменяется на 12345). По умолчанию 12345.
+            stream_idx (int, optional): Индекс потока в [0, 2^63 - 1]. По умолчанию 0.
+            run_idx (int, optional): Номер прогона в [1, 2^63 - 1]. По умолчанию 1.
 
         Raises:
             ValueError: Если параметры имеют некорректный тип или выходят за допустимые границы.
 
         """
         self.seed = _validate_seed(seed)
-        self.stream_idx = _validate_int_param(stream_idx, "stream_idx", min_allowed=0)
-        self.run_idx = _validate_int_param(run_idx, "run_idx", min_allowed=1)
+        self.stream_idx = _validate_int_param(
+            stream_idx, "stream_idx", min_allowed=0, max_allowed=MAX_STREAM_IDX
+        )
+        self.run_idx = _validate_int_param(
+            run_idx, "run_idx", min_allowed=1, max_allowed=MAX_RUN_IDX
+        )
         self.state = [float(self.seed)] * 6
 
         target_stream = (1 << 63) + self.stream_idx
@@ -404,9 +494,9 @@ class PhiloxStream:
     строго меньше 1.0.
 
     Attributes:
-        seed (int): Зерно генератора (>= 0; 0 заменяется на 12345).
-        stream_idx (int): Индекс независимого потока (>= 0).
-        run_idx (int): Номер прогона внутри потока (>= 1).
+        seed (int): Зерно генератора в диапазоне [1, 4294944442] (0 заменяется на 12345).
+        stream_idx (int): Индекс независимого потока в диапазоне [0, 2^63 - 1].
+        run_idx (int): Номер прогона внутри потока в диапазоне [1, 2^63 - 1].
         key (List[int]): Ключ потока: [seed, stream_idx].
         counter (List[int]): Счётчик из четырёх 64-битных слов,
             начальное значение [0, 0, 0, run_idx].
@@ -424,18 +514,22 @@ class PhiloxStream:
         Инициализация ключа и счетчика потока Philox4x64.
 
         Args:
-            seed (int, optional): Начальное зерно генератора (>= 0, 0 заменяется на 12345).
-                По умолчанию 12345.
-            stream_idx (int, optional): Индекс потока (>= 0). По умолчанию 0.
-            run_idx (int, optional): Номер прогона (>= 1). По умолчанию 1.
+            seed (int, optional): Начальное зерно генератора в [0, 4294944442]
+                (0 заменяется на 12345). По умолчанию 12345.
+            stream_idx (int, optional): Индекс потока в [0, 2^63 - 1]. По умолчанию 0.
+            run_idx (int, optional): Номер прогона в [1, 2^63 - 1]. По умолчанию 1.
 
         Raises:
             ValueError: Если параметры имеют некорректный тип или выходят за допустимые границы.
 
         """
         self.seed = _validate_seed(seed)
-        self.stream_idx = _validate_int_param(stream_idx, "stream_idx", min_allowed=0)
-        self.run_idx = _validate_int_param(run_idx, "run_idx", min_allowed=1)
+        self.stream_idx = _validate_int_param(
+            stream_idx, "stream_idx", min_allowed=0, max_allowed=MAX_STREAM_IDX
+        )
+        self.run_idx = _validate_int_param(
+            run_idx, "run_idx", min_allowed=1, max_allowed=MAX_RUN_IDX
+        )
 
         self.key = [
             self.seed & 0xFFFFFFFFFFFFFFFF,
@@ -510,9 +604,9 @@ class RandomGenerator:
     из реестра _ENGINES ('MRG32k3a' или 'Philox').
 
     Attributes:
-        seed (int): Зерно генератора (>= 0; 0 заменяется на 12345).
-        base_stream_idx (int): Базовый индекс потока для данной подсистемы симулятора (>= 0).
-        run_idx (int): Номер независимого прогона симуляции (>= 1).
+        seed (int): Зерно генератора в [1, 4294944442] (0 заменяется на 12345).
+        base_stream_idx (int): Базовый индекс потока для данной подсистемы в [0, 2^63 - 1].
+        run_idx (int): Номер независимого прогона симуляции в [1, 2^63 - 1].
         engine (str): Имя активной математической стратегии ('MRG32k3a' или 'Philox').
 
     """
@@ -523,21 +617,21 @@ class RandomGenerator:
     }
 
     def __init__(
-        self,
-        seed: int = 12345,
-        base_stream_idx: int = 0,
-        run_idx: int = 1,
-        engine: str = "MRG32k3a",
+            self,
+            seed: int = 12345,
+            base_stream_idx: int = 0,
+            run_idx: int = 1,
+            engine: str = "MRG32k3a",
     ):
         """
         Инициализация фасада распределений и валидация параметров конфигурации.
 
         Args:
-            seed (int, optional): Начальное зерно генератора (>= 0, 0 заменяется на 12345).
-                По умолчанию 12345.
-            base_stream_idx (int, optional): Базовый индекс потока (>= 0).
+            seed (int, optional): Начальное зерно генератора в [0, 4294944442]
+                (0 заменяется на 12345). По умолчанию 12345.
+            base_stream_idx (int, optional): Базовый индекс потока в [0, 2^63 - 1].
                 По умолчанию 0.
-            run_idx (int, optional): Номер прогона симуляции (>= 1).
+            run_idx (int, optional): Номер прогона симуляции в [1, 2^63 - 1].
                 По умолчанию 1.
             engine (str, optional): Название стратегии ('MRG32k3a' или 'Philox').
                 По умолчанию 'MRG32k3a'.
@@ -548,9 +642,14 @@ class RandomGenerator:
         """
         self.seed = _validate_seed(seed)
         self.base_stream_idx = _validate_int_param(
-            base_stream_idx, "base_stream_idx", min_allowed=0
+            base_stream_idx,
+            "base_stream_idx",
+            min_allowed=0,
+            max_allowed=MAX_STREAM_IDX,
         )
-        self.run_idx = _validate_int_param(run_idx, "run_idx", min_allowed=1)
+        self.run_idx = _validate_int_param(
+            run_idx, "run_idx", min_allowed=1, max_allowed=MAX_RUN_IDX
+        )
 
         if not isinstance(engine, str) or engine not in self._ENGINES:
             allowed = ", ".join(self._ENGINES.keys())
@@ -575,14 +674,26 @@ class RandomGenerator:
             UniformEngine: Экземпляр потока с индексом base_stream_idx + stream_offset.
 
         Raises:
-            ValueError: Если stream_offset не является целым числом >= 0.
+            ValueError: Если stream_offset не является целым числом >= 0
+                или сумма base_stream_idx + stream_offset превышает MAX_STREAM_IDX.
 
         """
-        _validate_int_param(stream_offset, "stream_offset", min_allowed=0)
+        _validate_int_param(
+            stream_offset,
+            "stream_offset",
+            min_allowed=0,
+            max_allowed=MAX_STREAM_IDX,
+        )
+        target_stream_idx = self.base_stream_idx + stream_offset
+        if target_stream_idx > MAX_STREAM_IDX:
+            raise ValueError(
+                f"Combined stream index (base_stream_idx + stream_offset = {target_stream_idx}) "
+                f"exceeds MAX_STREAM_IDX ({MAX_STREAM_IDX})."
+            )
         if stream_offset not in self._streams:
             self._streams[stream_offset] = self._engine_cls(
                 seed=self.seed,
-                stream_idx=self.base_stream_idx + stream_offset,
+                stream_idx=target_stream_idx,
                 run_idx=self.run_idx,
             )
         return self._streams[stream_offset]
@@ -603,9 +714,12 @@ class RandomGenerator:
             float: Случайное число из диапазона [min_val, max_val).
 
         Raises:
-            ValueError: Если min_val > max_val или stream_offset < 0.
+            ValueError: Если параметры содержат NaN/Inf, min_val > max_val
+                или stream_offset выходит за допустимые границы.
 
         """
+        min_val = _validate_float_param(min_val, "min_val")
+        max_val = _validate_float_param(max_val, "max_val")
         if min_val > max_val:
             raise ValueError(
                 f"Lower bound min_val ({min_val}) cannot be greater than "
@@ -628,8 +742,8 @@ class RandomGenerator:
             mean (float, optional): Математическое ожидание. По умолчанию 0.0.
             variance (float, optional): Дисперсия распределения (>= 0.0).
                 По умолчанию 1.0.
-            bound (float, optional): Максимальное отклонение от mean (>= 0.0).
-                По умолчанию inf.
+            bound (float, optional): Максимальное отклонение от mean (> 0.0 при variance > 0.0,
+                либо >= 0.0 при variance == 0.0). По умолчанию inf.
             stream_offset (int, optional): Смещение индекса подпотока (>= 0).
                 По умолчанию 0.
 
@@ -637,9 +751,14 @@ class RandomGenerator:
             float: Случайное число из усеченного нормального распределения.
 
         Raises:
-            ValueError: Если variance < 0, bound < 0 или stream_offset < 0.
+            ValueError: Если параметры содержат NaN/Inf, variance < 0,
+                bound <= 0 (при variance > 0) или stream_offset некорректен.
 
         """
+        mean = _validate_float_param(mean, "mean")
+        variance = _validate_float_param(variance, "variance")
+        bound = _validate_float_param(bound, "bound", allow_pos_inf=True)
+
         if variance < 0.0:
             raise ValueError(
                 f"Variance must be >= 0. "
@@ -650,8 +769,16 @@ class RandomGenerator:
                 f"Deviation bound must be >= 0. "
                 f"The obtained value: {bound}"
             )
+        if variance > 0.0 and bound == 0.0:
+            raise ValueError(
+                "Deviation bound cannot be 0.0 when variance > 0.0 "
+                "(causes infinite rejection loop)."
+            )
 
         stream = self._get_stream(stream_offset)
+        if variance == 0.0:
+            return mean
+
         std = math.sqrt(variance)
 
         if stream_offset in self._normal_cache:
@@ -695,9 +822,13 @@ class RandomGenerator:
             float: Случайное число из экспоненциального распределения.
 
         Raises:
-            ValueError: Если mean <= 0, bound < 0 или stream_offset < 0.
+            ValueError: Если параметры содержат NaN/Inf, mean <= 0, bound < 0
+                или stream_offset некорректен.
 
         """
+        mean = _validate_float_param(mean, "mean")
+        bound = _validate_float_param(bound, "bound")
+
         if mean <= 0.0:
             raise ValueError(
                 f"Mean value for exponential distribution must be > 0. "
@@ -736,7 +867,7 @@ class RandomGenerator:
 
         Raises:
             ValueError: Если min_val или max_val не int (или bool),
-                min_val > max_val или stream_offset < 0.
+                min_val > max_val или stream_offset некорректен.
 
         """
         if isinstance(min_val, bool) or not isinstance(min_val, int):
@@ -757,3 +888,125 @@ class RandomGenerator:
 
         v = self.uniform(0.0, 1.0, stream_offset=stream_offset)
         return math.floor(min_val + v * (max_val - min_val + 1))
+
+
+# ==============================================================================
+#            РЕЕСТР И АЛЛОКАТОР ПОТОКОВ (STREAM REGISTRY / ALLOCATOR)
+# ==============================================================================
+
+
+class StreamAllocator:
+    """
+    Централизованный реестр и аллокатор независимых потоков ПСЧ.
+
+    Выполняет детерминированную выдачу уникальных индексов потоков (stream_idx)
+    по составному ключу (domain, purpose, entity_id), например:
+        ("CHANNEL", "SHADOW_FADING", 17)
+        ("MOBILITY", "WAYPOINT", 5)
+    Гарантирует отсутствие коллизий между доменами, случайными процессами
+    внутри одного модуля и пользовательскими сущностями без использования
+    фиксированных «магических» диапазонов.
+    """
+
+    def __init__(
+        self,
+        seed: int = 12345,
+        run_idx: int = 1,
+        engine: str = "MRG32k3a",
+    ):
+        """
+        Инициализация централизованного аллокатора потоков.
+
+        Args:
+            seed (int, optional): Глобальное зерно симуляции в [0, 4294944442].
+                По умолчанию 12345.
+            run_idx (int, optional): Номер прогона симуляции в [1, 2^63 - 1].
+                По умолчанию 1.
+            engine (str, optional): Название математического ядра ('MRG32k3a' или 'Philox').
+                По умолчанию 'MRG32k3a'.
+
+        """
+        self.seed = _validate_seed(seed)
+        self.run_idx = _validate_int_param(
+            run_idx, "run_idx", min_allowed=1, max_allowed=MAX_RUN_IDX
+        )
+        if not isinstance(engine, str) or engine not in RandomGenerator._ENGINES:
+            allowed = ", ".join(RandomGenerator._ENGINES.keys())
+            raise ValueError(
+                f"Unknown mathematical engine '{engine}'. "
+                f"Available strategies: {allowed}"
+            )
+        self.engine = engine
+        self._registry: Dict[Tuple[str, str, int], int] = {}
+        self._next_stream_idx: int = 0
+
+    def allocate_stream_idx(
+        self, domain: str, purpose: str, entity_id: int = 0
+    ) -> int:
+        """
+        Получить или зарегистрировать уникальный stream_idx для тройки (domain, purpose, entity_id).
+
+        При повторном обращении с тем же ключом возвращает ранее выделенный индекс.
+
+        Args:
+            domain (str): Домен симулятора (например, 'MOBILITY', 'CHANNEL', 'TRAFFIC').
+            purpose (str): Назначение случайного процесса внутри домена
+            entity_id (int, optional): Идентификатор сущности (UE_ID, BS_ID или 0 для глобального).
+                По умолчанию 0.
+
+        Returns:
+            int: Уникальный неотрицательный индекс потока stream_idx.
+
+        Raises:
+            ValueError: Если domain/purpose пусты или не являются строками,
+                либо entity_id < 0.
+
+        """
+        if not isinstance(domain, str) or not domain.strip():
+            raise ValueError("Parameter 'domain' must be a non-empty string.")
+        if not isinstance(purpose, str) or not purpose.strip():
+            raise ValueError("Parameter 'purpose' must be a non-empty string.")
+        _validate_int_param(
+            entity_id, "entity_id", min_allowed=0, max_allowed=MAX_STREAM_IDX
+        )
+
+        key = (domain.strip().upper(), purpose.strip().upper(), entity_id)
+        if key not in self._registry:
+            if self._next_stream_idx > MAX_STREAM_IDX:
+                raise ValueError("StreamAllocator exhausted MAX_STREAM_IDX.")
+            self._registry[key] = self._next_stream_idx
+            self._next_stream_idx += 1
+        return self._registry[key]
+
+    def get_provider(
+        self, domain: str, purpose: str, entity_id: int = 0
+    ) -> RandomGenerator:
+        """
+        Создать экземпляр RandomGenerator с уникальным потоком для (domain, purpose, entity_id).
+
+        Args:
+            domain (str): Домен симулятора ('MOBILITY', 'CHANNEL', 'TRAFFIC' и др.).
+            purpose (str): Назначение случайного процесса внутри домена.
+            entity_id (int, optional): Идентификатор сущности (>= 0). По умолчанию 0.
+
+        Returns:
+            RandomGenerator: Настроенный экземпляр провайдера для указанного ключа.
+
+        """
+        stream_idx = self.allocate_stream_idx(domain, purpose, entity_id)
+        return RandomGenerator(
+            seed=self.seed,
+            base_stream_idx=stream_idx,
+            run_idx=self.run_idx,
+            engine=self.engine,
+        )
+
+    def get_registered_streams(self) -> Dict[Tuple[str, str, int], int]:
+        """
+        Получить копию текущей таблицы выделенных потоков для аудита и логирования.
+
+        Returns:
+            Dict[Tuple[str, str, int], int]: Словарь {(domain, purpose, entity_id): stream_idx}.
+
+        """
+        return self._registry.copy()
