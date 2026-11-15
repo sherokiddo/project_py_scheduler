@@ -2343,9 +2343,26 @@ class FDxFairGreedyScheduler(SchedulerInterface):
 
     def __init__(self, lte_grid, bs, **kwargs):
         super().__init__(lte_grid, bs, **kwargs)
-        self.rr_rbg_offset = 0 #можно сделать механизм без ротации RBG
-        self.rr_ue_offset = 0
+        self.state = SchedulerState()
         self.prefilter_strategy = PassThroughPrefilter("FD-FGS per-RBG selection")
+
+    @property
+    def rr_ue_offset(self) -> int:
+        """Смещение ротации очереди пользователей (хранится в self.state)."""
+        return self.state.rr_ue_offset
+
+    @rr_ue_offset.setter
+    def rr_ue_offset(self, value: int) -> None:
+        self.state.rr_ue_offset = value
+
+    @property
+    def rr_rbg_offset(self) -> int:
+        """Смещение ротации RBG (хранится в self.state)."""
+        return self.state.rr_rbg_offset
+
+    @rr_rbg_offset.setter
+    def rr_rbg_offset(self, value: int) -> None:
+        self.state.rr_rbg_offset = value
 
     def _calculate_priorities(self, windowed_ues: List[Dict], tti: int) -> List[Dict]:
         """
@@ -2364,7 +2381,7 @@ class FDxFairGreedyScheduler(SchedulerInterface):
         else:
             ues_to_plan = num_ues
 
-        start_idx   = self.rr_ue_offset % num_ues
+        start_idx   = self.state.rr_ue_offset % num_ues
         rotated_ues = windowed_ues[start_idx:] + windowed_ues[:start_idx]
 
         for idx, user in enumerate(rotated_ues):
@@ -2372,7 +2389,7 @@ class FDxFairGreedyScheduler(SchedulerInterface):
 
         if self.verbose:
             top_ue = rotated_ues[0]['UE_ID']
-            print(f"[SCHEDULER.FDxFGS TTI {tti}] Priority: Rotated (start UE {top_ue}, offset={self.rr_ue_offset})")
+            print(f"[SCHEDULER.FDxFGS TTI {tti}] Priority: Rotated (start UE {top_ue}, offset={self.state.rr_ue_offset})")
 
         return rotated_ues
 
@@ -2393,7 +2410,7 @@ class FDxFairGreedyScheduler(SchedulerInterface):
             return allocation
 
         eligible_id_map = {ue['UE_ID']: idx for idx, ue in enumerate(eligible_ues)}
-        ue_index        = self.rr_rbg_offset
+        ue_index        = self.state.rr_rbg_offset
         last_served_idx = -1
 
         remaining_buffer = {
@@ -2465,15 +2482,15 @@ class FDxFairGreedyScheduler(SchedulerInterface):
                 current_idx = eligible_id_map.get(ue_id, -1)
                 last_served_idx = current_idx
 
-        self.rr_rbg_offset = ue_index % num_ues
+        self.state.rr_rbg_offset = ue_index % num_ues
         if last_served_idx >= 0 and len(eligible_ues) > 0:
-            self.rr_ue_offset = (last_served_idx + 1) % len(eligible_ues)
+            self.state.rr_ue_offset = (last_served_idx + 1) % len(eligible_ues)
 
         if self.verbose:
             allocated_ues = sum(1 for rbs in allocation.values() if len(rbs) > 0)
             total_rb      = sum(len(rbs) for rbs in allocation.values())
             print(f"[SCHEDULER.FDхFGS TTI {tti}] PDSCH: {allocated_ues} UE, {total_rb} RB total "
-                  f"(next_offset={self.rr_rbg_offset})")
+                  f"(next_offset={self.state.rr_rbg_offset})")
 
         return allocation
 
@@ -3479,9 +3496,13 @@ class LegacyReadOnlyStateView:
         self._scheduler = scheduler
 
     def get_rr_ue_offset(self) -> int:
+        if hasattr(self._scheduler, "state"):
+            return self._scheduler.state.rr_ue_offset
         return self._scheduler.rr_ue_offset
 
     def get_rr_rbg_offset(self) -> int:
+        if hasattr(self._scheduler, "state"):
+            return self._scheduler.state.rr_rbg_offset
         return self._scheduler.rr_rbg_offset
 
 
@@ -3491,11 +3512,17 @@ class LegacyStateView(LegacyReadOnlyStateView):
     __slots__ = ()
 
     def set_rr_ue_offset(self, offset: int) -> None:
-        if not hasattr(self._scheduler, "rr_ue_offset"):
+        if hasattr(self._scheduler, "state"):
+            self._scheduler.state.rr_ue_offset = offset
+        elif hasattr(self._scheduler, "rr_ue_offset"):
+            self._scheduler.rr_ue_offset = offset
+        else:
             raise AttributeError("Scheduler does not own rr_ue_offset")
-        self._scheduler.rr_ue_offset = offset
 
     def set_rr_rbg_offset(self, offset: int) -> None:
-        if not hasattr(self._scheduler, "rr_rbg_offset"):
+        if hasattr(self._scheduler, "state"):
+            self._scheduler.state.rr_rbg_offset = offset
+        elif hasattr(self._scheduler, "rr_rbg_offset"):
+            self._scheduler.rr_rbg_offset = offset
+        else:
             raise AttributeError("Scheduler does not own rr_rbg_offset")
-        self._scheduler.rr_rbg_offset = offset
