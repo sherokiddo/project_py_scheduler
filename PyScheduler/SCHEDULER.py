@@ -3496,13 +3496,9 @@ class LegacyReadOnlyStateView:
         self._scheduler = scheduler
 
     def get_rr_ue_offset(self) -> int:
-        if hasattr(self._scheduler, "state"):
-            return self._scheduler.state.rr_ue_offset
         return self._scheduler.rr_ue_offset
 
     def get_rr_rbg_offset(self) -> int:
-        if hasattr(self._scheduler, "state"):
-            return self._scheduler.state.rr_rbg_offset
         return self._scheduler.rr_rbg_offset
 
 
@@ -3512,17 +3508,11 @@ class LegacyStateView(LegacyReadOnlyStateView):
     __slots__ = ()
 
     def set_rr_ue_offset(self, offset: int) -> None:
-        if hasattr(self._scheduler, "state"):
-            self._scheduler.state.rr_ue_offset = offset
-        elif hasattr(self._scheduler, "rr_ue_offset"):
-            self._scheduler.rr_ue_offset = offset
-        else:
+        if not hasattr(self._scheduler, "rr_ue_offset"):
             raise AttributeError("Scheduler does not own rr_ue_offset")
+        self._scheduler.rr_ue_offset = offset
 
     def set_rr_rbg_offset(self, offset: int) -> None:
-        if hasattr(self._scheduler, "state"):
-            self._scheduler.state.rr_rbg_offset = offset
-        elif hasattr(self._scheduler, "rr_rbg_offset"):
-            self._scheduler.rr_rbg_offset = offset
-        else:
+        if not hasattr(self._scheduler, "rr_rbg_offset"):
             raise AttributeError("Scheduler does not own rr_rbg_offset")
+        self._scheduler.rr_rbg_offset = offset
