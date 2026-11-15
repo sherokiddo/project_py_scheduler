@@ -66,6 +66,16 @@ SPECTRAL_EFFICIENCY_FOR_MCS = [
 ]
 
 def get_tbs_bits(mcs: int, rb: int) -> int:
+    """
+    Рассчитывает размер транспортного блока (TBS) в битах
+    на основе индекса MCS и количества ресурсных блоков (PRB).
+
+    Args:
+        mcs (int): Индекс схемы модуляции и кодирования (MCS).
+            Допустимые значения: от 0 до 28.
+        rb (int): Количество физических ресурсных блоков (PRB).
+            Допустимые значения: от 1 до размера строки таблицы TBS.
+    """
     if type(mcs) is not int or not 0 <= mcs <= 28:
         raise ValueError("MCS должен быть целым числом от 0 до 28")
     row = GLOBALS.TBS_TABLE[GLOBALS.mcs_to_itbs[mcs]]
@@ -92,9 +102,10 @@ class AmcConfig:
 
 @dataclass(frozen=True)
 class McsSelectionInput:
-    """Значения для одного выделения; пары PRB-поддиапазон указаны явно.
-        Все коллекции представляют собой кортежи, а не ссылки на планировщик или карты CQI в реальном времени.
-        Политика выделения SB должна определять правила агрегирования и отчета об отсутствии данных.
+    """
+    Значения для одного выделения; пары PRB-поддиапазон указаны явно.
+    Все коллекции представляют собой кортежи, а не ссылки на планировщик или карты CQI в реальном времени.
+    Политика выделения SB должна определять правила агрегирования и отчета об отсутствии данных.
     """
     wb_cqi: int
     sb_cqi: tuple[int, ...] = ()
@@ -103,11 +114,36 @@ class McsSelectionInput:
 
 
 class McsSelectionPolicy(Protocol):
-    def select_mcs(self, context: McsSelectionInput) -> int: ...
+    def select_mcs(self, context: McsSelectionInput) -> int: 
+        """
+        Выбрать индекс MCS по данным контекста передачи.
 
+        Конкретная политика определяет, как использовать WB-CQI, SB-CQI
+        и сведения о выделенных PRB.
+
+        Args:
+            context (McsSelectionInput): Снимок CQI и параметров выделения ресурсов.
+        """
+        ...
 
 class LegacyWbMcsPolicy:
     def select_mcs(self, context: McsSelectionInput) -> int:
+        """
+        Выбрать MCS по WB-CQI согласно унаследованной политике проекта.
+
+        Делегирует расчёт legacy_mcs_selection. SB-CQI и сведения
+        о выделенных PRB не используются. При WB-CQI=0 возвращает MCS=0;
+        это правило выбора индекса, а не разрешение на передачу.
+
+        Args:
+            context (McsSelectionInput): Контекст с WB-CQI в диапазоне 0..15.
+
+        Returns:
+            int: Индекс MCS в диапазоне 0..28.
+
+        Raises:
+            ValueError: Если WB-CQI находится вне диапазона 0..15.
+        """
         return legacy_mcs_selection(context.wb_cqi)
 
 

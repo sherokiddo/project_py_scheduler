@@ -46,17 +46,20 @@ from dataclasses import dataclass, field
 import AMC
 from TRAFFIC_MODEL import Packet
 
-@dataclass
+@dataclass(frozen=True)
 class TransportBlock:
     ue_id: int
-    tbs: int
+    tbs: int = field(init=False)
     mcs: int
     rb: int
     buffer: list[Packet] = field(default_factory=list)
     ndi: int = 1
     rv: int = 0
-    harq_id: int = 0        
-    def determination_of_size_TB(self):
-        self.tbs = AMC.get_tbs_bits(self.mcs, self.rb)
-        return self.tbs
+    harq_id: int = 0
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "tbs",
+            AMC.get_tbs_bits(self.mcs, self.rb)
+        )        
 
