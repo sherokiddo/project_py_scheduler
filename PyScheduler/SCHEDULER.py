@@ -111,6 +111,8 @@
 """
 
 import GLOBALS
+from AMC import AdaptiveModulationAndCoding
+from TRANSPORT_BLOCK import TransportBlock
 import time
 import math
 from dataclasses import dataclass
@@ -295,6 +297,16 @@ class SchedulerInterface:
                 'BasicQosAware',
                 'QosAware',
                 ]
+
+    @property
+    def amc(self) -> AdaptiveModulationAndCoding:
+        return self._amc
+
+    @amc.setter
+    def amc(self, value: AdaptiveModulationAndCoding) -> None:
+        # Keep the view bound to the current AMC, including replacements in tests.
+        self._amc = value
+        self.amc_view: AmcView = LegacyAmcView(value)
 
     def __init__(self, lte_grid, bs,
                  max_dl_ue_tti=None,
@@ -902,7 +914,7 @@ class SchedulerInterface:
                 continue
 
             cqi = self._get_wb_cqi(ueid)
-            bits_per_rb = self.amc.GET_BITS_PER_RB(cqi)
+            bits_per_rb = self.amc_view.bits_per_rb(cqi)
 
             # @IvanNoritsin: Тут по хорошему должен расчитываться размер транспортного
             # блока (на основе allocated_rbs и MCS), но пока что у нас этого нет
@@ -1674,180 +1686,6 @@ class PDCCHManager:
         return stats
 
 #==============================================================================
-#                               ЛОГИКА AMC
-#==============================================================================
-
-class AdaptiveModulationAndCoding:
-    """
-    Класс для преобразования CQI в MCS и расчета бит на ресурсный блок.
-    """
-
-    # Таблица соответствия CQI → (Modulation Order, Code Rate)
-    CQI_TO_MCS = {
-        1: (2, 0.152),   # QPSK
-        2: (2, 0.234),   # QPSK
-        3: (2, 0.377),   # QPSK
-        4: (2, 0.601),   # QPSK
-        5: (4, 0.369),   # 16QAM
-        6: (4, 0.479),   # 16QAM
-        7: (4, 0.601),   # 16QAM
-        8: (6, 0.455),   # 64QAM
-        9: (6, 0.554),   # 64QAM
-        10: (6, 0.650),  # 64QAM
-        11: (6, 0.754),  # 64QAM
-        12: (6, 0.852),  # 64QAM
-        13: (6, 0.926),  # 64QAM
-        14: (6, 0.953),  # 64QAM
-        15: (6, 0.978)   # 64QAM
-    }
-
-    def __init__(self, scheduler=None):
-        self.scheduler = scheduler
-
-    def GET_BITS_PER_RB(self, cqi: int, n_ports: int = 1) -> int:
-        """
-        Рассчитать количество бит на ресурсный блок (RB) для заданного CQI.
-        """
-        if cqi not in self.CQI_TO_MCS:
-            raise ValueError(f"Invalid CQI {cqi}. Must be 1-15.")
-
-        pcfich = self.scheduler.pdcch_manager.pcfich if self.scheduler else 2
-
-        modulation, code_rate = self.CQI_TO_MCS[cqi]
-
-        rs_per_slot           = n_ports * 4          # CRS: 4 RE/slot при 1 порте
-        re_slot0              = (7 - pcfich) * 12 - rs_per_slot
-        re_slot1              = 7 * 12 - rs_per_slot
-        re_per_rb_tti         = re_slot0 + re_slot1
-
-        return int(re_per_rb_tti * modulation * code_rate)
-
-    # @sherokiddo: "Добавить зависимость от CP"
-    # TODO: [AMC] Заменить формульный расчёт RE на lookup-таблицу TBS
-    # по TS 36.213 Table 7.1.7.2.1 (I_TBS + N_PRB → TBS).
-    # Текущая формула даёт отклонение ~8-10% от реального TBS.
-    # Точный метод: CQI → I_MCS → I_TBS → TBS_TABLE[I_TBS][N_PRB]
-    # Ref: 3GPP TS 36.213, Section 7.1.7.2 [enhancement]
-
-    def get_stats(self) -> Dict:
-        """
-        Получить статистику AMC за последний TTI из кэша scheduler.
-        Рассчитывает throughput на основе _last_allocation и _last_users.
-        Вызывается StatsManager.
-
-        Returns:
-            Dict: {
-                "total_throughput": float,     # Общий throughput в bps
-                "avg_bits_per_rb": float,      # Средние биты на RB
-                "ue_throughputs": Dict         # UEID -> throughput (bps)
-            }
-        """
-        if not self.scheduler or not hasattr(self.scheduler, '_last_users'):
-            return {
-                "dl_capacity_bits_sum_tti": 0,
-                "dl_transmitted_bits_sum_tti": 0,
-                "dl_throughput_sum_kbps": 0.0,
-                "dl_bits_per_rb_avg": 0.0,
-                "dl_cqi_wb_avg_idx": 0.0,
-                "dl_sinr_avg": 0.0,
-                "dl_ue_throughputs": {},
-                "ue_cqi": {},
-                "ue_cqi_sbb": {},
-                "ue_sinr": {},
-                "ue_rb_allocated": {},
-            }
-
-        users = self.scheduler._last_users
-        allocation = self.scheduler._last_allocation
-
-        total_throughput_bps    = 0.0
-        total_capacity_bits     = 0
-        total_transmitted_bits  = 0
-        total_allocated_rbs     = 0
-
-        ue_throughputs = {user.get('UE_ID'): 0 for user in users}
-
-        ue_cqi = {}
-        ue_cqi_sbb = {}
-        ue_sinr = {}
-        ue_rb_allocated = {}
-        cqi_values = []
-        sinr_values = []
-
-        for user in users:
-            ue = user.get('ue')
-            ue_id = user.get('UE_ID')
-
-            if not ue or not ue_id:
-                continue
-
-            if ue_id in self.scheduler.cqi_map:
-                cqi_entry = self.scheduler.cqi_map[ue_id]
-
-                cqi = cqi_entry.wb_cqi
-                ue_cqi[ue_id] = cqi
-
-                if cqi_entry.sb_cqi and len(cqi_entry.sb_cqi) > 0:
-                    ue_cqi_sbb[ue_id] = cqi_entry.sb_cqi.copy()
-            else:
-                # Fallback
-                cqi = 0
-
-            #TODO: вынести cqi из цикла
-
-            throughput_bps        = ue.current_dl_throughput
-            ue_throughputs[ue_id] = throughput_bps
-            total_throughput_bps += throughput_bps
-
-            allocated_rbs = len(allocation.get(ue_id, []))
-            ue_rb_allocated[ue_id] = allocated_rbs
-            
-            if allocated_rbs > 0 and 1 <= cqi <= 15:
-                bits_per_rb     = self.GET_BITS_PER_RB(cqi)
-                capacity_bits   = bits_per_rb * allocated_rbs
-                
-                total_capacity_bits += capacity_bits
-
-            transmitted_bits        = int(ue.last_transmitted_bits)
-            total_transmitted_bits += transmitted_bits
-            total_allocated_rbs    += allocated_rbs
-
-            cqi_values.append(cqi)
-
-            if hasattr(ue, 'SINR'):
-                sinr_values.append(ue.SINR)
-                ue_sinr[ue_id] = ue.SINR
-
-        # Avg bits per RB (на основе actual)
-        if total_allocated_rbs > 0:
-            avg_bits_per_rb = total_transmitted_bits / (total_allocated_rbs)
-        else:
-            avg_bits_per_rb = 0.0
-
-        if cqi_values:
-            cqi_avg = sum(cqi_values) / len(cqi_values)
-        else: cqi_avg = 0
-
-        if sinr_values:
-            sinr_avg = sum(sinr_values) / len(sinr_values)
-        else: sinr_avg = 0
-
-        stats = {
-            "dl_capacity_bits_sum_tti": total_capacity_bits,
-            "dl_transmitted_bits_sum_tti": total_transmitted_bits,
-            "dl_throughput_sum_kbps": round(total_throughput_bps/1000, 2),
-            "dl_bits_per_rb_avg": round(avg_bits_per_rb, 2),
-            "dl_cqi_wb_avg_idx": round(cqi_avg, 2),
-            "dl_sinr_avg": round(sinr_avg, 2),
-            "dl_ue_throughputs": ue_throughputs,
-            "ue_cqi": ue_cqi,
-            "ue_cqi_sbb": ue_cqi_sbb,
-            "ue_sinr": ue_sinr,
-            "ue_rb_allocated": ue_rb_allocated,}
-
-        return stats
-
-#==============================================================================
 #                              ЛОГИКА SCHEDULER_NEW
 #==============================================================================
 
@@ -1946,7 +1784,7 @@ class BestCQIScheduler(SchedulerInterface):
 
                 # Уменьшаем remaining_buffer
                 cqi             = self._get_wb_cqi(ue_id)
-                bits_per_rb     = self.amc.GET_BITS_PER_RB(cqi)
+                bits_per_rb     = self.amc_view.bits_per_rb(cqi)
                 rbg_capacity    = len(rb_indices) * bits_per_rb
 
                 remaining_buffer[ue_id] -= min(remaining_buffer[ue_id], rbg_capacity)
@@ -2040,7 +1878,7 @@ class RoundRobinScheduler(SchedulerInterface):
                         pass
 
                     cqi                 = self._get_wb_cqi(ue_id)
-                    bits_per_rb         = self.amc.GET_BITS_PER_RB(cqi)
+                    bits_per_rb         = self.amc_view.bits_per_rb(cqi)
                     transmitted_bits    = len(rb_indices) * bits_per_rb
                     transmitted_bytes   = transmitted_bits // 8
                     ue['bs_buffer_size'] = max(0, ue['bs_buffer_size'] - transmitted_bytes)
@@ -2088,7 +1926,7 @@ class ProportionalFairScheduler(SchedulerInterface):
         for user in eligible_ues:
             ue_id       = user['UE_ID']
             cqi         = self._get_wb_cqi(ue_id)
-            bits_per_rb = self.amc.GET_BITS_PER_RB(cqi)
+            bits_per_rb = self.amc_view.bits_per_rb(cqi)
             rb_per_slot = self.lte_grid.rb_per_slot
             instant_rate = rb_per_slot * bits_per_rb
             avg_throughput = user['ue'].average_throughput
@@ -2161,7 +1999,7 @@ class ProportionalFairScheduler(SchedulerInterface):
                 allocation[ue_id].extend(rb_indices)
 
                 cqi             = self._get_wb_cqi(ue_id)
-                bits_per_rb     = self.amc.GET_BITS_PER_RB(cqi)
+                bits_per_rb     = self.amc_view.bits_per_rb(cqi)
                 rbg_capacity    = len(rb_indices) * bits_per_rb      # bits
 
                 remaining_buffer[ue_id] -= min(remaining_buffer[ue_id], rbg_capacity)
@@ -2278,7 +2116,7 @@ class FDxBestCQIScheduler(SchedulerInterface):
             if not self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, ue_id):
                 continue
             allocation[ue_id].extend(rb_indices)
-            bits_per_rb = self.amc.GET_BITS_PER_RB(best_cqi)
+            bits_per_rb = self.amc_view.bits_per_rb(best_cqi)
 
             rbg_capacity = rbg_width * bits_per_rb
             remaining_buffer[ue_id] = max(0, remaining_buffer[ue_id] - rbg_capacity)
@@ -2436,7 +2274,7 @@ class FDxFairGreedyScheduler(SchedulerInterface):
             if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, ue_id):
                 allocation[ue_id].extend(rb_indices)
 
-                bits_per_rb     = self.amc.GET_BITS_PER_RB(best_cqi)
+                bits_per_rb     = self.amc_view.bits_per_rb(best_cqi)
                 rbg_capacity    = rbg_width * bits_per_rb
 
                 remaining_buffer[ue_id] = max(0, remaining_buffer[ue_id] - rbg_capacity)
@@ -2521,7 +2359,7 @@ class FDxProportionalFairScheduler(SchedulerInterface):
         for user in windowed_ues:
             ue_id        = user['UE_ID']
             cqi          = self._get_wb_cqi(ue_id)
-            bits_per_rb  = self.amc.GET_BITS_PER_RB(cqi)
+            bits_per_rb  = self.amc_view.bits_per_rb(cqi)
             instant_rate = self.lte_grid.rb_per_slot * bits_per_rb
 
             avg_throughput = user['ue'].average_throughput
@@ -2592,7 +2430,7 @@ class FDxProportionalFairScheduler(SchedulerInterface):
                 if cqi <= 0:
                     continue
 
-                bits_per_rb = self.amc.GET_BITS_PER_RB(cqi)
+                bits_per_rb = self.amc_view.bits_per_rb(cqi)
                 r_j_k       = rbg_width * bits_per_rb
 
                 avg_tput = user['ue'].average_throughput
@@ -2830,7 +2668,7 @@ class BasicQosAwareScheduler(SchedulerInterface):
                     if cqi <= 0:
                         continue
 
-                    bits_per_rb = self.amc.GET_BITS_PER_RB(cqi)
+                    bits_per_rb = self.amc_view.bits_per_rb(cqi)
                     r_j_k = rbg_width * bits_per_rb
                     avg_tput = buffer_manager.qci_tput_tracker.get_average_throughput(ue_id, qci)
                     denom = 1.0 if avg_tput <= 0 else (avg_tput / 1000.0)
@@ -2857,7 +2695,7 @@ class BasicQosAwareScheduler(SchedulerInterface):
             
             allocation[best_ue_id].extend(rb_indices)
 
-            bits_per_rb = self.amc.GET_BITS_PER_RB(best_user_cqi)
+            bits_per_rb = self.amc_view.bits_per_rb(best_user_cqi)
             allocated_rbs_size = rbg_width * bits_per_rb
             remaining_buffer[best_ue_id] = max(0, remaining_buffer[best_ue_id] - allocated_rbs_size)
 
@@ -3019,7 +2857,7 @@ class QosAwareScheduler(SchedulerInterface):
                 if cqi <= 0:
                     continue
 
-                bits_per_rb = self.amc.GET_BITS_PER_RB(cqi)
+                bits_per_rb = self.amc_view.bits_per_rb(cqi)
                 r_j_k = rbg_width * bits_per_rb
                 avg_tput = buffer_manager.qci_tput_tracker.get_average_throughput(ue_id, qci)
                 denom = 1.0 if avg_tput <= 0 else (avg_tput / 1000.0)
@@ -3047,7 +2885,7 @@ class QosAwareScheduler(SchedulerInterface):
             allocation[best_ue_id].extend(rb_indices)
 
             wb_cqi = self._get_wb_cqi(best_ue_id)
-            bits_per_rb_wb = self.amc.GET_BITS_PER_RB(wb_cqi)
+            bits_per_rb_wb = self.amc_view.bits_per_rb(wb_cqi)
             bits_for_flow = rbg_width * bits_per_rb_wb
             self.allocation_flow[best_flow_user] += bits_for_flow
 
