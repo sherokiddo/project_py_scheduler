@@ -102,6 +102,11 @@
 # - Все новые функции протестированы, тесты сохранены. Результат успешный.
 # - Составлен список дальнейших фич для следующих версий.
 # - Полный лист изменений и документация на текущий момент составляется.
+#
+# Изменения 2.1.1:
+# - M1: Protocol-контракты и Legacy*View-адаптеры в конце файла.
+# - M1a: оценка PDSCH вынесена в стратегии ResourcePrefilter (DefaultPrefilter /
+#   PassThroughPrefilter); каждый алгоритм задаёт стратегию явно в __init__.
 #------------------------------------------------------------------------------
 """
 
@@ -111,7 +116,7 @@ import math
 from dataclasses import dataclass
 from BS_MODULE import BaseStation
 from TRAFFIC_MODEL import QCI
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Protocol
 
 @dataclass(slots=True)
 class SchedulingGrant:
@@ -284,9 +289,9 @@ class SchedulerInterface:
         return ['BestCQI',
                 'ProportionalFair',
                 'RoundRobin',
-                'FD_BestCQI',
+                'FD_BCQI',
                 'FD_FGS',
-                'FD_FF',
+                'FD_PF',
                 'BasicQosAware',
                 'QosAware',
                 ]
@@ -339,6 +344,13 @@ class SchedulerInterface:
         self.verbose = verbose
 
         self.harq_manager = None  # Заготовка для HARQ
+        self._cqi_view = LegacyCqiView(self)
+        self._grid_view = LegacyGridView(self.lte_grid)
+        self._amc_view = LegacyAmcView(self.amc)
+        # Стратегию prefilter каждый алгоритм задаёт явно в своём __init__
+        # (DefaultPrefilter или PassThroughPrefilter): неявного значения по умолчанию нет,
+        # чтобы новый планировщик не унаследовал 95%-фильтрацию случайно.
+        self.prefilter_strategy: Optional[ResourcePrefilter] = None
 
         if self.verbose:
             print(f"[SCHEDULER] Initialized {self.__class__.__name__}")
@@ -711,60 +723,25 @@ class SchedulerInterface:
 
     def _apply_pdsch_estimation(self, priority_list: List[Dict], tti: int) -> List[Dict]:
         """
-        Concurrent PDSCH estimation
-        Фильтрует priority_list учитывая PDSCH capacity constraints:
-        - Оценивает RB потребность для каждого UE (на основе wideband CQI)
-        - Прекращает отбор когда estimated PDSCH достигает 95% от доступных RB
-        - Предотвращает CCE overhead (не выделяем PDCCH тем кто не получит PDSCH)
+        Предварительная фильтрация priority_list по оценке ёмкости PDSCH.
+        Делегирует вычисление стратегии self.prefilter_strategy через view-адаптеры.
 
-        Args:
-            priority_list: Sorted UE list (from _form_priority_list)
-            tti: Текущий TTI
-
-        Returns:
-            List[Dict]: Filtered UE list для PDCCH allocation (после estimation)
+        Raises:
+            NotImplementedError: алгоритм не задал prefilter_strategy в __init__.
         """
-        total_rb     = self.lte_grid.rb_per_slot
-        estimated_rb = 0.0
-        selected_ues = []
-
-        # Threshold для early stopping (95% от total RB)
-        # Оставляем 5% запас для overhead и динамики канала
-        pdsch_threshold = total_rb * 0.95
-
-        for idx, user in enumerate(priority_list):
-            ue_id       = user['UE_ID']
-            cqi         = self._get_wb_cqi(ue_id)
-            bits_per_rb = self.amc.GET_BITS_PER_RB(cqi)
-            buffer_bits = user['bs_buffer_size'] * 8
-            rb_needed   = min(buffer_bits // bits_per_rb, total_rb)
-
-            if idx == 0:
-                selected_ues.append(user)
-                estimated_rb += rb_needed
-                continue
-
-            if estimated_rb + rb_needed >= pdsch_threshold:
-                if self.verbose:
-                    remaining = len(priority_list) - len(selected_ues)
-                    print(f"[SCHEDULER TTI {tti}] PDSCH estimation threshold reached "
-                          f"({estimated_rb:.0f}/{total_rb} RB = {estimated_rb/total_rb*100:.1f}%), "
-                          f"{remaining} UE excluded")
-                break
-
-            # Добавляем UE
-            selected_ues.append(user)
-            estimated_rb += rb_needed
-
-        # Verbose
-        if self.verbose and selected_ues:
-            excluded = len(priority_list) - len(selected_ues)
-            print(f"[SCHEDULER TTI {tti}] After estimation: {len(selected_ues)} UE selected, "
-                  f"{excluded} UE excluded")
-            print(f"[SCHEDULER TTI {tti}] Estimated PDSCH: "
-                  f"{estimated_rb:.0f}/{total_rb} RB ({estimated_rb/total_rb*100:.1f}%)")
-
-        return selected_ues
+        if self.prefilter_strategy is None:
+            raise NotImplementedError(
+                f"{self.__class__.__name__}: не задана prefilter_strategy "
+                f"(используйте DefaultPrefilter() или PassThroughPrefilter(...) в __init__)"
+            )
+        return self.prefilter_strategy.prefilter(
+            priority_list,
+            tti,
+            self._cqi_view,
+            self._grid_view,
+            self._amc_view,
+            verbose=self.verbose,
+        )
 
     def _allocate_pdcch(self, priority_list: List[Dict]) -> List[Dict]:
         """
@@ -1904,6 +1881,7 @@ class BestCQIScheduler(SchedulerInterface):
             lte_grid=lte_grid,
             bs=bs,
             **kwargs)
+        self.prefilter_strategy = DefaultPrefilter()
 
     def _calculate_priorities(self, eligible_ues: List[Dict], tti: int) -> List[Dict]:
         """
@@ -1992,25 +1970,7 @@ class RoundRobinScheduler(SchedulerInterface):
         super().__init__(lte_grid, bs, **kwargs)
         self.rr_rbg_offset = 0 #можно сделать механизм без ротации RBG
         self.rr_ue_offset = 0
-
-    def _apply_pdsch_estimation(self, priority_list: List[Dict], tti: int) -> List[Dict]:
-        """
-        RR: Не применяем PDSCH estimation. Костыль. Очень костыльный.
-        Round Robin распределяет ресурсы поровну (по 1 RBG каждому),
-        поэтому estimation (предназначенная для жадных алгоритмов) не подходит.
-
-        Args:
-            priority_list: UE для планирования
-            tti: Текущий TTI
-
-        Returns:
-            List[Dict]: Тот же priority_list без изменений
-        """
-        if self.verbose:
-            print(f"[SCHEDULER TTI {tti}] PDSCH estimation: SKIPPED (Round Robin distributes evenly)")
-            print(f"[SCHEDULER TTI {tti}] After estimation: {len(priority_list)} UE selected, 0 UE excluded")
-
-        return priority_list
+        self.prefilter_strategy = PassThroughPrefilter("Round Robin distributes evenly")
 
     def _calculate_priorities(self, windowed_ues: List[Dict], tti: int) -> List[Dict]:
         """
@@ -2114,6 +2074,7 @@ class ProportionalFairScheduler(SchedulerInterface):
 
     def __init__(self, lte_grid, bs, **kwargs):
         super().__init__(lte_grid, bs, **kwargs)
+        self.prefilter_strategy = DefaultPrefilter()
 
     def _calculate_priorities(self, eligible_ues: List[Dict], tti: int) -> List[Dict]:
         """
@@ -2239,13 +2200,7 @@ class FDxBestCQIScheduler(SchedulerInterface):
             lte_grid=lte_grid,
             bs=bs,
             **kwargs)
-
-    def _apply_pdsch_estimation(self, priority_list: List[Dict], tti: int) -> List[Dict]:
-        """FD: estimation не нужен. Per-RBG выбор сам регулирует распределение."""
-        if self.verbose:
-            print(f"[SCHEDULER TTI {tti}] PDSCH estimation: SKIPPED (FD per-RBG selection)")
-            print(f"[SCHEDULER TTI {tti}] After estimation: {len(priority_list)} UE selected, 0 UE excluded")
-        return priority_list
+        self.prefilter_strategy = PassThroughPrefilter("FD per-RBG selection")
 
     def _calculate_priorities(self, eligible_ues: List[Dict], tti: int) -> List[Dict]:
         """
@@ -2373,23 +2328,7 @@ class FDxFairGreedyScheduler(SchedulerInterface):
         super().__init__(lte_grid, bs, **kwargs)
         self.rr_rbg_offset = 0 #можно сделать механизм без ротации RBG
         self.rr_ue_offset = 0
-
-    def _apply_pdsch_estimation(self, priority_list: List[Dict], tti: int) -> List[Dict]:
-        """
-        RR: Не применяем PDSCH estimation. FD-фаза автоматически управляет
-        распределением по RBG без предварительного отсева UE.
-        Args:
-            priority_list: UE для планирования
-            tti: Текущий TTI
-
-        Returns:
-            List[Dict]: Тот же priority_list без изменений
-        """
-        if self.verbose:
-            print(f"[SCHEDULER TTI {tti}] PDSCH estimation: SKIPPED (FD-FGS per-RBG selection)")
-            print(f"[SCHEDULER TTI {tti}] After estimation: {len(priority_list)} UE selected, 0 UE excluded")
-
-        return priority_list
+        self.prefilter_strategy = PassThroughPrefilter("FD-FGS per-RBG selection")
 
     def _calculate_priorities(self, windowed_ues: List[Dict], tti: int) -> List[Dict]:
         """
@@ -2562,28 +2501,12 @@ class FDxProportionalFairScheduler(SchedulerInterface):
     """
 
     def __init__(self, lte_grid, bs, **kwargs):
-        """Инициализация FD_BestCQI scheduler."""
+        """Инициализация FD_PF scheduler."""
         super().__init__(
             lte_grid=lte_grid,
             bs=bs,
             **kwargs)
-
-    def _apply_pdsch_estimation(self, priority_list: List[Dict], tti: int) -> List[Dict]:
-        """
-        RR: Не применяем PDSCH estimation. FD-фаза автоматически управляет
-        распределением по RBG без предварительного отсева UE.
-        Args:
-            priority_list: UE для планирования
-            tti: Текущий TTI
-
-        Returns:
-            List[Dict]: Тот же priority_list без изменений
-        """
-        if self.verbose:
-            print(f"[SCHEDULER TTI {tti}] PDSCH estimation: SKIPPED (FD-PF per-RBG selection)")
-            print(f"[SCHEDULER TTI {tti}] After estimation: {len(priority_list)} UE selected, 0 UE excluded")
-
-        return priority_list
+        self.prefilter_strategy = PassThroughPrefilter("FD-PF per-RBG selection")
 
     def _calculate_priorities(self, windowed_ues: List[Dict], tti: int) -> List[Dict]:
         """
@@ -2715,8 +2638,8 @@ class BasicQosAwareScheduler(SchedulerInterface):
             Наибольший приоритет отдаётся абоненту с GBR DRB с большим значением
             HOL delay.
         2. _apply_pdsch_estimation:
-            Пропускается. FD per-RBG цикл самостоятельно контролирует
-            использование RB.
+            Пропускается (PassThroughPrefilter). Per-RBG цикл самостоятельно
+            контролирует использование RB.
         3. _allocate_pdsch:
             RBG отдаётся потоку с наивысшей метрикой:
                 metric = hol_delay * gbr_weight * cqa_metric
@@ -2749,17 +2672,7 @@ class BasicQosAwareScheduler(SchedulerInterface):
         
         self.grouping_parameter = grouping_parameter
         self.metric_mode = metric_mode
-        
-    def _apply_pdsch_estimation(self, priority_list: List[Dict], tti: int) -> List[Dict]:
-        """
-        Оценка распределения PDSCH. В данном случае не требуется.
-
-        """
-        if self.verbose:
-            print(f"[SCHEDULER TTI {tti}] PDSCH estimation: SKIPPED (FD-QoS per-RBG selection)")
-            print(f"[SCHEDULER TTI {tti}] After estimation: {len(priority_list)} UE selected, 0 UE excluded")
-
-        return priority_list
+        self.prefilter_strategy = PassThroughPrefilter("BasicQoS per-RBG selection")
     
     def _calculate_priorities(self, windowed_ues: List[Dict], tti: int) -> List[Dict]:
         """
@@ -2984,17 +2897,7 @@ class QosAwareScheduler(SchedulerInterface):
             **kwargs)
         
         self.allocation_flow = {}
-        
-    def _apply_pdsch_estimation(self, priority_list: List[Dict], tti: int) -> List[Dict]:
-        """
-        Оценка распределения PDSCH. В данном случае не требуется.
-
-        """
-        if self.verbose:
-            print(f"[SCHEDULER TTI {tti}] PDSCH estimation: SKIPPED (FD-QoS per-RBG selection)")
-            print(f"[SCHEDULER TTI {tti}] After estimation: {len(priority_list)} UE selected, 0 UE excluded")
-
-        return priority_list
+        self.prefilter_strategy = PassThroughPrefilter("FD-QoS per-RBG selection")
     
     def _calculate_priorities(self, windowed_ues: List[Dict], tti: int) -> List[Dict]:
         """
@@ -3243,3 +3146,331 @@ class QosAwareScheduler(SchedulerInterface):
 #   6) Исследование механизма распределения RBG, венгерский, жадный и др.
 #   7) Исследование механизма оценки средней пропускной способности для PF
 #   8) Исследование механизмов защиты голодающих UE
+
+
+#==============================================================================
+#                    ИНТЕРФЕЙСЫ СТРАТЕГИЙ И VIEW-АДАПТЕРЫ
+#==============================================================================
+
+class CqiView(Protocol):
+    """Контракт чтения широкополосного (WB) и подполосного (SB) CQI."""
+
+    def get_wb(self, ue_id: int) -> int:
+        """Вернуть WB CQI пользователя (1..15 или 0 при отсутствии отчёта)."""
+
+    def get_sb(self, ue_id: int) -> List[int]:
+        """Вернуть список SB CQI по RBG (пустой список вне FD-режима)."""
+
+
+class GridView(Protocol):
+    """Контракт доступа к геометрии и аллокации RBG ресурсной сетки LTE."""
+
+    @property
+    def rb_per_slot(self) -> int:
+        """Количество ресурсных блоков в одном слоте."""
+
+    def rbg_size(self) -> int:
+        """Вернуть размер одной группы ресурсных блоков (RBG) в RB."""
+
+    def rbg_indices(self, rbg_idx: int) -> List[int]:
+        """Вернуть список частотных индексов RB, входящих в указанный RBG."""
+
+    def allocate_rbg(self, tti: int, rbg_idx: int, ue_id: int) -> bool:
+        """Попытаться выделить RBG пользователю на заданном TTI."""
+
+
+class AmcView(Protocol):
+    """Контракт расчёта канальной ёмкости через модуль AMC."""
+
+    def bits_per_rb(self, cqi: int, n_ports: int = 1) -> int:
+        """Вернуть число бит на один RB для заданного CQI и числа портов."""
+
+
+class BuffersView(Protocol):
+    """Контракт чтения состояния буферов базовой станции."""
+
+    def has_buffer(self, ue_id: int) -> bool:
+        """Проверить наличие буфера для указанного UE."""
+
+    def get_status(self, ue_id: int) -> List:
+        """Вернуть список состояний логических каналов (BufferStatus) для UE."""
+
+
+class StatsView(Protocol):
+    """Контракт чтения статистики throughput и параметров QoS."""
+
+    def ue_throughput(self, ue_id: int) -> float:
+        """Вернуть исторический средний throughput UE в бит/с (0.0, если нет)."""
+
+    def qci_throughput(self, ue_id: int, qci: int) -> float:
+        """Вернуть средний throughput потока (UE, QCI) в бит/с."""
+
+    def gbr_of(self, qci: int, ue_id: Optional[int] = None, lcid: Optional[int] = None) -> Optional[float]:
+        """
+        Вернуть целевой GBR потока в бит/с (None для non-GBR).
+
+        ue_id и lcid идентифицируют конкретный bearer, чтобы GBR можно было
+        привязать к потоку, а не только к классу QCI.
+        """
+
+    def is_gbr(self, qci: int, ue_id: Optional[int] = None, lcid: Optional[int] = None) -> bool:
+        """Проверить, относится ли поток (ue_id, lcid, qci) к GBR."""
+
+    def delay_budget_of(self, qci: int) -> int:
+        """Вернуть максимально допустимую задержку пакета (PDB) для QCI в мс."""
+
+
+class ReadOnlyStateView(Protocol):
+    """Контракт чтения смещений ротации для ранкеров (только чтение)."""
+
+    def get_rr_ue_offset(self) -> int:
+        """Прочитать текущее смещение ротации очереди пользователей."""
+
+    def get_rr_rbg_offset(self) -> int:
+        """Прочитать текущее смещение ротации по RBG."""
+
+
+class StateView(ReadOnlyStateView, Protocol):
+    """Контракт чтения и обновления смещений ротации для аллокаторов."""
+
+    def set_rr_ue_offset(self, offset: int) -> None:
+        """Обновить смещение ротации очереди пользователей."""
+
+    def set_rr_rbg_offset(self, offset: int) -> None:
+        """Обновить смещение ротации по RBG."""
+
+
+class ResourcePrefilter(Protocol):
+    """Контракт стратегии предварительной оценки загрузки PDSCH (шаг M1a)."""
+
+    def prefilter(
+        self,
+        priority_list: List[Dict],
+        tti: int,
+        cqi: CqiView,
+        grid: GridView,
+        amc: AmcView,
+        verbose: bool = False,
+    ) -> List[Dict]:
+        """Отфильтровать список приоритетов с учётом ёмкости PDSCH."""
+
+
+class DefaultPrefilter:
+    """Базовая оценка загрузки PDSCH с порогом 95% (BestCQI, ProportionalFair)."""
+
+    __slots__ = ()
+
+    def prefilter(
+        self,
+        priority_list: List[Dict],
+        tti: int,
+        cqi: CqiView,
+        grid: GridView,
+        amc: AmcView,
+        verbose: bool = False,
+    ) -> List[Dict]:
+        total_rb = grid.rb_per_slot
+        estimated_rb = 0.0
+        selected_ues = []
+        pdsch_threshold = total_rb * 0.95
+
+        for idx, user in enumerate(priority_list):
+            ue_id = user['UE_ID']
+            wb_cqi = cqi.get_wb(ue_id)
+            bits_per_rb = amc.bits_per_rb(wb_cqi)
+            buffer_bits = user['bs_buffer_size'] * 8
+            rb_needed = min(buffer_bits // bits_per_rb, total_rb)
+
+            if idx == 0:
+                selected_ues.append(user)
+                estimated_rb += rb_needed
+                continue
+
+            if estimated_rb + rb_needed >= pdsch_threshold:
+                if verbose:
+                    remaining = len(priority_list) - len(selected_ues)
+                    pct = estimated_rb / total_rb * 100
+                    print(
+                        f"[SCHEDULER TTI {tti}] PDSCH estimation threshold reached "
+                        f"({estimated_rb:.0f}/{total_rb} RB = {pct:.1f}%), "
+                        f"{remaining} UE excluded"
+                    )
+                break
+
+            selected_ues.append(user)
+            estimated_rb += rb_needed
+
+        if verbose and selected_ues:
+            excluded = len(priority_list) - len(selected_ues)
+            pct = estimated_rb / total_rb * 100
+            print(
+                f"[SCHEDULER TTI {tti}] After estimation: "
+                f"{len(selected_ues)} UE selected, {excluded} UE excluded"
+            )
+            print(
+                f"[SCHEDULER TTI {tti}] Estimated PDSCH: "
+                f"{estimated_rb:.0f}/{total_rb} RB ({pct:.1f}%)"
+            )
+
+        return selected_ues
+
+
+class PassThroughPrefilter:
+    """Стратегия пропуска предварительной оценки PDSCH (RR, FD, QoS)."""
+
+    __slots__ = ("_reason",)
+
+    def __init__(self, reason: str = "per-RBG selection"):
+        self._reason = reason
+
+    def prefilter(
+        self,
+        priority_list: List[Dict],
+        tti: int,
+        cqi: CqiView,
+        grid: GridView,
+        amc: AmcView,
+        verbose: bool = False,
+    ) -> List[Dict]:
+        if verbose:
+            print(f"[SCHEDULER TTI {tti}] PDSCH estimation: SKIPPED ({self._reason})")
+            print(
+                f"[SCHEDULER TTI {tti}] After estimation: "
+                f"{len(priority_list)} UE selected, 0 UE excluded"
+            )
+        return priority_list
+
+
+class LegacyCqiView:
+    """Временный адаптер чтения CQI поверх кэша cqi_map планировщика."""
+
+    __slots__ = ("_scheduler",)
+
+    def __init__(self, scheduler: SchedulerInterface):
+        self._scheduler = scheduler
+
+    def get_wb(self, ue_id: int) -> int:
+        return self._scheduler._get_wb_cqi(ue_id)
+
+    def get_sb(self, ue_id: int) -> List[int]:
+        # Возвращаем копию, чтобы стратегии не мутировали список внутри CQIMap.
+        return list(self._scheduler._get_sb_cqi(ue_id))
+
+
+class LegacyGridView:
+    """Временный адаптер ресурсной сетки поверх RES_GRID_LTE."""
+
+    __slots__ = ("_grid",)
+
+    def __init__(self, grid):
+        self._grid = grid
+
+    @property
+    def rb_per_slot(self) -> int:
+        return self._grid.rb_per_slot
+
+    def rbg_size(self) -> int:
+        return self._grid.GET_RBG_SIZE()
+
+    def rbg_indices(self, rbg_idx: int) -> List[int]:
+        return self._grid.GET_RBG_INDICES(rbg_idx)
+
+    def allocate_rbg(self, tti: int, rbg_idx: int, ue_id: int) -> bool:
+        return self._grid.ALLOCATE_RBG(tti, rbg_idx, ue_id)
+
+
+class LegacyAmcView:
+    """Временный адаптер расчёта ёмкости поверх AdaptiveModulationAndCoding."""
+
+    __slots__ = ("_amc",)
+
+    def __init__(self, amc: AdaptiveModulationAndCoding):
+        self._amc = amc
+
+    def bits_per_rb(self, cqi: int, n_ports: int = 1) -> int:
+        return self._amc.GET_BITS_PER_RB(cqi, n_ports=n_ports)
+
+
+class LegacyBuffersView:
+    """Временный адаптер чтения буферов поверх менеджера буферов БС."""
+
+    __slots__ = ("_buffer_manager",)
+
+    def __init__(self, buffer_manager):
+        self._buffer_manager = buffer_manager
+
+    def has_buffer(self, ue_id: int) -> bool:
+        return self._buffer_manager.ue_has_buffer(ue_id)
+
+    def get_status(self, ue_id: int) -> List:
+        return self._buffer_manager.get_buffer_status(ue_id)
+
+
+class LegacyStatsView:
+    """Временный адаптер чтения статистики UE, QCI-трекера и профилей QoS."""
+
+    __slots__ = ("_ues", "_tracker")
+
+    def __init__(self, ues_by_id: Dict[int, Any], buffer_manager=None):
+        self._ues = dict(ues_by_id)
+        for ue_id, ue in self._ues.items():
+            if not hasattr(ue, "average_throughput"):
+                raise TypeError(
+                    f"UE {ue_id}: expected a UE object with 'average_throughput'; "
+                    f"got {type(ue).__name__}."
+                )
+
+        self._tracker = (
+            getattr(buffer_manager, "qci_tput_tracker", None)
+            if buffer_manager is not None
+            else None
+        )
+
+    def ue_throughput(self, ue_id: int) -> float:
+        ue = self._ues.get(ue_id)
+        return ue.average_throughput if ue is not None else 0.0
+
+    def qci_throughput(self, ue_id: int, qci: int) -> float:
+        if self._tracker is None:
+            return 0.0
+        return self._tracker.get_average_throughput(ue_id, qci)
+
+    def gbr_of(self, qci: int, ue_id: Optional[int] = None, lcid: Optional[int] = None) -> Optional[float]:
+        return GLOBALS.QCI_PROFILES.get(qci, {}).get("gbr")
+
+    def is_gbr(self, qci: int, ue_id: Optional[int] = None, lcid: Optional[int] = None) -> bool:
+        return self.gbr_of(qci, ue_id=ue_id, lcid=lcid) is not None
+
+    def delay_budget_of(self, qci: int) -> int:
+        return QCI(qci).get_delay_budget()
+
+
+class LegacyReadOnlyStateView:
+    """Временный адаптер чтения смещений ротации планировщика."""
+
+    __slots__ = ("_scheduler",)
+
+    def __init__(self, scheduler: SchedulerInterface):
+        self._scheduler = scheduler
+
+    def get_rr_ue_offset(self) -> int:
+        return self._scheduler.rr_ue_offset
+
+    def get_rr_rbg_offset(self) -> int:
+        return self._scheduler.rr_rbg_offset
+
+
+class LegacyStateView(LegacyReadOnlyStateView):
+    """Временный адаптер чтения и записи смещений ротации для аллокаторов."""
+
+    __slots__ = ()
+
+    def set_rr_ue_offset(self, offset: int) -> None:
+        if not hasattr(self._scheduler, "rr_ue_offset"):
+            raise AttributeError("Scheduler does not own rr_ue_offset")
+        self._scheduler.rr_ue_offset = offset
+
+    def set_rr_rbg_offset(self, offset: int) -> None:
+        if not hasattr(self._scheduler, "rr_rbg_offset"):
+            raise AttributeError("Scheduler does not own rr_rbg_offset")
+        self._scheduler.rr_rbg_offset = offset
