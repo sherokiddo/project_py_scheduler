@@ -42,7 +42,10 @@
 #------------------------------------------------------------------------------
 """
 
+import hashlib
+import json
 import math
+import threading
 from typing import Dict, List, Optional, Protocol, Tuple, Type
 
 
@@ -56,7 +59,7 @@ MRG_M2: int = 4294944443
 MAX_SEED: int = MRG_M2 - 1  # 4294944442
 
 MAX_STREAM_IDX: int = (1 << 63) - 1
-MAX_RUN_IDX: int = (1 << 63) - 1
+MAX_RUN_IDX: int = 1 << 51
 
 
 # ==============================================================================
@@ -323,7 +326,7 @@ class RngStream:
     Attributes:
         seed (int): Зерно генератора в диапазоне [1, 4294944442] (0 заменяется на 12345).
         stream_idx (int): Индекс независимого потока в диапазоне [0, 2^63 - 1].
-        run_idx (int): Номер прогона внутри потока в диапазоне [1, 2^63 - 1].
+        run_idx (int): Номер прогона внутри потока в диапазоне [1, 2^51].
         state (List[float]): Вектор текущего состояния из 6 элементов.
 
     """
@@ -348,25 +351,33 @@ class RngStream:
         [-1370589.0, 0.0, 527612.0],
     ]
 
-    _cache_built = False
-    _cache_A1: List[List[List[float]]] = []
-    _cache_A2: List[List[List[float]]] = []
+    _cache_lock = threading.Lock()
+    _cache_built: bool = False
+    _cache_A1: Tuple[Tuple[Tuple[float, ...], ...], ...] = ()
+    _cache_A2: Tuple[Tuple[Tuple[float, ...], ...], ...] = ()
 
     @classmethod
     def _build_cache(cls) -> None:
         """
-        Заполнение кэша двоичных степеней матриц перехода A1 и A2 при первом вызове.
+        Потокобезопасное заполнение кэша двоичных степеней матриц перехода A1 и A2.
         """
         if cls._cache_built:
             return
-        curr_a1 = [[cls.A1p0[i][j] for j in range(3)] for i in range(3)]
-        curr_a2 = [[cls.A2p0[i][j] for j in range(3)] for i in range(3)]
-        for _ in range(190):
-            curr_a1 = cls._mat_mat_mod_m(curr_a1, curr_a1, cls.m1)
-            curr_a2 = cls._mat_mat_mod_m(curr_a2, curr_a2, cls.m2)
-            cls._cache_A1.append(curr_a1)
-            cls._cache_A2.append(curr_a2)
-        cls._cache_built = True
+        with cls._cache_lock:
+            if cls._cache_built:
+                return
+            curr_a1 = [[cls.A1p0[i][j] for j in range(3)] for i in range(3)]
+            curr_a2 = [[cls.A2p0[i][j] for j in range(3)] for i in range(3)]
+            cache_a1 = []
+            cache_a2 = []
+            for _ in range(190):
+                curr_a1 = cls._mat_mat_mod_m(curr_a1, curr_a1, cls.m1)
+                curr_a2 = cls._mat_mat_mod_m(curr_a2, curr_a2, cls.m2)
+                cache_a1.append(tuple(tuple(row) for row in curr_a1))
+                cache_a2.append(tuple(tuple(row) for row in curr_a2))
+            cls._cache_A1 = tuple(cache_a1)
+            cls._cache_A2 = tuple(cache_a2)
+            cls._cache_built = True
 
     def __init__(self, seed: int = 12345, stream_idx: int = 0, run_idx: int = 1):
         """
@@ -376,7 +387,7 @@ class RngStream:
             seed (int, optional): Начальное зерно генератора в [0, 4294944442]
                 (0 заменяется на 12345). По умолчанию 12345.
             stream_idx (int, optional): Индекс потока в [0, 2^63 - 1]. По умолчанию 0.
-            run_idx (int, optional): Номер прогона в [1, 2^63 - 1]. По умолчанию 1.
+            run_idx (int, optional): Номер прогона в [1, 2^51]. По умолчанию 1.
 
         Raises:
             ValueError: Если параметры имеют некорректный тип или выходят за допустимые границы.
@@ -496,7 +507,7 @@ class PhiloxStream:
     Attributes:
         seed (int): Зерно генератора в диапазоне [1, 4294944442] (0 заменяется на 12345).
         stream_idx (int): Индекс независимого потока в диапазоне [0, 2^63 - 1].
-        run_idx (int): Номер прогона внутри потока в диапазоне [1, 2^63 - 1].
+        run_idx (int): Номер прогона внутри потока в диапазоне [1, 2^51].
         key (List[int]): Ключ потока: [seed, stream_idx].
         counter (List[int]): Счётчик из четырёх 64-битных слов,
             начальное значение [0, 0, 0, run_idx].
@@ -517,7 +528,7 @@ class PhiloxStream:
             seed (int, optional): Начальное зерно генератора в [0, 4294944442]
                 (0 заменяется на 12345). По умолчанию 12345.
             stream_idx (int, optional): Индекс потока в [0, 2^63 - 1]. По умолчанию 0.
-            run_idx (int, optional): Номер прогона в [1, 2^63 - 1]. По умолчанию 1.
+            run_idx (int, optional): Номер прогона в [1, 2^51]. По умолчанию 1.
 
         Raises:
             ValueError: Если параметры имеют некорректный тип или выходят за допустимые границы.
@@ -606,7 +617,7 @@ class RandomGenerator:
     Attributes:
         seed (int): Зерно генератора в [1, 4294944442] (0 заменяется на 12345).
         base_stream_idx (int): Базовый индекс потока для данной подсистемы в [0, 2^63 - 1].
-        run_idx (int): Номер независимого прогона симуляции в [1, 2^63 - 1].
+        run_idx (int): Номер независимого прогона симуляции в [1, 2^51].
         engine (str): Имя активной математической стратегии ('MRG32k3a' или 'Philox').
 
     """
@@ -631,7 +642,7 @@ class RandomGenerator:
                 (0 заменяется на 12345). По умолчанию 12345.
             base_stream_idx (int, optional): Базовый индекс потока в [0, 2^63 - 1].
                 По умолчанию 0.
-            run_idx (int, optional): Номер прогона симуляции в [1, 2^63 - 1].
+            run_idx (int, optional): Номер прогона симуляции в [1, 2^51].
                 По умолчанию 1.
             engine (str, optional): Название стратегии ('MRG32k3a' или 'Philox').
                 По умолчанию 'MRG32k3a'.
@@ -920,7 +931,7 @@ class StreamAllocator:
         Args:
             seed (int, optional): Глобальное зерно симуляции в [0, 4294944442].
                 По умолчанию 12345.
-            run_idx (int, optional): Номер прогона симуляции в [1, 2^63 - 1].
+            run_idx (int, optional): Номер прогона симуляции в [1, 2^51].
                 По умолчанию 1.
             engine (str, optional): Название математического ядра ('MRG32k3a' или 'Philox').
                 По умолчанию 'MRG32k3a'.
