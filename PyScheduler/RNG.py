@@ -622,6 +622,9 @@ class RandomGenerator:
 
     """
 
+    _MAX_REJECTION_ATTEMPTS: int = 100_000
+    _MIN_NORMAL_BOUND_RATIO: float = 1e-6
+
     _ENGINES: Dict[str, Type[UniformEngine]] = {
         "MRG32k3a": RngStream,
         "Philox": PhiloxStream,
@@ -709,7 +712,7 @@ class RandomGenerator:
             )
         return self._streams[stream_offset]
 
-    def uniform(
+    def unifrom(
         self, min_val: float = 0.0, max_val: float = 1.0, stream_offset: int = 0
     ) -> float:
         """
@@ -736,8 +739,26 @@ class RandomGenerator:
                 f"Lower bound min_val ({min_val}) cannot be greater than "
                 f"max_val ({max_val})"
             )
+        if min_val == max_val:
+            return min_val
+
         stream = self._get_stream(stream_offset)
-        return min_val + stream.rand_u01() * (max_val - min_val)
+        u = stream.rand_u01()
+
+        span = max_val - min_val
+        if not math.isfinite(span):
+            half_min = min_val * 0.5
+            half_max = max_val * 0.5
+            result = 2.0 * (half_min + u * (half_max - half_min))
+        else:
+            result = min_val + u * span
+
+        if result < min_val:
+            result = min_val
+        elif result >= max_val:
+            result = math.nextafter(max_val, min_val)
+
+        return result
 
     def normal(
         self,
@@ -791,6 +812,11 @@ class RandomGenerator:
             return mean
 
         std = math.sqrt(variance)
+        if math.isfinite(bound) and (bound / std) < self._MIN_NORMAL_BOUND_RATIO:
+            raise ValueError(
+                f"Deviation bound ({bound}) is too small relative to standard deviation "
+                f"({std}) and may cause infinite rejection loop."
+            )
 
         if stream_offset in self._normal_cache:
             y, v2 = self._normal_cache.pop(stream_offset)
@@ -798,7 +824,9 @@ class RandomGenerator:
             if abs(x2 - mean) <= bound:
                 return x2
 
-        while True:
+        attempts = 0
+        while attempts < self._MAX_REJECTION_ATTEMPTS:
+            attempts += 1
             u1 = stream.rand_u01()
             u2 = stream.rand_u01()
             v1 = 2.0 * u1 - 1.0
@@ -815,6 +843,11 @@ class RandomGenerator:
                     return x1
                 elif abs(x2 - mean) <= bound:
                     return x2
+
+        raise ValueError(
+            f"Failed to sample normal value within bound ({bound}) after "
+            f"{self._MAX_REJECTION_ATTEMPTS} attempts."
+        )
 
     def exponential(
         self, mean: float = 1.0, bound: float = 0.0, stream_offset: int = 0
@@ -853,13 +886,19 @@ class RandomGenerator:
 
         stream = self._get_stream(stream_offset)
 
+        if bound > 0.0:
+            u = stream.rand_u01()
+            scaled = -u * math.expm1(-bound / mean)
+            if scaled >= 1.0:
+                return bound
+            sample = -mean * math.log1p(-scaled)
+            return min(sample, bound)
+
         while True:
             v = stream.rand_u01()
             if v == 0.0:
                 continue
-            r = -mean * math.log(v)
-            if bound == 0.0 or r <= bound:
-                return r
+            return -mean * math.log(v)
 
     def get_integer(
         self, min_val: int, max_val: int, stream_offset: int = 0
@@ -897,8 +936,35 @@ class RandomGenerator:
                 f"max_val ({max_val})"
             )
 
-        v = self.uniform(0.0, 1.0, stream_offset=stream_offset)
-        return math.floor(min_val + v * (max_val - min_val + 1))
+        if min_val == max_val:
+            return min_val
+
+        stream = self._get_stream(stream_offset)
+        span = max_val - min_val + 1
+        bits_needed = span.bit_length()
+        mask = (1 << bits_needed) - 1
+
+        attempts = 0
+        while attempts < self._MAX_REJECTION_ATTEMPTS:
+            attempts += 1
+            rand_bits = 0
+            collected = 0
+            while collected < bits_needed:
+                u = stream.rand_u01()
+                chunk = int(u * (1 << 53))
+                if chunk >= (1 << 53):
+                    chunk = (1 << 53) - 1
+                rand_bits = (rand_bits << 53) | chunk
+                collected += 53
+
+            candidate = (rand_bits >> (collected - bits_needed)) & mask
+            if candidate < span:
+                return min_val + candidate
+
+        raise ValueError(
+            f"Failed to sample integer in [{min_val}, {max_val}] after "
+            f"{self._MAX_REJECTION_ATTEMPTS} attempts."
+        )
 
 
 # ==============================================================================
