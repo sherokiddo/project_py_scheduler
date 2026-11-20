@@ -94,34 +94,28 @@ class RandomProvider(Protocol):
     и трафика через внедрение зависимостей (Dependency Injection).
     """
 
-    def uniform(
-        self, min_val: float = 0.0, max_val: float = 1.0, stream_offset: int = 0
-    ) -> float:
+    def uniform(self, min_val: float = 0.0, max_val: float = 1.0) -> float:
         """
         Генерация случайного числа с равномерным распределением на [min_val, max_val).
 
         Args:
             min_val (float, optional): Нижняя граница диапазона. По умолчанию 0.0.
             max_val (float, optional): Верхняя граница диапазона. По умолчанию 1.0.
-            stream_offset (int, optional): Смещение индекса подпотока (>= 0).
-                По умолчанию 0.
 
         Returns:
             float: Случайное число из диапазона [min_val, max_val).
 
         Raises:
-            ValueError: Если параметры содержат NaN/Inf, min_val > max_val
-                или stream_offset выходит за допустимые границы.
+            ValueError: Если параметры содержат NaN/Inf или min_val > max_val.
 
         """
         pass
 
     def normal(
-            self,
-            mean: float = 0.0,
-            variance: float = 1.0,
-            bound: float = float("inf"),
-            stream_offset: int = 0,
+        self,
+        mean: float = 0.0,
+        variance: float = 1.0,
+        bound: float = float("inf"),
     ) -> float:
         """
         Генерация случайного числа с нормальным распределением.
@@ -133,22 +127,18 @@ class RandomProvider(Protocol):
             bound (float, optional): Максимальное допустимое отклонение от среднего
                 (> 0.0 при variance > 0.0, либо >= 0.0 при variance == 0.0).
                 По умолчанию inf.
-            stream_offset (int, optional): Смещение индекса подпотока (>= 0).
-                По умолчанию 0.
 
         Returns:
             float: Случайное число из нормального распределения.
 
         Raises:
             ValueError: Если параметры содержат NaN/Inf, variance < 0,
-                bound <= 0 (при variance > 0) или stream_offset некорректен.
+                bound <= 0 (при variance > 0) или bound слишком мал.
 
         """
         pass
 
-    def exponential(
-        self, mean: float = 1.0, bound: float = 0.0, stream_offset: int = 0
-    ) -> float:
+    def exponential(self, mean: float = 1.0, bound: float = 0.0) -> float:
         """
         Генерация случайного числа с экспоненциальным распределением.
 
@@ -156,37 +146,29 @@ class RandomProvider(Protocol):
             mean (float, optional): Математическое ожидание (> 0.0). По умолчанию 1.0.
             bound (float, optional): Верхний предел значения (>= 0.0, при 0.0 не ограничен).
                 По умолчанию 0.0.
-            stream_offset (int, optional): Смещение индекса подпотока (>= 0).
-                По умолчанию 0.
 
         Returns:
             float: Случайное число из экспоненциального распределения.
 
         Raises:
-            ValueError: Если параметры содержат NaN/Inf, mean <= 0, bound < 0
-                или stream_offset некорректен.
+            ValueError: Если параметры содержат NaN/Inf, mean <= 0 или bound < 0.
 
         """
         pass
 
-    def get_integer(
-        self, min_val: int, max_val: int, stream_offset: int = 0
-    ) -> int:
+    def get_integer(self, min_val: int, max_val: int) -> int:
         """
         Генерация равновероятного целого числа в диапазоне [min_val, max_val] включительно.
 
         Args:
             min_val (int): Нижняя целочисленная граница диапазона.
             max_val (int): Верхняя целочисленная граница диапазона.
-            stream_offset (int, optional): Смещение индекса подпотока (>= 0).
-                По умолчанию 0.
 
         Returns:
-            int: Случайное целое число из отрезка [min_val, max_val].
+           int: Случайное целое число из отрезка [min_val, max_val].
 
         Raises:
-            ValueError: Если min_val или max_val не int (или bool),
-                min_val > max_val или stream_offset некорректен.
+            ValueError: Если min_val или max_val не int (или bool) или min_val > max_val.
 
         """
         pass
@@ -610,13 +592,13 @@ class RandomGenerator:
     """
     Фасад генерации случайных величин из математических распределений.
 
-    Реализует контракт RandomProvider. Управляет созданием независимых подпотоков
-    по смещению stream_offset и делегирует базовую генерацию выбранной стратегии
-    из реестра _ENGINES ('MRG32k3a' или 'Philox').
+    Реализует контракт RandomProvider. Инкапсулирует изолированный поток ПСЧ
+    с индексом base_stream_idx и делегирует базовую генерацию выбранной
+    стратегии из реестра _ENGINES ('MRG32k3a' или 'Philox').
 
     Attributes:
         seed (int): Зерно генератора в [1, 4294944442] (0 заменяется на 12345).
-        base_stream_idx (int): Базовый индекс потока для данной подсистемы в [0, 2^63 - 1].
+        base_stream_idx (int): Индекс изолированного потока в [0, 2^63 - 1].
         run_idx (int): Номер независимого прогона симуляции в [1, 2^51].
         engine (str): Имя активной математической стратегии ('MRG32k3a' или 'Philox').
 
@@ -631,11 +613,11 @@ class RandomGenerator:
     }
 
     def __init__(
-            self,
-            seed: int = 12345,
-            base_stream_idx: int = 0,
-            run_idx: int = 1,
-            engine: str = "MRG32k3a",
+        self,
+        seed: int = 12345,
+        base_stream_idx: int = 0,
+        run_idx: int = 1,
+        engine: str = "MRG32k3a",
     ):
         """
         Инициализация фасада распределений и валидация параметров конфигурации.
@@ -643,7 +625,7 @@ class RandomGenerator:
         Args:
             seed (int, optional): Начальное зерно генератора в [0, 4294944442]
                 (0 заменяется на 12345). По умолчанию 12345.
-            base_stream_idx (int, optional): Базовый индекс потока в [0, 2^63 - 1].
+            base_stream_idx (int, optional): Индекс изолированного потока в [0, 2^63 - 1].
                 По умолчанию 0.
             run_idx (int, optional): Номер прогона симуляции в [1, 2^51].
                 По умолчанию 1.
@@ -674,62 +656,38 @@ class RandomGenerator:
 
         self.engine = engine
         self._engine_cls: Type[UniformEngine] = self._ENGINES[engine]
-        self._streams: Dict[int, UniformEngine] = {}
-        self._normal_cache: Dict[int, Tuple[float, float]] = {}
+        self._stream: Optional[UniformEngine] = None
+        self._normal_cache: Optional[Tuple[float, float]] = None
 
-    def _get_stream(self, stream_offset: int) -> UniformEngine:
+    def _get_stream(self) -> UniformEngine:
         """
-        Получение потока ПСЧ для заданного смещения.
-
-        Args:
-            stream_offset (int): Неотрицательное смещение подпотока (>= 0).
+        Получение изолированного потока ПСЧ данного экземпляра генератора.
 
         Returns:
-            UniformEngine: Экземпляр потока с индексом base_stream_idx + stream_offset.
-
-        Raises:
-            ValueError: Если stream_offset не является целым числом >= 0
-                или сумма base_stream_idx + stream_offset превышает MAX_STREAM_IDX.
+            UniformEngine: Экземпляр потока с индексом base_stream_idx.
 
         """
-        _validate_int_param(
-            stream_offset,
-            "stream_offset",
-            min_allowed=0,
-            max_allowed=MAX_STREAM_IDX,
-        )
-        target_stream_idx = self.base_stream_idx + stream_offset
-        if target_stream_idx > MAX_STREAM_IDX:
-            raise ValueError(
-                f"Combined stream index (base_stream_idx + stream_offset = {target_stream_idx}) "
-                f"exceeds MAX_STREAM_IDX ({MAX_STREAM_IDX})."
-            )
-        if stream_offset not in self._streams:
-            self._streams[stream_offset] = self._engine_cls(
+        if self._stream is None:
+            self._stream = self._engine_cls(
                 seed=self.seed,
-                stream_idx=target_stream_idx,
+                stream_idx=self.base_stream_idx,
                 run_idx=self.run_idx,
             )
-        return self._streams[stream_offset]
+        return self._stream
 
-    def unifrom(
-        self, min_val: float = 0.0, max_val: float = 1.0, stream_offset: int = 0
-    ) -> float:
+    def uniform(self, min_val: float = 0.0, max_val: float = 1.0) -> float:
         """
         Генерация случайного числа с равномерным распределением на [min_val, max_val).
 
         Args:
             min_val (float, optional): Нижняя граница диапазона. По умолчанию 0.0.
             max_val (float, optional): Верхняя граница диапазона. По умолчанию 1.0.
-            stream_offset (int, optional): Смещение индекса подпотока (>= 0).
-                По умолчанию 0.
 
         Returns:
             float: Случайное число из диапазона [min_val, max_val).
 
         Raises:
-            ValueError: Если параметры содержат NaN/Inf, min_val > max_val
-                или stream_offset выходит за допустимые границы.
+            ValueError: Если параметры содержат NaN/Inf или min_val > max_val.
 
         """
         min_val = _validate_float_param(min_val, "min_val")
@@ -742,7 +700,7 @@ class RandomGenerator:
         if min_val == max_val:
             return min_val
 
-        stream = self._get_stream(stream_offset)
+        stream = self._get_stream()
         u = stream.rand_u01()
 
         span = max_val - min_val
@@ -765,7 +723,6 @@ class RandomGenerator:
         mean: float = 0.0,
         variance: float = 1.0,
         bound: float = float("inf"),
-        stream_offset: int = 0,
     ) -> float:
         """
         Генерация случайного числа с нормальным распределением (полярный метод Бокса — Мюллера).
@@ -776,15 +733,13 @@ class RandomGenerator:
                 По умолчанию 1.0.
             bound (float, optional): Максимальное отклонение от mean (> 0.0 при variance > 0.0,
                 либо >= 0.0 при variance == 0.0). По умолчанию inf.
-            stream_offset (int, optional): Смещение индекса подпотока (>= 0).
-                По умолчанию 0.
 
         Returns:
             float: Случайное число из усеченного нормального распределения.
 
         Raises:
             ValueError: Если параметры содержат NaN/Inf, variance < 0,
-                bound <= 0 (при variance > 0) или stream_offset некорректен.
+                bound <= 0 (при variance > 0) или bound слишком мал.
 
         """
         mean = _validate_float_param(mean, "mean")
@@ -807,7 +762,7 @@ class RandomGenerator:
                 "(causes infinite rejection loop)."
             )
 
-        stream = self._get_stream(stream_offset)
+        stream = self._get_stream()
         if variance == 0.0:
             return mean
 
@@ -818,8 +773,9 @@ class RandomGenerator:
                 f"({std}) and may cause infinite rejection loop."
             )
 
-        if stream_offset in self._normal_cache:
-            y, v2 = self._normal_cache.pop(stream_offset)
+        if self._normal_cache is not None:
+            y, v2 = self._normal_cache
+            self._normal_cache = None
             x2 = mean + v2 * y * std
             if abs(x2 - mean) <= bound:
                 return x2
@@ -839,7 +795,7 @@ class RandomGenerator:
                 x2 = mean + v2 * y * std
 
                 if abs(x1 - mean) <= bound:
-                    self._normal_cache[stream_offset] = (y, v2)
+                    self._normal_cache = (y, v2)
                     return x1
                 elif abs(x2 - mean) <= bound:
                     return x2
@@ -849,9 +805,7 @@ class RandomGenerator:
             f"{self._MAX_REJECTION_ATTEMPTS} attempts."
         )
 
-    def exponential(
-        self, mean: float = 1.0, bound: float = 0.0, stream_offset: int = 0
-    ) -> float:
+    def exponential(self, mean: float = 1.0, bound: float = 0.0) -> float:
         """
         Генерация случайного числа с экспоненциальным распределением.
 
@@ -859,15 +813,12 @@ class RandomGenerator:
             mean (float, optional): Математическое ожидание (> 0.0). По умолчанию 1.0.
             bound (float, optional): Верхний предел значения (>= 0.0, при 0.0 не ограничен).
                 По умолчанию 0.0.
-            stream_offset (int, optional): Смещение индекса подпотока (>= 0).
-                По умолчанию 0.
 
         Returns:
             float: Случайное число из экспоненциального распределения.
 
         Raises:
-            ValueError: Если параметры содержат NaN/Inf, mean <= 0, bound < 0
-                или stream_offset некорректен.
+            ValueError: Если параметры содержат NaN/Inf, mean <= 0 или bound < 0.
 
         """
         mean = _validate_float_param(mean, "mean")
@@ -884,7 +835,7 @@ class RandomGenerator:
                 f"The obtained value: {bound}"
             )
 
-        stream = self._get_stream(stream_offset)
+        stream = self._get_stream()
 
         if bound > 0.0:
             u = stream.rand_u01()
@@ -900,24 +851,19 @@ class RandomGenerator:
                 continue
             return -mean * math.log(v)
 
-    def get_integer(
-        self, min_val: int, max_val: int, stream_offset: int = 0
-    ) -> int:
+    def get_integer(self, min_val: int, max_val: int) -> int:
         """
         Генерация равновероятного целого числа в диапазоне [min_val, max_val] включительно.
 
         Args:
             min_val (int): Нижняя целочисленная граница диапазона.
             max_val (int): Верхняя целочисленная граница диапазона.
-            stream_offset (int, optional): Смещение индекса подпотока (>= 0).
-                По умолчанию 0.
 
         Returns:
             int: Случайное целое число из отрезка [min_val, max_val].
 
         Raises:
-            ValueError: Если min_val или max_val не int (или bool),
-                min_val > max_val или stream_offset некорректен.
+            ValueError: Если min_val или max_val не int (или bool) или min_val > max_val.
 
         """
         if isinstance(min_val, bool) or not isinstance(min_val, int):
@@ -939,7 +885,7 @@ class RandomGenerator:
         if min_val == max_val:
             return min_val
 
-        stream = self._get_stream(stream_offset)
+        stream = self._get_stream()
         span = max_val - min_val + 1
         bits_needed = span.bit_length()
         mask = (1 << bits_needed) - 1
