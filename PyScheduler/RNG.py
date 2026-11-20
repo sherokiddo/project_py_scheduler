@@ -922,13 +922,13 @@ class StreamAllocator:
     """
     Централизованный реестр и аллокатор независимых потоков ПСЧ.
 
-    Выполняет детерминированную выдачу уникальных индексов потоков (stream_idx)
-    по составному ключу (domain, purpose, entity_id), например:
+    Вычисляет детерминированный индекс потока (stream_idx) напрямую из
+    нормализованного ключа (domain, purpose, entity_id), например:
         ("CHANNEL", "SHADOW_FADING", 17)
         ("MOBILITY", "WAYPOINT", 5)
-    Гарантирует отсутствие коллизий между доменами, случайными процессами
-    внутри одного модуля и пользовательскими сущностями без использования
-    фиксированных «магических» диапазонов.
+
+    Индекс потока зависит только от содержимого ключа и не меняется при
+    перестановке компонентов или добавлении новых случайных процессов.
     """
 
     def __init__(
@@ -961,29 +961,15 @@ class StreamAllocator:
             )
         self.engine = engine
         self._registry: Dict[Tuple[str, str, int], int] = {}
-        self._next_stream_idx: int = 0
+        self._idx_to_key: Dict[int, Tuple[str, str, int]] = {}
+        self._allocated_keys: set[Tuple[str, str, int]] = set()
 
-    def allocate_stream_idx(
-        self, domain: str, purpose: str, entity_id: int = 0
-    ) -> int:
+    @staticmethod
+    def _normalize_key(
+        domain: str, purpose: str, entity_id: int = 0
+    ) -> Tuple[str, str, int]:
         """
-        Получить или зарегистрировать уникальный stream_idx для тройки (domain, purpose, entity_id).
-
-        При повторном обращении с тем же ключом возвращает ранее выделенный индекс.
-
-        Args:
-            domain (str): Домен симулятора (например, 'MOBILITY', 'CHANNEL', 'TRAFFIC').
-            purpose (str): Назначение случайного процесса внутри домена
-            entity_id (int, optional): Идентификатор сущности (UE_ID, BS_ID или 0 для глобального).
-                По умолчанию 0.
-
-        Returns:
-            int: Уникальный неотрицательный индекс потока stream_idx.
-
-        Raises:
-            ValueError: Если domain/purpose пусты или не являются строками,
-                либо entity_id < 0.
-
+        Валидация и приведение ключа (domain, purpose, entity_id) к единому виду.
         """
         if not isinstance(domain, str) or not domain.strip():
             raise ValueError("Parameter 'domain' must be a non-empty string.")
@@ -992,20 +978,63 @@ class StreamAllocator:
         _validate_int_param(
             entity_id, "entity_id", min_allowed=0, max_allowed=MAX_STREAM_IDX
         )
+        return (domain.strip().upper(), purpose.strip().upper(), entity_id)
 
-        key = (domain.strip().upper(), purpose.strip().upper(), entity_id)
+    @staticmethod
+    def _derive_stream_idx(key: Tuple[str, str, int]) -> int:
+        """
+        Детерминированное вычисление stream_idx в [0, MAX_STREAM_IDX] из ключа.
+        """
+        payload = json.dumps(
+            [key[0], key[1], key[2]],
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        digest = hashlib.blake2b(payload, digest_size=8).digest()
+        return int.from_bytes(digest, "big") & MAX_STREAM_IDX
+
+    def allocate_stream_idx(
+        self, domain: str, purpose: str, entity_id: int = 0
+    ) -> int:
+        """
+        Вычислить и зарегистрировать уникальный stream_idx для (domain, purpose, entity_id).
+
+        Args:
+            domain (str): Домен симулятора (например, 'MOBILITY', 'CHANNEL', 'TRAFFIC').
+            purpose (str): Назначение случайного процесса внутри домена.
+            entity_id (int, optional): Идентификатор сущности (UE_ID, BS_ID или 0 для глобального).
+                По умолчанию 0.
+
+        Returns:
+            int: Детерминированный индекс потока stream_idx в [0, MAX_STREAM_IDX].
+
+        Raises:
+            ValueError: Если domain/purpose пусты или не являются строками,
+                либо entity_id выходит за допустимые границы.
+            RuntimeError: Если два разных ключа дали одинаковый stream_idx.
+
+        """
+        key = self._normalize_key(domain, purpose, entity_id)
         if key not in self._registry:
-            if self._next_stream_idx > MAX_STREAM_IDX:
-                raise ValueError("StreamAllocator exhausted MAX_STREAM_IDX.")
-            self._registry[key] = self._next_stream_idx
-            self._next_stream_idx += 1
+            stream_idx = self._derive_stream_idx(key)
+            if stream_idx in self._idx_to_key and self._idx_to_key[stream_idx] != key:
+                existing_key = self._idx_to_key[stream_idx]
+                raise RuntimeError(
+                    f"Stream index collision detected: keys {existing_key} and {key} "
+                    f"mapped to the same stream_idx={stream_idx}."
+                )
+            self._registry[key] = stream_idx
+            self._idx_to_key[stream_idx] = key
         return self._registry[key]
 
     def get_provider(
         self, domain: str, purpose: str, entity_id: int = 0
     ) -> RandomGenerator:
         """
-        Создать экземпляр RandomGenerator с уникальным потоком для (domain, purpose, entity_id).
+        Выделить изолированный экземпляр RandomGenerator для ключа (domain, purpose, entity_id).
+
+        Повторный запрос того же ключа запрещен, чтобы исключить совместное
+        использование или сброс состояния одного потока.
 
         Args:
             domain (str): Домен симулятора ('MOBILITY', 'CHANNEL', 'TRAFFIC' и др.).
@@ -1013,10 +1042,20 @@ class StreamAllocator:
             entity_id (int, optional): Идентификатор сущности (>= 0). По умолчанию 0.
 
         Returns:
-            RandomGenerator: Настроенный экземпляр провайдера для указанного ключа.
+            RandomGenerator: Настроенный экземпляр генератора для указанного ключа.
+
+        Raises:
+            ValueError: Если параметры ключа некорректны или ключ уже был выдан ранее.
 
         """
+        key = self._normalize_key(domain, purpose, entity_id)
+        if key in self._allocated_keys:
+            raise ValueError(
+                f"RandomGenerator for key {key} has already been allocated. "
+                f"Each random process must have a single owner."
+            )
         stream_idx = self.allocate_stream_idx(domain, purpose, entity_id)
+        self._allocated_keys.add(key)
         return RandomGenerator(
             seed=self.seed,
             base_stream_idx=stream_idx,
