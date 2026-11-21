@@ -1,8 +1,11 @@
 # SPEC-FEAT-SCH-008 — Разделение ранжирования пользователей и аллокации ресурсов (v5)
 
-> Ответственный: Тимур (Scheduler) | Проверено по коду: `6c0aae2` (ветка `dev`) и актуальной ветке `feat/SCH-008-M1-protocols` | Обновлено: `2026-11-07`  
-> Статус: v5 — учтены договорённости команды по границам модулей, код-ревью PR #44 и порядок слияния (разбор — раздел 11.3): граница с AMC-направлением зафиксирована единственным контрактом `AmcView` / `GET_BITS_PER_RB` (5.4, 7); интерфейс состояния разделён на `ReadOnlyStateView` (для ранкеров) и `StateView` (для аллокаторов); `GridView` не дублирует расчёт `total_rbg`; документация модуля размещается в репозитории в `docs/scheduler/` ([README §8](../README.md)).  
-> **Фактический статус на 2026-11-07:** в ветке `feat/SCH-008-M1-protocols` (PR #44 в `dev`) выполнен шаг **M1** — в конец `PyScheduler/SCHEDULER.py` (:3248–3469) добавлены семь чистых `typing.Protocol` (`CqiView`, `GridView`, `AmcView`, `BuffersView`, `StatsView`, `ReadOnlyStateView`, `StateView`) и семь тонких `Legacy*View`-адаптеров с `__slots__`; синхронизированы имена в `available_algorithms()` (:287, :289 — [BUG-SCH-010](../audit.md#bug-sch-010) закрыт); существующие восемь алгоритмов на адаптеры не переключены, их поведение не изменилось. Вспомогательные автосгенерированные каталоги `tests/baseline/` и `tests/scheduler_arch_tests/` по итогам ревью исключены из поставки PR. Следующий шаг — M1a (после слияния M1 и согласования границы с AMC-направлением, разделы 5.4, 7).
+> Ответственный: Тимур (Scheduler) | Проверено по коду: `6c0aae2` (AS-IS база якорей), `dev` после слияния PR #44 и PR #48, и ветка PR #53 (M2a/M2b) | Обновлено: `2026-11-21`  
+> Статус: v5 — учтены договорённости команды по границам модулей, итоги код-ревью PR #44, PR #48 и PR #53 (разбор — разделы 11.3–11.4): граница с AMC-направлением зафиксирована единственным контрактом `AmcView` / `GET_BITS_PER_RB` (5.4, 7); интерфейс состояния разделён на `ReadOnlyStateView` (для ранкеров) и `StateView` (для аллокаторов); `GridView` не дублирует расчёт `total_rbg`; `StatsView.gbr_of()/is_gbr()` сохраняют потоковую семантику `(qci, ue_id, lcid)` для совместимости с issue #41; отдельный `ResourcePrefilter` зафиксирован как **временный** до слияния в `ResourceAllocator` на шагах M4–M5; документация модуля размещается в репозитории в `docs/scheduler/` ([README §8](../README.md)).  
+> **Фактический статус на 2026-11-21:**
+> - **M1 + M8a (PR #44)** — **влит в `dev`** (squash merge `b388218`): добавлены 7 статических протоколов `typing.Protocol` и 7 тонких `Legacy*View`-адаптеров, синхронизированы имена в `available_algorithms()` ([BUG-SCH-010](../audit.md#bug-sch-010) закрыт), документация размещена в `docs/scheduler/`.
+> - **M1a (PR #48)** — **влит в `dev`**: оценка PDSCH вынесена в временный протокол `ResourcePrefilter` (`DefaultPrefilter` / `PassThroughPrefilter`); неявный дефолт из `SchedulerInterface.__init__` убран (`prefilter_strategy = None`, при отсутствии явного задания в подклассе — `NotImplementedError`); удалены 6 copy-paste заглушек `_apply_pdsch_estimation` ([DOC-SCH-004](../audit.md#doc-sch-004) закрыт); `StatsView.gbr_of()/is_gbr()` возвращены к потоковой сигнатуре `(qci, ue_id=None, lcid=None)`.
+> - **M2a + M2b (PR #53)** — **выполнены в ветке PR #53** (`SCHEDULER.py`, 3520 строк): введён `@dataclass(slots=True) class SchedulerState(rr_ue_offset, rr_rbg_offset)` во владении оркестратора `SchedulerInterface.__init__` (`self.state = SchedulerState()`, :350); `RoundRobinScheduler` и `FDxFairGreedyScheduler` переведены на `self.state` с сохранением compatibility `@property` `rr_ue_offset`/`rr_rbg_offset`; `served_in_round` оставлен локальной переменной `_allocate_pdsch`. Следующий шаг по плану — **M3** (реестр `SCHEDULER_REGISTRY`) и отдельный багфикс-PR по подтверждённым дефектам [BUG-SCH-004](../audit.md#bug-sch-004), [BUG-SCH-014](../audit.md#bug-sch-014)–[016](../audit.md#bug-sch-016) (вне архитектурного PR по R2/R3).
 
 ## 1. Цель
 
@@ -65,61 +68,6 @@
 | A13 | Изменение семантики «между делом» | PR #39: метрика масштабируется одинаково для SB и WB; GBR берётся из bearer, а не из профиля QCI; PR #32: RLC не выполняет PDCP discard | R2: найденное расхождение фиксируется карточкой [audit.md](../audit.md), а не правкой; расширение схемы снимков доказывается сверкой «побайтово без новых ключей» (8.2) |
 | A14 | Оптимизации «в лоб» без профилирования | PR #14: «оптимизацию откладывать на последующие итерации», кэшировать только то, что не зависит от времени | Замеры до/после; предложения — карточками `OPT-SCH-*` ([OPT-SCH-003](../audit.md#opt-sch-003)) |
 
-#### 2.1.2 Норма: что ревьюеры требовали обязательно
-
-- Фабрика с валидацией обязательных параметров и примерами; список доступных моделей выводится из `create()` (PR #12, #8, #20) — в этой работе: реестр `SCHEDULER_REGISTRY` (5.6) и шаг M8a.
-- Полиморфизм вместо перечисления `isinstance` (PR #32, #8: «абстрактный класс вместо перечисления в импортах») — `typing.Protocol`/`abc.ABC` (5.4).
-- Новые классы — в конец модуля (PR #8): номера строк чужого кода не сдвигаются, якоря документации `:NNN` остаются действительными.
-- Кэширование и оптимизации — отдельной итерацией, с измерением (PR #14, #21: «статистика кэшируется»).
-- Тесты до и после каждого изменения, юнит и интеграционные (PR #21) — R7, gate 8.1.
-- Документация, шапки модулей и UML/схемы — в той же поставке (PR #20, #21: «а в шапке модулей подписал изменения???») — [DOC-SCH-003](../audit.md#doc-sch-003), [diagrams.md](../diagrams.md).
-- Архитектурные ограничения, всплывшие в ревью, выносятся отдельными issues, а не правятся на месте (PR #39 → issues #40–#43).
-- База MR — `dev`, слияние через squash (PR #20: «не забудь замёрджить через squash»).
-- Фрагменты ≠ отдельные пакеты, сегментированный пакет не бессмертный, ёмкость одного RBG единообразна (PR #39) — учитывается в QoS-шагах M7a/M7b и в контракте `MultiplexingPolicy` (5.3).
-
-#### 2.1.3 Операционный чек-лист поставки шага M
-
-**Объём и зона ответственности**
-
-- [ ] одно содержательное изменение (R3): не более одного алгоритма **или** одного контракта;
-- [ ] файлы — строго в зоне ответственности (A1); правки чужих модулей и общерепозиторных настроек «заодно» недопустимы;
-- [ ] каждое изменение существующего теста имеет явную причину (A2);
-- [ ] поставка обозримого размера (A10).
-
-**Код**
-
-- [ ] `ruff check --config .ruff.toml` — 0 замечаний в новых файлах и **ни одного нового** в затронутых legacy-файлах; запуск — из корня репозитория (конфиг без `src`, классификация first-party зависит от cwd — [CFG-SCH-001](../audit.md#cfg-sch-001));
-- [ ] общие хелперы тестов размещаются в модуле с уникальным именем, а не в `conftest.py`, и тесты не используют `from conftest import ...` ([BUG-SCH-013](../audit.md#bug-sch-013));
-- [ ] кодстайл существующего модуля сохранён: чужой код не переформатируется, пробелы и выравнивание не «улучшаются», функции не переставляются без причины (A1);
-- [ ] самодокументируемость: docstring у каждой новой сущности, `Args:`/`Returns:` у хелперов с нетривиальными параметрами; чужие комментарии не удаляются (A11);
-- [ ] строки ≤ 100 символов (лимит конфигурации репозитория);
-- [ ] новых компонентов нет вне конца файла (PR #8), если шаг добавляет классы в `SCHEDULER.py`;
-- [ ] нет мёртвого кода, баннеров-заглушек и декоративных блоков комментариев (A8; стиль «ХАК: СПАСАТЕЛЬНЫЙ ПАТЧ» отклонён в PR #37);
-- [ ] новые компоненты не читают глобальное состояние напрямую (A12);
-- [ ] при правке `SCHEDULER.py` обновлена шапка: `Версия`, `Дата последнего изменения`, блок `Изменения vX.Y.Z` (A11, [DOC-SCH-003](../audit.md#doc-sch-003));
-- [ ] R2: алгоритмические дефекты «попутно» не исправляются; новое наблюдение — карточка [audit.md](../audit.md) или запрос владельцу.
-
-**Тесты и регрессия**
-
-- [ ] R7: работоспособность существующих алгоритмов проверена до и после изменения;
-- [ ] осмысленные модульные и регрессионные тесты защищают реальные контракты и поведение планировщика (без привязки к номерам строк или структуре AST);
-- [ ] WB и SB сценарии проверены там, где использовались раньше; отсутствие отчётов и CQI=0 — отдельно (раздел 9);
-- [ ] в описании PR кратко указаны основные изменения, их назначение и результаты проверки.
-
-**Документация — в той же поставке**
-
-- [ ] «обязательно документашку вместе с MR» (A10);
-- [ ] изменилась структура — обновлены схемы ([diagrams.md](../diagrams.md): TO-BE §3 по завершении фичи становится AS-IS §1);
-- [ ] синхронно обновлены: карточка FEAT-SCH-008 ([features.md](../features.md)), новые наблюдения ([audit.md](../audit.md)), статусы шагов (8.3), [README §4](../README.md), ревизия комплекта (таблица в [README §8](../README.md)).
-
-**Механика поставки**
-
-- [ ] имя ветки: `feat/SCH-008-M<шаг>-<кратко>`; инфраструктурные правки тестовой обвязки — `fix/SCH-008-<кратко>`; база — `dev`;
-- [ ] сообщения коммитов в стиле истории репозитория: `type(scope): subject` (`feat(scheduler): …`, `test(baseline): …`, `refactor(…)`); слияние — squash;
-- [ ] описание: «Что сделано» → «Проверки» (команды + числа) → «Что НЕ меняется» → находки → вопросы ревьюеру;
-- [ ] на каждый комментарий ревью — ответ или исправление; история ревью не затирается force-push;
-- [ ] CI в репозитории нет — все проверки локальные, их вывод приводится в описании;
-- [ ] перед слиянием ветка актуализируется с `dev`, проверяется сохранение работоспособности всех восьми алгоритмов.
 
 ## 3. Входит / не входит
 
@@ -262,7 +210,7 @@
 | Адаптеры только делегируют и не дублируют расчёты (R5) | Из `GridView`/`LegacyGridView` исключён расчёт `total_rbg()`; каждый метод адаптера напрямую вызывает существующий метод `SchedulerInterface`, `RES_GRID_LTE`, `AdaptiveModulationAndCoding` или `buffer_manager` |
 | Защита кэша CQI и словаря UE от внешних мутаций (A3) | `LegacyCqiView.get_sb()` возвращает копию `list(...)`; `LegacyStatsView.__init__` копирует словарь `dict(ues_by_id)` и валидирует наличие `average_throughput` |
 | Разделение прав чтения и записи состояния ротации | Ранкеры получают `ReadOnlyStateView` без сеттеров; `LegacyStateView.set_rr_*_offset` проверяет `hasattr(self._scheduler, ...)` и выбрасывает `AttributeError`, если планировщик не владеет смещениями |
-| Единый источник данных для GBR | `LegacyStatsView.gbr_of(qci)` читает `GLOBALS.QCI_PROFILES.get(qci, {}).get("gbr")`, а `is_gbr(qci)` определяется как `self.gbr_of(qci) is not None` |
+| Единый источник данных для GBR и потоковая сигнатура (issue #41) | `StatsView.gbr_of(qci, ue_id=None, lcid=None)` и `is_gbr(qci, ue_id=None, lcid=None)` задают потоковую семантику bearer/flow; временный адаптер `LegacyStatsView` читает дефолт `GLOBALS.QCI_PROFILES.get(qci, {}).get("gbr")`, а `is_gbr(...)` делегирует `self.gbr_of(qci, ue_id=ue_id, lcid=lcid) is not None` |
 
 ## 5. Целевые контракты
 
@@ -272,10 +220,10 @@
 
 Небольшой типизированный dataclass без собственной логики; владелец — оркестратор (`SchedulerInterface`), создаётся в `__init__` (:294) и передаётся стратегиям. Никакой системы управления состоянием не вводится.
 
-| Поле | Тип | Читатели | Писатель (единственный) | Сейчас живёт в |
+| Поле | Тип | Читатели | Писатель (единственный) | Статус (с M2a/M2b, PR #53) |
 |---|---|---|---|---|
-| `rr_ue_offset` | int | RoundRobinRanker (старт ротации), FD-ранкеры | RRCyclicAllocator (:2093) / FDPerRBGAllocator (:2514) по классу алгоритма | поля RR/FD_FGS |
-| `rr_rbg_offset` | int | RRCyclicAllocator, FDPerRBGAllocator (RR-составляющая) | RRCyclicAllocator / FDPerRBGAllocator по классу алгоритма (:2090, :2512) | поля RR/FD_FGS |
+| `rr_ue_offset` | int | RoundRobinRanker (старт ротации), FD-ранкеры | RRCyclicAllocator / FDPerRBGAllocator по классу алгоритма | `SchedulerInterface.state` (`SchedulerState`, :350/:3192); compatibility `@property` на RR и FD_FGS |
+| `rr_rbg_offset` | int | RRCyclicAllocator, FDPerRBGAllocator (RR-составляющая) | RRCyclicAllocator / FDPerRBGAllocator по классу алгоритма | `SchedulerInterface.state` (`SchedulerState`, :350/:3192); compatibility `@property` на RR и FD_FGS |
 
 Правило: одно поле — один писатель; ранкеры состояние не пишут. Оркестратор передаёт один и тот же экземпляр ранкеру и аллокатору на TTI, поэтому согласованность гарантирована порядком вызовов этапов, а не блокировками.
 
@@ -303,7 +251,7 @@ ResourceAllocator.prefilter(priority_list, views) -> List[Dict]   # перено
 ResourceAllocator.allocate(tti, ues_with_pdcch, views, state) -> AllocationResult
 ```
 
-- `prefilter` — стратегия оценки PDSCH: базовая реализация — текущая оценка с порогом 95% (:712/:733, точка вызова в оркестраторе :405), RR/FD/QoS-пары дают pass-through (их нынешние переопределения :1996/:2243/:2377/:2571/:2753/:2988). Перенос выполняется отдельным малым шагом (M1a) с сохранением **точного времени вызова** и пропуска 95%-оценки у RR/FD/QoS; не объединяется с миграцией алгоритмов.
+- `prefilter` — стратегия оценки PDSCH: базовая реализация — текущая оценка с порогом 95% (точка вызова в оркестраторе :405 в `dev@6c0aae2`), RR/FD/QoS-пары дают pass-through. **Миграционная граница M1a (зафиксировано по итогам ревью PR #48):** на шаге M1a введён отдельный протокол `ResourcePrefilter` (:3287) с реализациями `DefaultPrefilter` (:3302) и `PassThroughPrefilter` (:3362); в `SchedulerInterface.__init__` задаётся `self.prefilter_strategy = None` (неявного дефолта нет — каждый алгоритм обязан явно выбрать стратегию, иначе `_apply_pdsch_estimation` выбрасывает `NotImplementedError`). Отдельный протокол `ResourcePrefilter` является **временным миграционным компонентом**: на шагах **M4–M5** (при появлении `TDGreedyAllocator` и `RRCyclicAllocator`) ответственность `prefilter(...)` поглощается целевым контрактом `ResourceAllocator` (`abc.ABC` с базовой реализацией/pass-through), а отдельный `ResourcePrefilter` удаляется после завершения миграции аллокаторов.
 - `allocate` — цикл выдачи: TD-жадный, циклический, per-RBG турнир. **Временное миграционное решение:** критерий выбора UE на RBG (SB CQI, PF-пересчёт :2631–2679, QoS-метрика :3044) и раундовые правила FD_FGS (:2448–2505) живут внутри FD/QoS-аллокатора как подставляемая функция-критерий — это допустимо только ради нулевого дрейфа (R2). **Целевая граница:** формулы полезности принадлежат ранкеру/scorer (`score_candidate`, раздел 5.2), аллокатору — правила назначения и ресурсные ограничения; аллокатор запрашивает `score(ue, rbg, context)` или получает матрицу utility для глобального метода и не содержит формулу PF, QoS HOL/PDB/GBR, Coita или DRL reward как собственное правило аллокации.
 
 **AllocationResult (v3) — внутренний тип результата; внешняя форма `schedule()` не меняется:**
@@ -345,14 +293,15 @@ class MultiplexingPolicy(Protocol):   # структурная типизаци�
 
 Стратегии получают не объект-контейнер симулятора, а узкие протоколы; первая реализация — тонкие адаптеры поверх текущих полей оркестратора (поведение не меняется). Прямые `lte_grid`/`buffer_manager` в стратегии «в обход» адаптеров не передаются.
 
-| Протокол | Методы (реализация M1) | Источник сейчас |
+| Протокол | Методы (реализация M1 / PR #48 / PR #53) | Источник сейчас |
 |---|---|---|
-| `CqiView` (:3252) | `get_wb(ue_id) -> int`, `get_sb(ue_id) -> List[int]`; целевая форма — `CqiEstimate` (раздел 5.7, CQI-трек C1) | `cqi_map` + `_get_wb_cqi`/`_get_sb_cqi` (:1064/:1084), адаптер `LegacyCqiView` (:3335) возвращает копию SB-списка |
-| `GridView` (:3262) | `rb_per_slot: int` (`@property`), `rbg_size() -> int`, `rbg_indices(rbg_idx) -> List[int]`, `allocate_rbg(tti, rbg_idx, ue_id) -> bool`; будущее (batch): `snapshot_free()`, `commit(plan)` | `RES_GRID` :430/:421/:424, `rb_per_slot`; адаптер `LegacyGridView` (:3351) |
-| `AmcView` (:3279) | `bits_per_rb(cqi, n_ports=1) -> int`; `ValueError` при `cqi` вне [1..15] сохраняется как AS-IS | `AdaptiveModulationAndCoding.GET_BITS_PER_RB` (:1730), адаптер `LegacyAmcView` (:3373); 14 точек вызова в алгоритмах |
-| `BuffersView` (:3286) | `has_buffer(ue_id) -> bool`, `get_status(ue_id) -> List` | `bs.buffer_manager.ue_has_buffer` / `get_buffer_status` (:574/:580/:584); адаптер `LegacyBuffersView` (:3385) |
-| `StatsView` (:3296) | `ue_throughput(ue_id) -> float`, `qci_throughput(ue_id, qci) -> float`, `gbr_of(qci) -> Optional[float]`, `is_gbr(qci) -> bool`, `delay_budget_of(qci) -> int` | `user['ue'].average_throughput` (:2133), `qci_tput_tracker` (:916), `GLOBALS.QCI_PROFILES` (:2884), `QCI(qci).get_delay_budget()` (:3029/:3126); адаптер `LegacyStatsView` (:3400) |
-| `ReadOnlyStateView` (:3315) / `StateView` (:3325) | `get_rr_ue_offset() -> int`, `get_rr_rbg_offset() -> int` (только чтение для ранкеров); `set_rr_ue_offset(offset)`, `set_rr_rbg_offset(offset)` (запись для аллокаторов в `StateView`) | поля `rr_ue_offset`/`rr_rbg_offset` планировщика (с M2a/M2b — `SchedulerState`); адаптеры `LegacyReadOnlyStateView` (:3441) и `LegacyStateView` (:3456) |
+| `CqiView` (:3199) | `get_wb(ue_id) -> int`, `get_sb(ue_id) -> List[int]`; целевая форма — `CqiEstimate` (раздел 5.7, CQI-трек C1) | `cqi_map` + `_get_wb_cqi`/`_get_sb_cqi`, адаптер `LegacyCqiView` (:3388) возвращает копию SB-списка |
+| `GridView` (:3209) | `rb_per_slot: int` (`@property`), `rbg_size() -> int`, `rbg_indices(rbg_idx) -> List[int]`, `allocate_rbg(tti, rbg_idx, ue_id) -> bool`; будущее (batch): `snapshot_free()`, `commit(plan)` | `RES_GRID` :430/:421/:424, `rb_per_slot`; адаптер `LegacyGridView` (:3404) |
+| `AmcView` (:3226) | `bits_per_rb(cqi, n_ports=1) -> int`; `ValueError` при `cqi` вне [1..15] сохраняется как AS-IS | `AdaptiveModulationAndCoding.GET_BITS_PER_RB`, адаптер `LegacyAmcView` (:3426); 14 точек вызова в алгоритмах |
+| `BuffersView` (:3233) | `has_buffer(ue_id) -> bool`, `get_status(ue_id) -> List` | `bs.buffer_manager.ue_has_buffer` / `get_buffer_status`; адаптер `LegacyBuffersView` (:3438) |
+| `StatsView` (:3243) | `ue_throughput(ue_id) -> float`, `qci_throughput(ue_id, qci) -> float`, `gbr_of(qci, ue_id=None, lcid=None) -> Optional[float]`, `is_gbr(qci, ue_id=None, lcid=None) -> bool`, `delay_budget_of(qci) -> int` | `user['ue'].average_throughput`, `qci_tput_tracker`, `GLOBALS.QCI_PROFILES` (временный дефолт до bearer-specific GBR по issue #41), `QCI(qci).get_delay_budget()`; адаптер `LegacyStatsView` (:3453) |
+| `ReadOnlyStateView` (:3267) / `StateView` (:3277) | `get_rr_ue_offset() -> int`, `get_rr_rbg_offset() -> int` (только чтение для ранкеров); `set_rr_ue_offset(offset)`, `set_rr_rbg_offset(offset)` (запись для аллокаторов в `StateView`) | compatibility `@property` поверх `SchedulerInterface.state` (`SchedulerState`, :350/:3192); адаптеры `LegacyReadOnlyStateView` (:3492) и `LegacyStateView` (:3507) сохраняют `AttributeError` для алгоритмов без ротации |
+| `ResourcePrefilter` (:3287, **временный до M4–M5**) | `prefilter(priority_list, tti, cqi, grid, amc, verbose=False) -> List[Dict]` | реализации `DefaultPrefilter` (:3302) и `PassThroughPrefilter` (:3362); на шагах M4–M5 входит в целевой `ResourceAllocator` (раздел 5.3) |
 
 **Граница с AMC-направлением (v5).** AMC выделяется из `SCHEDULER.py` параллельно этой работе другим разработчиком, поэтому граница зафиксирована как единственный контракт и без согласования не расширяется:
 
@@ -515,9 +464,9 @@ CQI-C1…C4 **не входят в шаги M0–M8** и не являются �
 
 ### 7.1 Порядок поставки и интеграции (v5)
 
-1. Фича — в отдельной ветке от актуальной `dev`: `git fetch upstream && git rebase upstream/dev`; при уходе `dev` — перепривязка якорей и регенерация снимков ([README §4.7](../README.md), 8.2).
-2. Коммиты небольшие и логически завершённые: одно самостоятельное изменение — один коммит; единица атомарности здесь — шаг M (§8).
-3. PR — в `dev` (не в `main`), слияние squash; gate шага — 8.1.
+1. Фича — в отдельной ветке от актуальной `dev`: `git fetch upstream && git rebase upstream/dev` (или `git merge`); при уходе `dev` — перепривязка якорей и регенерация снимков ([README §4.4](../README.md), 8.2).
+2. Коммиты небольшие и логически завершённые: одно самостоятельное изменение — один коммит; допускается объединять логически связанные мелкие подэтапы в один PR с отдельными атомарными коммитами (например, M2a + M2b в PR #53), не смешивая архитектурный рефакторинг с поведенческими багфиксами (R2/R3).
+3. PR — в `dev` (не в `main`), минимум два предметных ревьюера (наставник/ответственный модуля + владелец связанного компонента), автор в `Assignees`, информативный заголовок PR на английском с указанием этапа; слияние squash; gate шага — 8.1.
 4. Legacy работает на каждом слитом PR (R1, R5); удаление legacy — отдельный PR после M8e (R8).
 5. После слияния формулируются задачи владельцам смежных модулей: что сделать у себя, чтобы фича заработала ([features.md §2](../features.md)).
 6. Владелец смежного модуля забирает актуальный `dev` в свою ветку, делает коннектор в своей зоне ответственности, проверяет и льёт в `dev`.
@@ -533,9 +482,9 @@ CQI-C1…C4 **не входят в шаги M0–M8** и не являются �
 |---|---|---|---|---|
 | **M0** | **Только baseline**: golden tests + фиксация seed/config/version, результаты восьми алгоритмов (матрица раздела 9) | TD/WB, FD/SB + fallback, RR 3+ TTI, оба QoS с grants и per-QCI stats; команды запуска сохранены | Ничего в runtime не меняется | 2 |
 | **M1** | Протоколы и thin Views **без переключения потребителей**; типы входов, инвентаризация обращений восьми реализаций (факт — 4.2) | Unit на адаптеры + все baseline tests | Старый код потребляет старые поля | 2 |
-| **M1a** | Перенос `prefilter`: переопределения `_apply_pdsch_estimation` становятся методом стратегии; точка вызова (:405) и пропуск 95%-оценки у RR/FD/QoS сохранены; потребители переключены на views. **Подключение самостоятельное (v4):** объекты стратегий создаются при инициализации оркестратора и передаются напрямую, без реестра (каркас реестра — M3); временная дополнительная архитектура не вводится | Оценка 95% и pass-through прежние; золотой сценарий побитово прежний | Вернуть переопределения на места | 2 |
-| **M2a** | `SchedulerState`: перенос RR offsets для **RoundRobin** | Последовательность offsets/allocation по TTI побитово прежняя | Вернуть RR к старым полям | 1 |
-| **M2b** | Подключить состояние **FD_FGS**; `served_in_round` оставить локальным | FD_FGS несколько TTI, tie-break/rounds прежние | FD_FGS продолжает legacy-путь | 1 |
+| **M1a** | **[Выполнен, PR #48]** Перенос `prefilter` во временный `ResourcePrefilter` (`DefaultPrefilter` / `PassThroughPrefilter`); точка вызова и пропуск 95%-оценки у RR/FD/QoS сохранены; в `SchedulerInterface.__init__` задано `prefilter_strategy = None` (явный выбор стратегии в каждом подклассе, без неявного дефолта); закрыт [DOC-SCH-004](../audit.md#doc-sch-004). На шагах **M4–M5** `ResourcePrefilter` поглощается целевым `ResourceAllocator` | Оценка 95% и pass-through прежние; золотой сценарий побитово прежний | Вернуть переопределения на места | 2 |
+| **M2a** | **[Выполнен, PR #53]** `SchedulerState` во владении `SchedulerInterface.__init__` (:350); перенос RR offsets для **RoundRobin** с compatibility `@property` | Последовательность offsets/allocation по TTI побитово прежняя | Вернуть RR к старым полям | 1 |
+| **M2b** | **[Выполнен, PR #53]** Подключить состояние **FD_FGS** к `self.state`; `served_in_round` оставить локальным | FD_FGS несколько TTI, tie-break/rounds прежние | FD_FGS продолжает legacy-путь | 1 |
 | **M3** | Каркас registry/strategy adapter с legacy-маршрутом; **ничего не переводить автоматически** | Все 8 прежних имён и `create` возвращают рабочие алгоритмы | Переключатель маршрута фабрики на legacy | 2 |
 | **M4a** | Ранкер **BestCQI** | Списки приоритетов, tie-break, топ-N прежние | Старый `_calculate_priorities` | 2 |
 | **M4b** | TDGreedyAllocator для **BestCQI** | Allocation, CCE, buffer, throughput прежние | Legacy `_allocate_pdsch` | 3 |
@@ -560,7 +509,7 @@ CQI-C1…C4 **не входят в шаги M0–M8** и не являются �
 **Дополнения к таблице:**
 
 - если перенос одного алгоритма требует предварительного общего изменения — оно становится самостоятельным M-шагом с собственным приёмочным тестом;
-- перенос `prefilter` (M1a) — маленький совместимый шаг, не объединяется с миграцией алгоритмов; **v4:** до M3 стратегии prefilter подключаются без реестра (объекты создаются при инициализации оркестратора), с M3 получаются из дескриптора наравне с остальными стратегиями — противоречие порядка M1a/M3 снято;
+- перенос `prefilter` (M1a, PR #48) выполнен через временный протокол `ResourcePrefilter` (`DefaultPrefilter`/`PassThroughPrefilter`), задаваемый **явно** в `__init__` каждого планировщика (`SchedulerInterface.prefilter_strategy = None`, без неявного дефолта); на шагах **M4–M5** (при введении общих аллокаторов) `ResourcePrefilter` поглощается целевым контрактом `ResourceAllocator` и удаляется;
 - QoS не переносится до создания и проверки `AllocationResult` (M6d — отдельный шаг перед M7);
 - реализация `CqiView.get_for_rbg()` и новой политики отчётов — **не скрытая часть M6**: M6a–M6c сохраняют существующие SB/WB-правила через legacy-адаптер (R6);
 - M6a сознательно совмещает перенос FD_BCQI и первое подключение SB/WB legacy-адаптера: адаптер неразделим с первым FD-алгоритмом (исключение R3); M6b/M6c переиспользуют адаптер без изменений;
@@ -585,19 +534,13 @@ CQI-C1…C4 **не входят в шаги M0–M8** и не являются �
 - `sch_total_time_us` и прочие wall-clock показатели измеряются отдельно на одинаковом стенде.
 - **Профилирование до/после (v5).** Для шагов, меняющих горячий путь (M4a и далее), снимается профиль `cProfile` до и после на одном сценарии (1000 TTI, одинаковые seed и конфиг): `cumtime` по `schedule`, `_allocate_pdsch`, `_process_buffers`, `GET_BITS_PER_RB` и дерево вызовов. Заметная регрессия производительности — основание вернуться к legacy-маршруту (R5).
 
-### 8.3 Фактический статус шага M1 (PR #44)
+### 8.3 Фактический статус выполненных шагов (M1, M1a, M2a/M2b)
 
-Ветка поставки `feat/SCH-008-M1-protocols` (база `dev@6c0aae2`) содержит изменения в `PyScheduler/SCHEDULER.py` (3245 → 3469 строк) и комплект документации в `docs/scheduler/` (`README.md`, `audit.md`, `diagrams.md`, `features.md`, `specs/SPEC-FEAT-SCH-008.md`). Вспомогательные автосгенерированные тестовые каталоги (`tests/baseline/`, `tests/scheduler_arch_tests/`) по итогам код-ревью и обсуждения на планёрке удалены из ветки.
-
-| Критерий M1 | Статус | Подтверждение |
+| Шаг / PR | Статус | Что фактически сделано в `PyScheduler/SCHEDULER.py` |
 |---|---|---|
-| Протоколы введены, потребители НЕ переключены (R1) | выполнено | семь `typing.Protocol` (`CqiView`, `GridView`, `AmcView`, `BuffersView`, `StatsView`, `ReadOnlyStateView`, `StateView`) и семь `Legacy*View`-адаптеров в конце `SCHEDULER.py` (:3248–3469) |
-| Адаптеры делегируют и не дублируют расчётную логику (R5) | выполнено | `LegacyGridView` делегирует `rb_per_slot`, `GET_RBG_SIZE`, `GET_RBG_INDICES`, `ALLOCATE_RBG` (без дублирования формулы `total_rbg`); `LegacyStatsView` использует единый источник `GLOBALS.QCI_PROFILES` для `gbr_of` и `is_gbr` |
-| Разделение прав чтения и записи состояния ротации | выполнено | `ReadOnlyStateView` предоставляет только геттеры для ранкеров; `StateView` добавляет сеттеры для аллокаторов; `LegacyStateView` проверяет владение полями `rr_ue_offset`/`rr_rbg_offset` через `hasattr` перед записью |
-| Защита кэша CQI и словаря UE от мутаций (A3) | выполнено | `LegacyCqiView.get_sb` возвращает копию `list(...)`; `LegacyStatsView` копирует словарь `dict(ues_by_id)` и проверяет наличие `average_throughput` у каждого объекта UE |
-| Синхронизация `available_algorithms()` с `create()` ([BUG-SCH-010](../audit.md#bug-sch-010)) | выполнено | в строках :287 и :289 возвращаются `'FD_BCQI'` и `'FD_PF'`, все восемь имён из `available_algorithms()` успешно создаются фабрикой `SchedulerInterface.create()` |
-| Сохранность номеров строк существующего кода | выполнено | в строках 1–3245 изменены ровно 3 строки заменой 1:1 (:114, :287, :289), сдвига якорей нет |
-| Стиль кода | выполнено | `ruff check --config .ruff.toml PyScheduler/SCHEDULER.py` — 0 замечаний в новой секции (:3248–3469), все строки ≤ 100 символов |
+| **M1 + M8a** (PR #44) | **влит в `dev`** (`b388218`, 2026-11-07) | 7 статических `typing.Protocol` (`CqiView`, `GridView`, `AmcView`, `BuffersView`, `StatsView` с потоковой сигнатурой `gbr_of/is_gbr(qci, ue_id=None, lcid=None)`, `ReadOnlyStateView`, `StateView`) + 7 тонких `Legacy*View`-адаптеров с `__slots__`; синхронизированы `'FD_BCQI'` и `'FD_PF'` в `available_algorithms()` ([BUG-SCH-010](../audit.md#bug-sch-010) закрыт); размещена документация `docs/scheduler/`; вспомогательные каталоги автосгенерированных тестов исключены |
+| **M1a** (PR #48) | **влит в `dev`** (2026-11-14) | Введён временный протокол `ResourcePrefilter` (:3287) и две стратегии — `DefaultPrefilter` (:3302, порог 95%) и `PassThroughPrefilter` (:3362); в `SchedulerInterface.__init__` кэшируются `_cqi_view`, `_grid_view`, `_amc_view`, а `prefilter_strategy` инициализируется как `None` (явный выбор стратегии в `__init__` каждого алгоритма, иначе `NotImplementedError`); удалены 6 copy-paste заглушек `_apply_pdsch_estimation`, в `BasicQosAwareScheduler` исправлена строка лога на `"BasicQoS per-RBG selection"` ([DOC-SCH-004](../audit.md#doc-sch-004) закрыт); `ResourcePrefilter` зафиксирован как временный до поглощения `ResourceAllocator` в M4–M5 |
+| **M2a + M2b** (PR #53) | **в ревью / правки внесены** (2026-11-21) | Введён `@dataclass(slots=True) class SchedulerState(rr_ue_offset=0, rr_rbg_offset=0)` (:3192); единственный экземпляр `self.state = SchedulerState()` создаётся в `SchedulerInterface.__init__` (:350, по замечанию ревью PR #53 — владение состоянием у оркестратора по §5.1); `RoundRobinScheduler` и `FDxFairGreedyScheduler` переведены на `self.state` с сохранением compatibility `@property` `rr_ue_offset`/`rr_rbg_offset`; `served_in_round` оставлен локальной переменной `_allocate_pdsch`; `LegacyReadOnlyStateView`/`LegacyStateView` сохраняют прежний контракт (`AttributeError` для 6 алгоритмов без ротации); поведение всех 8 алгоритмов побитово совпадает с `dev` |
 
 ## 9. Проверка и регрессия
 
@@ -705,6 +648,16 @@ flowchart LR
 | Документация модуля — в репозитории: `docs/scheduler/` (четыре документа + `specs/`), обновляется владельцем модуля вместе с кодом | [README §8](../README.md) |
 | Актуализация поставки PR #44 по итогам код-ревью: упрощены протоколы (`Protocol` без `@runtime_checkable` и `total_rbg`), разделены `ReadOnlyStateView` и `StateView`, синхронизирован `available_algorithms()`, удалены избыточные сгенерированные тестовые каталоги | 4.3, 5.4, 8.3 |
 
+### 11.4 Изменения по итогам код-ревью PR #48 (M1a) и PR #53 (M2a/M2b)
+
+| Решение ревью | Где отражено |
+|---|---|
+| `StatsView.gbr_of(qci, ue_id=None, lcid=None)` и `is_gbr(...)` сохраняют потоковую семантику bearer/flow и не закрепляют QCI как будущий источник правды (совместимость с issue #41); `LegacyStatsView` временно читает дефолт из `QCI_PROFILES` | 4.4, 5.4, 8.3 |
+| Отдельный протокол `ResourcePrefilter` (введён в M1a / PR #48) зафиксирован как **временный** миграционный слой: на шагах **M4–M5** метод `prefilter(...)` входит в целевой контракт `ResourceAllocator` (`abc.ABC`), а отдельный `ResourcePrefilter` удаляется | 5.3, 5.4, 8, 8.3 |
+| Из `SchedulerInterface.__init__` убран неявный `DefaultPrefilter`: `self.prefilter_strategy = None`, каждый алгоритм задаёт стратегию явно в своём `__init__`, иначе `_apply_pdsch_estimation` выбрасывает `NotImplementedError` | 5.3, 8, 8.3 |
+| Владение `SchedulerState` приведено к §5.1 (ревью PR #53): единственный экземпляр `self.state = SchedulerState()` создаётся в `SchedulerInterface.__init__`, а `RoundRobinScheduler` и `FDxFairGreedyScheduler` оставляют только compatibility `@property` `rr_ue_offset`/`rr_rbg_offset` | 5.1, 8, 8.3 |
+| Допускается объединять логически связанные мелкие подэтапы в один PR с отдельными атомарными коммитами (например, M2a + M2b в PR #53); поведенческие багфиксы (`BUG-SCH-004`, `BUG-SCH-014`–`016`) выносятся в отдельный `fix(scheduler)` PR (R2/R3) | 7.1, 8 |
+
 ## 12. Ошибочные и граничные случаи
 
 - Неизвестное имя алгоритма — `ValueError: Unknown algorithm` (:268), поведение фабрики не меняется.
@@ -746,8 +699,6 @@ flowchart LR
 - [x] Производительность проверяется профилем до/после, а не только wall-clock — §8.2, §9.
 - [x] Документация модуля размещается в репозитории и обновляется владельцем модуля вместе с кодом — [README §8](../README.md).
 
-**Критерий принятия документа:** на любой промежуточной стадии работу над новой архитектурой можно остановить, и уже слитая в `dev` версия PyScheduler остаётся рабочей, исследовательски воспроизводимой и совместимой с существующим API. Это важнее количества вынесенных классов и сокращённых строк кода.
-
 ## 14. Отложенные функции и явные non-goals
 
 Не входят в M0–M8 и не должны попадать в них скрыто (R6); каждая позиция — будущая самостоятельная карточка с ID из реестра команды:
@@ -764,5 +715,3 @@ flowchart LR
 - целевая раскладка пакетов проекта (папки моделей, ядра, планировщиков, MAC-уровня) и схема версионирования релизов — вне объёма FEAT-SCH-008: фиксируются владельцем репозитория, от них зависит только путь пакета в M8b (§7, §8);
 - исправление [BUG-SCH-009](../audit.md#bug-sch-009) (RES_GRID owner-check) — работа владельца RES_GRID;
 - переход flow-ключа `(UE, QCI)` → FlowId/LCID (§12).
-
-**Что не требовать от этой работы сейчас** (граница ожиданий): перечисленное выше считается out-of-scope FEAT-SCH-008; ожидаемый результат — согласованная спецификация v4 и последующие атомарные зелёные PR по разделу 8.
