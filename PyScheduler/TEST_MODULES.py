@@ -3,7 +3,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 from BS_MODULE import BaseStation
 from MOBILITY_MODEL import MapBorders
+from RES_GRID import RES_GRID_LTE
+from SCHEDULER import SchedulerInterface
 from SIMULATION_MANAGER import SimulationManager
+from STATS_MANAGER import StatsManager, StatsManagerConfig
 from TRAFFIC_MODEL import PoissonModel
 from UE_MODULE import UECollection
 
@@ -174,16 +177,45 @@ def sim_with_manager():
     # Установка коллекции пользователей
     sim.set_ue_collection(ue_collection)
 
-    # Установка планировщика. Можно передвать параметры, которые
-    # поддерживает SchedulerInterface.
-    sim.set_scheduler(
+    # Установка параметров симуляции
+    sim_duration = 50000
+    sim.set_sim_duration(sim_duration)
+    sim.set_mobility_interval(500)
+    sim.set_channel_interval(10)
+    sim.enable_verbose_log(to_file=True)
+
+    # Создание сетки, планировщика и менеджера статистики (внешняя композиция)
+    num_frames = int(np.ceil(sim_duration / 10))
+    grid1 = RES_GRID_LTE(bandwidth=bs1.bandwidth, num_frames=num_frames)
+    scheduler1 = SchedulerInterface.create(
         algorithm="RoundRobin",
+        lte_grid=grid1,
+        bs=bs1,
         max_dl_ue_tti=None,
         pcfich=2,
         enable_window=False,
         window_size=4,
         max_dl_cce_allowance=None,
     )
+    stats_config1 = StatsManagerConfig(
+        enabled=True,
+        collect_interval=1,
+        history_max_len=sim_duration,
+        scheduler_level="full",
+        amc_level="full",
+        pdcch_level="full",
+        file_prefix="emp_stats",
+    ).to_statistics_config()
+    stats_mgr1 = StatsManager(
+        scheduler=scheduler1,
+        config=stats_config1,
+        buffer_provider=None if bs1.use_simple_buffer else bs1.buffer_manager,
+    )
+
+    # Передача готовых объектов в SimulationManager
+    sim.set_lte_grid(grid1)
+    sim.set_scheduler(scheduler1)
+    sim.set_stats_manager(stats_mgr1)
 
     # Настраиваем модели для каждого UE
     for ue in ue_collection.GET_ALL_USERS():
@@ -193,26 +225,6 @@ def sim_with_manager():
             model_type="Poisson",
             packet_rate=5000,
         )
-
-    # Установка длительности симуляции
-    sim.set_sim_duration(50000)
-    sim.set_mobility_interval(500)
-    sim.set_channel_interval(10)
-
-    # Включение verbose логирования. Для вывода всех логов в файл нужно
-    # поставить флаг to_file=True.
-    sim.enable_verbose_log(to_file=True)
-
-    # Установка менеджера статистики
-    sim.set_stats_manager(
-        enabled=True,  # Включить сбор
-        collect_interval=1,  # Собирать каждые n TTI
-        history_max_len=50000,
-        scheduler_level="full",  # Scheduler: только агрегированные метрики
-        amc_level="full",  # AMC: total throughput + avg bits/RB
-        pdcch_level="full",  # PDCCH: отключен (можно включить "basic")
-        file_prefix="emp_stats",  # Префикс файла: lte_stats.csv
-    )
 
     # Запуск симуляции
     sim.start_simulation()
@@ -284,9 +296,42 @@ def sim_with_manager_qos():
     # Установка коллекции пользователей
     sim.set_ue_collection(ue_collection)
 
-    # Установка планировщика. Можно передвать параметры, которые
-    # поддерживает SchedulerInterface.
-    sim.set_scheduler(algorithm="QosAware")
+    # Установка длительности симуляции
+    sim_duration = 5000
+    sim.set_sim_duration(sim_duration)
+
+    # Включение verbose логирования. Для вывода всех логов в файл нужно
+    # поставить флаг to_file=True.
+    sim.enable_verbose_log(to_file=True)
+
+    # Создание ресурсной сетки, планировщика и менеджера статистики (внешняя композиция)
+    num_frames = int(np.ceil(sim_duration / 10))
+    grid = RES_GRID_LTE(bandwidth=bs.bandwidth, num_frames=num_frames)
+    scheduler = SchedulerInterface.create(
+        algorithm="QosAware",
+        lte_grid=grid,
+        bs=bs,
+    )
+    stats_config = StatsManagerConfig(
+        enabled=True,
+        collect_interval=1,
+        history_max_len=sim_duration,
+        scheduler_level="full",
+        amc_level="full",
+        pdcch_level="basic",
+        qos_level="basic",
+        file_prefix="emp_stats",
+    ).to_statistics_config()
+    stats_mgr = StatsManager(
+        scheduler=scheduler,
+        config=stats_config,
+        buffer_provider=None if bs.use_simple_buffer else bs.buffer_manager,
+    )
+
+    # Передача готовых объектов в SimulationManager
+    sim.set_lte_grid(grid)
+    sim.set_scheduler(scheduler)
+    sim.set_stats_manager(stats_mgr)
 
     # Настраиваем модели для каждого UE
     config = [
@@ -323,25 +368,6 @@ def sim_with_manager_qos():
     ]
     
     sim.setup_traffic_profiles(config)
-
-    # Установка длительности симуляции
-    sim.set_sim_duration(5000)
-
-    # Включение verbose логирования. Для вывода всех логов в файл нужно
-    # поставить флаг to_file=True.
-    sim.enable_verbose_log(to_file=True)
-
-    # Установка менеджера статистики
-    sim.set_stats_manager(
-        enabled=True,
-        collect_interval=1,
-        history_max_len=5000,
-        scheduler_level="full",
-        amc_level="full",
-        pdcch_level="basic",
-        qos_level="basic",      # Вот за это тапками санными не кидайтесь, что полез не в свой модуль, согласовывать одну строку было крайне бы... излишним
-        file_prefix="emp_stats",
-    )
 
     # Запуск симуляции
     sim.start_simulation()
