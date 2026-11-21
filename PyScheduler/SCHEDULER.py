@@ -107,6 +107,8 @@
 # - M1: Protocol-контракты и Legacy*View-адаптеры в конце файла.
 # - M1a: оценка PDSCH вынесена в стратегии ResourcePrefilter (DefaultPrefilter /
 #   PassThroughPrefilter); каждый алгоритм задаёт стратегию явно в __init__.
+# - M2a/M2b: смещения ротации RR и FD_FGS вынесены в SchedulerState
+#   (владелец — SchedulerInterface; свойства rr_*_offset сохранены).
 #------------------------------------------------------------------------------
 """
 
@@ -344,6 +346,7 @@ class SchedulerInterface:
         self.verbose = verbose
 
         self.harq_manager = None  # Заготовка для HARQ
+        self.state = SchedulerState()
         self._cqi_view = LegacyCqiView(self)
         self._grid_view = LegacyGridView(self.lte_grid)
         self._amc_view = LegacyAmcView(self.amc)
@@ -1968,7 +1971,6 @@ class RoundRobinScheduler(SchedulerInterface):
 
     def __init__(self, lte_grid, bs, **kwargs):
         super().__init__(lte_grid, bs, **kwargs)
-        self.state = SchedulerState()
         self.prefilter_strategy = PassThroughPrefilter("Round Robin distributes evenly")
 
     @property
@@ -2343,7 +2345,6 @@ class FDxFairGreedyScheduler(SchedulerInterface):
 
     def __init__(self, lte_grid, bs, **kwargs):
         super().__init__(lte_grid, bs, **kwargs)
-        self.state = SchedulerState()
         self.prefilter_strategy = PassThroughPrefilter("FD-FGS per-RBG selection")
 
     @property
