@@ -39,12 +39,98 @@
 #     - Добавлены тесты. Теперь будем знать, что работает не так.
 #     - Добавлена визуализация ресурсной сетки. Так много я еще не страдал.
 #     - На будущее. Убрать тесты в отдельный модуль.
+#
+#   v1.1.0 - 2026-03-14:
+#   Автор: Македон Никита
+#   Новые классы и архитектура:
+#   - Добавлен SlidingWindowCache — FIFO-кэш с вытеснением старых TTI, ограничивает память окном window_size (по умолчанию 100 TTI)
+#   - Добавлен абстрактный GridInterface — интерфейс для типизации сетки в планировщике
+#   - Добавлен новый класс RES_GRID_LTE_CACHED, реализующий GridInterface; 
+#   - Cтарый RES_GRID_LTE оставлен для совместимости
+#   Оптимизации
+#   - Slot.GET_RES_BLCK() — O(n) цикл по всем RB заменён на O(1) lookup через новый словарь resource_blocks_by_freq
+#   - get_rbg_indices() — результат кэшируется в _rbg_indices_cache, вычисляется максимум 16–25 раз вместо миллионов
+#   - В allocate_rbg() / release_rbg() / generate_bitmap() — subframe достаётся из кэша один раз вместо повторных обращений
+#   Тесты
+#   - Убраны в tests/test_res_grid.py
+#   - Добавлены новые для RES_GRID_LTE_CACHED
+#   v1.1.1 - 2026-04-01:
+#   Автор: Македон Никита
+#   Версия Python Kernel: 3.12.9
+#   - Продолжена оптимизация ресурсной сетки LTE
+#   - Добавлено более компактное хранение назначений RBG
+#   - Уменьшены накладные расходы на создание объектов TTI
+#   - Реализовано ленивое создание детальной структуры subframe/slot
+#   - Ускорена работа allocate/release и генерации bitmap
+#   - Сохранена совместимость со старой реализацией сетки
+#   - Добавлен новый тест test_res_grid_equivalence
 #------------------------------------------------------------------------------
 """
 
 from typing import Dict, List, Optional, Union
+from collections import OrderedDict
 from BS_MODULE import BaseStation
-# %matplotlib
+
+
+# ============================================================================
+# НОВОЕ в v1.1.0: Скользящее окно кэширования для оптимизации памяти
+# ============================================================================
+
+class SlidingWindowCache:
+    """Кэш FIFO для оптимизации памяти (только последние N TTI в памяти)"""
+    
+    def __init__(self, window_size: int = 100):
+        self.window_size = window_size
+        self.cache: OrderedDict[int, Dict] = OrderedDict()
+        self.stats = {'hits': 0, 'misses': 0, 'evictions': 0, 'current_size': 0}
+    
+    def get(self, tti: int) -> Optional[Dict]:
+        """Попытка получить кэшированные данные для TTI"""
+        if tti in self.cache:
+            self.stats['hits'] += 1
+            self.cache.move_to_end(tti)
+            return self.cache[tti]
+        self.stats['misses'] += 1
+        return None
+    
+    def put(self, tti: int, data: Dict) -> None:
+        """Добавить данные в кэш с автоматическим удалением старых"""
+        if tti not in self.cache:
+            self.stats['current_size'] += 1
+        self.cache[tti] = data
+        self.cache.move_to_end(tti)
+        while len(self.cache) > self.window_size:
+            self.cache.popitem(last=False)
+            self.stats['current_size'] -= 1
+            self.stats['evictions'] += 1
+    
+    def get_stats(self) -> Dict:
+        """Получить статистику кэша (для мониторинга)"""
+        total = self.stats['hits'] + self.stats['misses']
+        hit_rate = self.stats['hits'] / total if total > 0 else 0
+        return {
+            'window_size': self.window_size,
+            'current_size': self.stats['current_size'],
+            'hits': self.stats['hits'],
+            'misses': self.stats['misses'],
+            'hit_rate': hit_rate,
+            'evictions': self.stats['evictions']
+        }
+
+
+class GridInterface:
+    """Абстрактный интерфейс для работы с ресурсной сеткой (НОВОЕ в v1.1.0)"""
+    def allocate_rbg(self, tti: int, rbg_idx: int, ue_id: int) -> bool: raise NotImplementedError
+    def release_rbg(self, tti: int, rbg_idx: int) -> bool: raise NotImplementedError
+    def get_rbg_indices(self, rbg_idx: int) -> List[int]: raise NotImplementedError
+    def get_rbg_size(self) -> int: raise NotImplementedError
+    def generate_bitmap(self, tti: int, ue_id: int) -> List[int]: raise NotImplementedError
+    def get_window_stats(self) -> Dict: raise NotImplementedError
+
+
+# ============================================================================
+# БАЗОВЫЕ КЛАССЫ (v1.0.2) - С ОПТИМИЗАЦИЕЙ УРОВНЯ 2
+# ============================================================================
 
 class RES_BLCK:
     """
@@ -61,18 +147,17 @@ class RES_BLCK:
         """
         self.id = id
         self.slot_id = slot_id
-        # self.tti_idx = tti_idx
         self.freq_idx = freq_idx
-        self.UE_ID = None  # ID пользователя, которому назначен RB
-        self.status = "free"  # Статус: "free" или "assigned"
+        self.UE_ID = None # ID пользователя, которому назначен RB
+        self.status = "free" # Статус: "free" или "assigned"
     
     def ASSIGN_RB(self, UE_ID: int) -> bool:
         """
         Назначить ресурсный блок пользователю.
-        
+
         Args:
             UE_ID: Идентификатор пользователя
-            
+
         Returns:
             bool: True, если блок успешно назначен, False в противном случае
         """
@@ -85,7 +170,7 @@ class RES_BLCK:
     def RELEASE_RB(self) -> bool:
         """
         Освободить ресурсный блок.
-        
+
         Returns:
             bool: True, если блок успешно освобожден
         """
@@ -96,57 +181,57 @@ class RES_BLCK:
     def CHCK_RB(self) -> bool:
         """
         Проверить, свободен ли ресурсный блок.
-        
+
         Returns:
             bool: True, если блок свободен, False в противном случае
         """
         return self.status == "free"
-    
-    # def __repr__(self) -> str:
-    #     """Строковое представление объекта"""
-    #     return f"RB(id={self.id}, time={self.time_idx}, freq={self.freq_idx}, status={self.status}, user={self.UE_ID})"
 
 
 class Slot:
     """
     Класс, представляющий слот в структуре LTE.
     Слот содержит набор ресурсных блоков по частоте.
+    
+    ОПТИМИЗАЦИЯ УРОВНЯ 2:
+    - Добавлен resource_blocks_by_freq для O(1) доступа вместо O(n)
     """
+
     def __init__(self, slot_id: str, rb_per_slot: int):
         """
         Инициализация слота.
-        
+
         Args:
             slot_id: Идентификатор слота
-            num_rb: Количество ресурсных блоков по частоте
+            rb_per_slot: Количество ресурсных блоков по частоте
         """
         self.id = slot_id
         self.resource_blocks: Dict[str, RES_BLCK] = {}
+        self.resource_blocks_by_freq: Dict[int, RES_BLCK] = {}  # ← ОПТИМИЗАЦИЯ
         
         for rb_idx in range(rb_per_slot):
-            rb_id = f"RB_{slot_id}_{rb_idx}"  # Унифицированный формат
-            self.resource_blocks[rb_id] = RES_BLCK(rb_id, slot_id, rb_idx)
+            rb_id = f"RB_{slot_id}_{rb_idx}" # Унифицированный формат
+            rb = RES_BLCK(rb_id, slot_id, rb_idx)
+            self.resource_blocks[rb_id] = rb
+            self.resource_blocks_by_freq[rb_idx] = rb  # ← НОВОЕ: O(1) доступ
     
     def GET_RES_BLCK(self, freq_idx: int) -> Optional[RES_BLCK]:
         """
         Получить ресурсный блок по частотному индексу.
-        
+
         Args:
-            rb_idx: Частотный индекс ресурсного блока
-            
+            freq_idx: Частотный индекс ресурсного блока
+
         Returns:
             RES_BLCK или None, если блок не найден
         """
-       
-        for rb in self.resource_blocks.values():
-            if rb.freq_idx == freq_idx:
-                return rb
-        return None
+        # ОПТИМИЗИРОВАНО: O(1) dict lookup вместо O(n) цикла
+        return self.resource_blocks_by_freq.get(freq_idx)
     
     def GET_ALL_RES_BLCK(self) -> List[RES_BLCK]:
         """
         Получить все ресурсные блоки в слоте.
-        
+
         Returns:
             List[RES_BLCK]: Список всех ресурсных блоков
         """
@@ -155,7 +240,7 @@ class Slot:
     def GET_FREE_RES_BLCK(self) -> List[RES_BLCK]:
         """
         Получить все свободные ресурсные блоки в слоте.
-        
+
         Returns:
             List[RES_BLCK]: Список свободных ресурсных блоков
         """
@@ -167,15 +252,16 @@ class Subframe:
     Класс, представляющий подкадр (TTI) в структуре LTE.
     Подкадр состоит из 2 слотов.
     """
+
     def __init__(self, subframe_id: int, rb_per_slot: int):
         """
         Инициализация подкадра.
-        
+
         Args:
             subframe_id: Идентификатор подкадра
             rb_per_slot: Количество ресурсных блоков в слоте
         """
-        self.id = subframe_id  
+        self.id = subframe_id
         self.slots = [
             Slot(f"sub_{subframe_id}_slot_0", rb_per_slot),
             Slot(f"sub_{subframe_id}_slot_1", rb_per_slot)
@@ -184,10 +270,10 @@ class Subframe:
     def GET_SLOT(self, slot_idx: int) -> Optional[Slot]:
         """
         Получить слот по индексу.
-        
+
         Args:
             slot_idx: Индекс слота (0 или 1)
-            
+
         Returns:
             Slot или None, если слот не найден
         """
@@ -198,7 +284,7 @@ class Subframe:
     def GET_ALL_RES_BLCK(self) -> List[RES_BLCK]:
         """
         Получить все ресурсные блоки в подкадре.
-        
+
         Returns:
             List[RES_BLCK]: Список всех ресурсных блоков
         """
@@ -210,7 +296,7 @@ class Subframe:
     def GET_FREE_RES_BLCK(self) -> List[RES_BLCK]:
         """
         Получить все свободные ресурсные блоки в подкадре.
-        
+
         Returns:
             List[RES_BLCK]: Список свободных ресурсных блоков
         """
@@ -225,13 +311,14 @@ class Frame:
     Класс, представляющий кадр в структуре LTE.
     Кадр состоит из 10 подкадров.
     """
+
     def __init__(self, frame_id: int, rb_per_slot: int):
         """
         Инициализация кадра.
-        
+
         Args:
             frame_id: Идентификатор кадра
-            num_rb: Количество ресурсных блоков по частоте
+            rb_per_slot: Количество ресурсных блоков по частоте
         """
         self.id = frame_id
         self.subframes = [Subframe(i, rb_per_slot) for i in range(10)]
@@ -239,10 +326,10 @@ class Frame:
     def GET_SUBFRAME(self, subframe_idx: int) -> Optional[Subframe]:
         """
         Получить подкадр по индексу.
-        
+
         Args:
             subframe_idx: Индекс подкадра (0-9)
-            
+
         Returns:
             Subframe или None, если подкадр не найден
         """
@@ -253,7 +340,7 @@ class Frame:
     def GET_ALL_RES_BLCK(self) -> List[RES_BLCK]:
         """
         Получить все ресурсные блоки в кадре.
-        
+
         Returns:
             List[RES_BLCK]: Список всех ресурсных блоков
         """
@@ -265,7 +352,7 @@ class Frame:
     def GET_FREE_RES_BLCK(self) -> List[RES_BLCK]:
         """
         Получить все свободные ресурсные блоки в кадре.
-        
+
         Returns:
             List[RES_BLCK]: Список свободных ресурсных блоков
         """
@@ -275,10 +362,284 @@ class Frame:
         return free_rbs
 
 
+# ============================================================================
+# НОВОЕ в v1.1.0: Оптимизированная реализация с кэшем
+# ============================================================================
+
+class RES_GRID_LTE_CACHED(GridInterface):
+    """
+    Сетка LTE с кэшированием скользящего окна (100x экономия памяти)
+
+    Основная оптимизация для профиля:
+    - Ведём per-TTI массив rbg_alloc (RBG -> UE_ID/None) и строим bitmap из него за O(total_rbg),
+      вместо сканирования всех RB в каждом bitmap (которое порождает миллионы GET_RES_BLCK).
+    - Оставляем legacy-scan (fallback) для валидации/совместимости.
+    """
+
+    # Словарь соответствия полосы частот и количества RB согласно стандарту LTE
+    BANDWIDTH_TO_RB = {1.4: 6, 3: 15, 5: 25, 10: 50, 15: 75, 20: 100}
+    
+    # Словарь размеров ресурсных групп по TS 36.213
+    RBG_SIZE_TABLE = {1.4: 1, 3: 2, 5: 2, 10: 3, 15: 4, 20: 4}
+
+    def __init__(self, bandwidth: float = 10, window_size: int = 100,
+                 cp_type: str = "normal", verbose: bool = False,
+                 enable_bitmap_cache: bool = True,
+                 enable_resgrid_numpy: bool = False,
+                 fast_rbg_only: bool = True):
+        if bandwidth not in self.BANDWIDTH_TO_RB:
+            raise ValueError(f"Недопустимая полоса: {list(self.BANDWIDTH_TO_RB.keys())}")
+
+        self.bandwidth = bandwidth
+        self.rb_per_slot = self.BANDWIDTH_TO_RB[bandwidth]
+        self.num_rb = self.rb_per_slot * 2
+        self.cache = SlidingWindowCache(window_size)
+        self.current_tti, self.bs, self.verbose = 0, None, verbose
+
+        self._rbg_indices_cache: Dict[int, List[int]] = {}
+
+        self.enable_bitmap_cache = enable_bitmap_cache
+        self.enable_resgrid_numpy = enable_resgrid_numpy
+        self.strict_rb_precheck = False   # fast mode по умолчанию
+        self.lazy_subframe = True         # subframe создаём только при необходимости
+        self.fast_rbg_only = fast_rbg_only
+
+        self._rbg_size = self.RBG_SIZE_TABLE[self.bandwidth]
+        self._total_rbg = (self.rb_per_slot + self._rbg_size - 1) // self._rbg_size
+
+        try:
+            import numpy as _np  # noqa: F401
+            self._np_available = True
+        except Exception:
+            self._np_available = False
+            self.enable_resgrid_numpy = False
+
+    def _get_or_create_tti_state(self, tti: int) -> Dict:
+        cached = self.cache.get(tti)
+        if cached:
+            return cached
+
+        sf = None
+        if not self.lazy_subframe:
+            sf = Subframe(tti % 10, self.rb_per_slot)
+
+        state = {
+            'tti': tti,
+            'subframe': sf,
+            'rbg_alloc': [None] * self._total_rbg,
+        }
+
+        if self.enable_resgrid_numpy and self._np_available:
+            import numpy as np
+            state['rbg_alloc_np'] = np.full((self._total_rbg,), -1, dtype=np.int32)
+
+        self.cache.put(tti, state)
+        if self.verbose:
+            print(f"[RES_GRID] Created TTI state for TTI {tti}")
+        return state
+
+    def _get_or_create_subframe(self, tti: int) -> Subframe:
+        state = self._get_or_create_tti_state(tti)
+        sf = state.get('subframe')
+
+        if sf is None:
+            sf = Subframe(tti % 10, self.rb_per_slot)
+            state['subframe'] = sf
+
+            alloc = state.get('rbg_alloc', [])
+            for rbg_idx, owner in enumerate(alloc):
+                if owner is None:
+                    continue
+
+                rb_indices = self.get_rbg_indices(rbg_idx)
+                for slot in sf.slots:
+                    rb_by_freq = slot.resource_blocks_by_freq
+                    for freq in rb_indices:
+                        rb = rb_by_freq.get(freq)
+                        if rb:
+                            rb.ASSIGN_RB(owner)
+
+            if self.verbose:
+                print(f"[RES_GRID] Materialized Subframe for TTI {tti}")
+
+        return sf
+
+    def allocate_rbg(self, tti: int, rbg_idx: int, ue_id: int) -> bool:
+        """Выделить RBG (Resource Block Group) пользователю.
+
+        Цели:
+        - Быстрый O(1) pre-check по компактной карте rbg_alloc (и rbg_alloc_np при наличии).
+        - В fast path не выполняем полный обход RB (и не материализуем Subframe), если в этом нет нужды.
+        - RB-структуры обновляем только если Subframe уже существует, либо если включён strict_rb_precheck.
+
+        Важно:
+        - Источник истины в cached-версии: state['rbg_alloc'] (и state['rbg_alloc_np'] если включено).
+        - При lazy_subframe=True subframe может быть None, пока не нужен legacy-scan/отладка.
+        """
+        state = self._get_or_create_tti_state(tti)
+
+        # --- O(1) pre-check занятости RBG ---
+        if 'rbg_alloc_np' in state:
+            if int(state['rbg_alloc_np'][rbg_idx]) != -1:
+                return False
+        else:
+            if state['rbg_alloc'][rbg_idx] is not None:
+                return False
+
+        strict = bool(getattr(self, 'strict_rb_precheck', False))
+
+        # --- STRICT PATH: полная проверка RB (дороже, но максимально строго) ---
+        if strict:
+            sf = self._get_or_create_subframe(tti)
+            rb_indices = self.get_rbg_indices(rbg_idx)
+
+            for slot in sf.slots:
+                rb_by_freq = slot.resource_blocks_by_freq
+                for freq in rb_indices:
+                    rb = rb_by_freq.get(freq)
+                    if rb is None or not rb.CHCK_RB():
+                        return False
+
+            # Commit: обновляем компактную карту
+            state['rbg_alloc'][rbg_idx] = ue_id
+            if 'rbg_alloc_np' in state:
+                state['rbg_alloc_np'][rbg_idx] = int(ue_id)
+
+            # Commit: обновляем RB-структуры
+            for slot in sf.slots:
+                rb_by_freq = slot.resource_blocks_by_freq
+                for freq in rb_indices:
+                    rb = rb_by_freq.get(freq)
+                    if not (rb and rb.ASSIGN_RB(ue_id)):
+                        self.release_rbg(tti, rbg_idx)
+                        return False
+
+            return True
+
+        # --- FAST PATH: только компактная карта, RB-слой трогаем только если он уже существует ---
+        state['rbg_alloc'][rbg_idx] = ue_id
+        if 'rbg_alloc_np' in state:
+            state['rbg_alloc_np'][rbg_idx] = int(ue_id)
+
+        sf = state.get('subframe')
+        if sf is None:
+            return True
+
+        rb_indices = self.get_rbg_indices(rbg_idx)
+        assigned = []
+
+        for slot in sf.slots:
+            rb_by_freq = slot.resource_blocks_by_freq
+            for freq in rb_indices:
+                rb = rb_by_freq.get(freq)
+                if rb and rb.ASSIGN_RB(ue_id):
+                    assigned.append(rb)
+                else:
+                    state['rbg_alloc'][rbg_idx] = None
+                    if 'rbg_alloc_np' in state:
+                        state['rbg_alloc_np'][rbg_idx] = -1
+                    for r in assigned:
+                        r.RELEASE_RB()
+                    return False
+
+        return True
+
+
+    def release_rbg(self, tti: int, rbg_idx: int) -> bool:
+        state = self._get_or_create_tti_state(tti)
+
+        # Всегда чистим компактную карту
+        state['rbg_alloc'][rbg_idx] = None
+        if 'rbg_alloc_np' in state:
+            state['rbg_alloc_np'][rbg_idx] = -1
+
+        # RB трогаем только если subframe уже существует
+        sf = state.get('subframe')
+        if sf is None and self.strict_rb_precheck:
+            sf = self._get_or_create_subframe(tti)
+
+        if sf is not None:
+            rb_indices = self.get_rbg_indices(rbg_idx)
+            for slot in sf.slots:
+                rb_by_freq = slot.resource_blocks_by_freq
+                for freq in rb_indices:
+                    rb = rb_by_freq.get(freq)
+                    if rb:
+                        rb.RELEASE_RB()
+
+        return True
+
+    def get_rbg_indices(self, rbg_idx: int) -> List[int]:
+        cached = self._rbg_indices_cache.get(rbg_idx)
+        if cached is None:
+            start = rbg_idx * self._rbg_size
+            cached = list(range(start, min(start + self._rbg_size, self.rb_per_slot)))
+            self._rbg_indices_cache[rbg_idx] = cached
+        return cached
+
+    def get_rbg_size(self) -> int:
+        return self._rbg_size
+
+    def _generate_bitmap_legacy_scan(self, tti: int, ue_id: int) -> List[int]:
+        sf = self._get_or_create_subframe(tti)
+        bitmap = []
+        for rbg_idx in range(self._total_rbg):
+            allocated = False
+            rb_indices = self.get_rbg_indices(rbg_idx)
+            for slot in sf.slots:
+                rb_by_freq = slot.resource_blocks_by_freq
+                for freq in rb_indices:
+                    rb = rb_by_freq.get(freq)
+                    if rb and rb.UE_ID == ue_id:
+                        allocated = True
+                        break
+                if allocated:
+                    break
+            bitmap.append(1 if allocated else 0)
+        return bitmap
+
+    def generate_bitmap(self, tti: int, ue_id: int) -> List[int]:
+        if self.enable_bitmap_cache:
+            state = self._get_or_create_tti_state(tti)
+            if 'rbg_alloc_np' in state:
+                arr = state['rbg_alloc_np']
+                return (arr == ue_id).astype('int8').tolist()
+            alloc = state['rbg_alloc']
+            return [1 if v == ue_id else 0 for v in alloc]
+        return self._generate_bitmap_legacy_scan(tti, ue_id)
+
+    def get_window_stats(self) -> Dict:
+        return self.cache.get_stats()
+
+    def SET_BS(self, bs: BaseStation):
+        self.bs = bs
+
+    def ALLOCATE_RBG(self, tti: int, rbg_idx: int, UE_ID: int) -> bool:
+        return self.allocate_rbg(tti, rbg_idx, UE_ID)
+
+    def RELEASE_RBG(self, tti: int, rbg_idx: int) -> bool:
+        return self.release_rbg(tti, rbg_idx)
+
+    def GET_RBG_INDICES(self, rbg_idx: int) -> List[int]:
+        return self.get_rbg_indices(rbg_idx)
+
+    def GET_RBG_SIZE(self) -> int:
+        return self.get_rbg_size()
+
+    def GENERATE_BITMAP(self, tti: int, UE_ID: int) -> List[int]:
+        return self.generate_bitmap(tti, UE_ID)
+
+# ============================================================================
+# ОРИГИНАЛЬНАЯ РЕАЛИЗАЦИЯ (v1.0.2) - ДЛЯ СОВМЕСТИМОСТИ
+# ============================================================================
+
 class RES_GRID_LTE:
     """
+    Оригинальная сетка LTE (v1.0.2) - используйте RES_GRID_LTE_CACHED для новых проектов
+    
     Основной класс для моделирования ресурсной сетки LTE.
     """
+    
     # Словарь соответствия полосы частот и количества RB согласно стандарту LTE
     BANDWIDTH_TO_RB = {
         1.4: 6,    # 6 RB на слот → 12 RB на TTI
@@ -291,9 +652,8 @@ class RES_GRID_LTE:
     
     # Словарь размеров ресурсных групп по TS 36.213
     RBG_SIZE_TABLE = {
-    1.4: 1, 3: 2, 5: 2, 10: 3, 15: 4, 20: 4
+        1.4: 1, 3: 2, 5: 2, 10: 3, 15: 4, 20: 4
     }
-
     
     def __init__(self, bandwidth: float = 10, num_frames: int = 10, cp_type: str = "normal"):
         """
@@ -325,8 +685,9 @@ class RES_GRID_LTE:
             "allocated_rbs": 0,
             "total_rbs": self.num_rb * self.total_tti,
             "allocation_by_user": {},
-            "allocation_by_tti": {tti: 0 for tti in range(self.total_tti)}  # Инициализация всех TTI
+            "allocation_by_tti": {tti: 0 for tti in range(self.total_tti)} # Инициализация всех TTI
         }
+        
         # Инициализация rb_map для быстрого доступа к ресурсным блокам
         self._init_rb_map()
         self.bs = None
@@ -371,12 +732,6 @@ class RES_GRID_LTE:
             return False
         
         rb = self.GET_RB(tti, slot_id, freq_idx)
-        if rb is None:
-            print(f"[DEBUG GRID] GET_RB=None tti={tti} slot_id={slot_id} freq={freq_idx}")
-            return False
-        if not rb.CHCK_RB():
-            print(f"[DEBUG GRID] RB busy tti={tti} slot_id={slot_id} freq={freq_idx} ue={rb.UE_ID}")
-            return False
         if rb and rb.CHCK_RB():
             success = rb.ASSIGN_RB(UE_ID)
             if success:
@@ -429,12 +784,28 @@ class RES_GRID_LTE:
 
     def ALLOCATE_RBG(self, tti: int, rbg_idx: int, UE_ID: int) -> bool:
         rb_indices = self.GET_RBG_INDICES(rbg_idx)
+        subframe = tti % 10
+
+        # ---------- PRE-CHECK ----------
         for slot in [0, 1]:
-            slot_id = f"sub_{tti%10}_slot_{slot}"
+            slot_id = f"sub_{subframe}_slot_{slot}"
             for freq in rb_indices:
-                if not self.ALLOCATE_RB(tti, slot_id, freq, UE_ID):
-                    self.RELEASE_RBG(tti, rbg_idx)
+                rb = self.GET_RB(tti, slot_id, freq)
+                if rb is None or not rb.CHCK_RB():
                     return False
+
+        # ---------- COMMIT ----------
+        allocated_pairs = []
+        for slot in [0, 1]:
+            slot_id = f"sub_{subframe}_slot_{slot}"
+            for freq in rb_indices:
+                if self.ALLOCATE_RB(tti, slot_id, freq, UE_ID):
+                    allocated_pairs.append((slot_id, freq))
+                else:
+                    for sid, f in allocated_pairs:
+                        self.RELEASE_RB(tti, sid, f)
+                    return False
+
         return True
 
     def RELEASE_RBG(self, tti: int, rbg_idx: int) -> bool:
@@ -589,125 +960,3 @@ class RES_GRID_LTE:
     def SET_BS(self, bs: BaseStation):
         """Установка ссылки на базовую станцию"""
         self.bs = bs
-
-def test_rb_allocation():
-    grid = RES_GRID_LTE(bandwidth=10)
-    
-    # Выделение RB в первом слоте
-    assert grid.ALLOCATE_RB(0, "sub_0_slot_0", 10, 100), "Ошибка выделения"
-    
-    # Попытка повторного выделения
-    assert not grid.ALLOCATE_RB(0, "sub_0_slot_0", 10, 200), "Ожидалась ошибка"
-    
-    # Выделение во втором слоте
-    assert grid.ALLOCATE_RB(0, "sub_0_slot_1", 10, 100), "Ошибка выделения"
-    # assert grid.stats["allocation_by_tti"][0] == 1, "Счетчик TTI не обновлен"
-    
-    # Проверка статуса
-    rb1 = grid.GET_RB(0, "sub_0_slot_0", 10)
-    rb2 = grid.GET_RB(0, "sub_0_slot_1", 10)
-    assert rb1.UE_ID == 100 and rb2.UE_ID == 100, "Некорректное назначение"
-
-def test_bandwidth_configuration():
-    for bw, expected_rb in [(1.4, 6), (3, 15), (5, 25), (10, 50), (15, 75), (20, 100)]:
-        grid = RES_GRID_LTE(bandwidth=bw)
-        assert grid.rb_per_slot == expected_rb, f"Ошибка: {bw} МГц → {expected_rb} RB/слот"
-        assert grid.num_rb == expected_rb * 2, "Некорректное число RB на TTI"
-
-def test_frame_structure():
-    grid = RES_GRID_LTE(num_frames=2)
-    
-    # Проверка количества кадров
-    assert len(grid.frames) == 2, "Ошибка количества кадров"
-    
-    # Проверка структуры подкадров
-    frame = grid.frames[0]
-    assert len(frame.subframes) == 10, "Ошибка: 10 подкадров/кадр"
-    
-    # Проверка структуры слотов
-    subframe = frame.subframes[0]
-    assert len(subframe.slots) == 2, "Ошибка: 2 слота/подкадр"
-    
-    # Проверка длительности TTI
-    assert grid.total_tti == 20, "Ошибка: 2 кадра × 10 TTI = 20"
-    
-def test_rb_allocation_semantics():
-    grid = RES_GRID_LTE(bandwidth=10)
-    
-    # Выделение RB в первом слоте
-    assert grid.ALLOCATE_RB(0, "sub_0_slot_0", 25, 100), "Ошибка выделения"
-    
-    # Проверка статуса RB
-    rb = grid.GET_RB(0, "sub_0_slot_0", 25)
-    assert rb.UE_ID == 100 and rb.status == "assigned", "Некорректное состояние"
-    
-    # Освобождение RB
-    rb.RELEASE_RB()
-    assert rb.CHCK_RB(), "Ошибка освобождения"
-
-def test_rb_group_allocation():
-    grid = RES_GRID_LTE(bandwidth=5)
-    freq_idx = 10
-    
-    # Выделение группы
-    assert grid.ALLOCATE_RB_PAIR(0, freq_idx, 200), "Ошибка группового выделения"
-    
-    # Проверка обоих слотов
-    slot0_rb = grid.GET_RB(0, "sub_0_slot_0", freq_idx)
-    slot1_rb = grid.GET_RB(0, "sub_0_slot_1", freq_idx)
-    assert slot0_rb.UE_ID == slot1_rb.UE_ID == 200, "Несоответствие группового выделения"
-
-def test_boundary_conditions():
-    grid = RES_GRID_LTE(bandwidth=20, num_frames=1)
-    
-    # Выделение ресурса
-    assert grid.ALLOCATE_RB(9, "sub_9_slot_1", 99, 400), "Ошибка выделения"
-    # Проверка, что счетчик TTI обновился
-    assert grid.stats["allocation_by_tti"][9] == 1, "Счетчик TTI не увеличен"
-    
-    # Освобождение ресурса
-    assert grid.RELEASE_RB(9, "sub_9_slot_1", 99), "Ошибка освобождения"
-    
-    # Проверка статистики
-    assert grid.stats["allocated_rbs"] == 0, "Счетчик RB не обнулился"
-    assert 400 not in grid.stats["allocation_by_user"], "UE_ID не удален из статистики"
-    assert grid.stats["allocation_by_tti"][9] == 0, "Счетчик TTI не уменьшен"
-
-
-def test_3gpp_compliance():
-    # TS 36.211 Section 6.2.3
-    grid = RES_GRID_LTE(bandwidth=10, num_frames=1)
-    
-    # Проверка параметров слота
-    slot = grid.frames[0].subframes[0].slots[0]
-    assert len(slot.resource_blocks) == 50, "Ожидается 50 RB/слот для 10 МГц"
-    
-    # Проверка структуры RE (12 поднесущих × 7 символов)
-    rb = next(iter(slot.resource_blocks.values()))
-    assert rb.freq_idx >= 0 and rb.freq_idx < 50, "Некорректный частотный индекс"
-
-def test_resource_utilization_stats():
-    grid = RES_GRID_LTE()
-    
-    # Выделение 5 RB с разными UE_ID
-    for i in range(5):
-        grid.ALLOCATE_RB(0, f"sub_0_slot_{i%2}", i, 100 + i)
-    
-    # Проверка общей статистики
-    assert grid.stats["allocated_rbs"] == 5, f"Ожидается 5, получено {grid.stats['allocated_rbs']}"
-    
-    # Проверка подсчета по пользователям
-    for i in range(5):
-        assert grid.stats["allocation_by_user"].get(100 + i) == 1, f"Ошибка для UE_ID={100+i}"
-
-    
-if __name__ == "__main__":
-    test_rb_allocation()
-    test_bandwidth_configuration()
-    test_frame_structure()
-    test_rb_allocation_semantics()
-    test_rb_group_allocation()
-    test_boundary_conditions()
-    test_3gpp_compliance()
-    test_resource_utilization_stats()
-    print("Все тесты успешно пройдены!")
