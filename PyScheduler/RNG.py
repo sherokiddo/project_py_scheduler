@@ -49,8 +49,8 @@
 #   неизменяемых кортежей (tuple).
 # - Исправлены граничные случаи распределений: защита от переполнения и округления
 #   верхней границы в uniform(), прямой расчет усеченного exponential() при bound > 0,
-#   ограничение попыток и минимального bound в normal(), точный побитовый отбор
-#   в get_integer() без потери точности выше 2^53.
+#   ограничение попыток и минимального bound в normal(), точный отбор
+#   в get_integer() из реального набора исходов генератора без потери точности выше 2^53.
 # - Удален параметр stream_offset из RandomProvider и RandomGenerator.
 # - В StreamAllocator номер потока вычисляется хешированием ключа (blake2b)
 #   независимо от порядка регистрации, введено правило единственного владельца ключа.
@@ -902,25 +902,25 @@ class RandomGenerator:
 
         stream = self._get_stream()
         span = max_val - min_val + 1
-        bits_needed = span.bit_length()
-        mask = (1 << bits_needed) - 1
+        base = MRG_M1 if self.engine == "MRG32k3a" else (1 << 53)
 
         attempts = 0
         while attempts < self._MAX_REJECTION_ATTEMPTS:
             attempts += 1
-            rand_bits = 0
-            collected = 0
-            while collected < bits_needed:
+            combined = 0
+            space = 1
+            while space < span:
                 u = stream.rand_u01()
-                chunk = int(u * (1 << 53))
-                if chunk >= (1 << 53):
-                    chunk = (1 << 53) - 1
-                rand_bits = (rand_bits << 53) | chunk
-                collected += 53
+                if self.engine == "MRG32k3a":
+                    digit = round(u * (MRG_M1 + 1)) - 1
+                else:
+                    digit = int(u * (1 << 53))
+                combined = combined * base + digit
+                space *= base
 
-            candidate = (rand_bits >> (collected - bits_needed)) & mask
-            if candidate < span:
-                return min_val + candidate
+            limit = (space // span) * span
+            if combined < limit:
+                return min_val + (combined % span)
 
         raise ValueError(
             f"Failed to sample integer in [{min_val}, {max_val}] after "
