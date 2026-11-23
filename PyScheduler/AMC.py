@@ -98,6 +98,18 @@ def legacy_mcs_selection(cqi: int) -> int:
 @dataclass(frozen=True)
 class AmcConfig:
     control_symbols: int = 2
+    def __post_init__(self):
+        """
+        Проверяет тип и общий диапазон числа управляющих OFDM-символов.
+            Допускает только int от 1 до 4 включительно, исключая bool.
+            Совместимость значения с полосой проверяется внешним кодом.
+
+        Raises:
+            ValueError: Если control_symbols имеет недопустимый тип 
+            или находится вне диапазона 1–4.
+        """
+        if type(self.control_symbols) is not int or not 1 <= self.control_symbols <= 4:
+            raise ValueError("control_symbols должно быть целым числов в интервале [1..4]")
 
 
 @dataclass(frozen=True)

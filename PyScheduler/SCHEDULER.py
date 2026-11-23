@@ -304,9 +304,9 @@ class SchedulerInterface:
 
     @amc.setter
     def amc(self, value: AdaptiveModulationAndCoding) -> None:
-        # Keep the view bound to the current AMC, including replacements in tests.
         self._amc = value
-        self.amc_view: AmcView = LegacyAmcView(value)
+        self._amc_view = LegacyAmcView(value)
+        self.amc_view = self._amc_view
 
     def __init__(self, lte_grid, bs,
                  max_dl_ue_tti=None,
