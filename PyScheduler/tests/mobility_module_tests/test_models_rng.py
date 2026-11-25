@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import CHANNEL_MODEL as channel
 import GLOBALS
-# import TRAFFIC_MODEL as traffic  # Отключено до интеграции RNG в Traffic
+import TRAFFIC_MODEL as traffic  
 import MOBILITY_MODEL as mobility
 from MOBILITY_MODEL import (
     MapBorders, MobilityInterface, RandomWalkModel, RandomWaypointModel,
@@ -78,8 +78,6 @@ def make_model(condition="UMa", tdl=False, engine="MRG32k3a", seed=42,
     if macro is None:
         macro = RandomGenerator(seed=seed, run_idx=run_idx, engine=engine)
     if small is None:
-        # Только для тестовых UE_ID 0..29: диапазоны не пересекаются.
-        # Это не проверка корректности схемы StreamAllocator из инструкции.
         small = RandomGenerator(seed=seed, run_idx=run_idx,
                                 base_stream_idx=100, engine=engine)
     bs = make_bs(tdl)
@@ -211,7 +209,6 @@ class TestChannelRNG(ChannelTestCase):
                 rng = ControlledProvider(fraction=0.999)
                 model = make_model(condition, macro=rng)
                 value = model._calculate_breakpoint_distance(UE_ID=19, UE_height=20., d_2D=500.)
-                # Допустимые h_E: [12, 15, 18]; заглушка выбирает последний индекс.
                 self.assertEqual(rng.calls[-1], ("get_integer", 0, 2, 19))
                 self.assertAlmostEqual(value, 4 * (25 - 18) * (20 - 18) * 3.5e9 / 3e8)
 
@@ -267,7 +264,7 @@ class TestChannelRNG(ChannelTestCase):
         tdl.calculate_channel_gain(19, "NLOS", "UMaModel", "outdoor")
         self.assertEqual(len(rng.calls), count)
         tdl.calculate_channel_gain(19, "LOS", "UMaModel", "outdoor")
-        self.assertEqual(len(rng.calls), count + 1)  # Только новая LOS-фаза.
+        self.assertEqual(len(rng.calls), count + 1) 
 
     def test_tdl_gain_has_unit_mean_linear_power(self):
         for engine in ENGINES:
@@ -602,106 +599,128 @@ class TestMobilityModelsRngIntegration(unittest.TestCase):
                     )
 
 
-# TRAFFIC ВРЕМЕННО ОТКЛЮЧЁН: интеграция RNG ещё не выполнялась.
-# # ============================================================================
-# # TRAFFIC: целевой контракт RNG для Poisson, OnOff и MMPP.
-# # В присланном архиве эти модели ещё не принимают rng; тесты это обнаруживают.
-# # Periodic и ConstBitrate детерминированные, RNG им не требуется.
-# # ============================================================================
+# ============================================================================
+# TRAFFIC: целевой контракт RNG для Poisson, OnOff и MMPP.
+# ============================================================================
 
-# TRAFFIC_CASES = {
-#     "Poisson": {"packet_rate": 20.0},
-#     "OnOff": {"packet_rate": 20.0, "duration_on": 1.0, "duration_off": 1.0},
-#     "MMPP": {
-#         "packet_rates": [20.0, 50.0],
-#         "transition_matrix": np.array([[0.0, 0.2], [0.3, 0.0]]),
-#     },
-# }
+TRAFFIC_CASES = {
+    "Poisson": {"packet_rate": 20.0},
+    "OnOff": {"packet_rate": 20.0, "duration_on": 1.0, "duration_off": 1.0},
+    "MMPP": {
+        "packet_rates": [20.0, 50.0],
+        "transition_matrix": np.array([[0.0, 0.2], [0.3, 0.0]]),
+    },
+}
 
 
-# def traffic_history(test, name, others=False, engine="MRG32k3a"):
-#     rng = RandomGenerator(seed=42, run_idx=1, engine=engine)
-#     model = test.create_traffic(name, rng)
-#     result = []
-#     for end_time in (120, 240, 360):
-#         for uid in ([38, 37] if others else [37]):
-#             packets = model.generate_traffic(uid, end_time, 120)
-#             if uid == 37:
-#                 result.extend((p.ue_id, int(p.size), float(p.creation_time)) for p in packets)
-#     return result
+def traffic_history(test, name, others=False, engine="MRG32k3a"):
+    rng = RandomGenerator(seed=42, run_idx=1, engine=engine)
+    model = test.create_traffic(name, rng)
+    result = []
+    for end_time in (120, 240, 360):
+        for uid in ([38, 37] if others else [37]):
+            packets = model.generate_traffic(uid, end_time, 120)
+            if uid == 37:
+                result.extend((p.ue_id, int(p.size), float(p.creation_time)) for p in packets)
+    return result
 
 
-# class TestTrafficRNGIntegration(unittest.TestCase):
-#     def create_traffic(self, name, rng):
-#         params = dict(TRAFFIC_CASES[name])
-#         if "transition_matrix" in params:
-#             params["transition_matrix"] = params["transition_matrix"].copy()
-#         try:
-#             return traffic.TrafficModelFactory.create_model(
-#                 name, rng=rng, min_packet_size=150, max_packet_size=1500, **params
-#             )
-#         except TypeError as exc:
-#             if "unexpected keyword argument 'rng'" in str(exc):
-#                 self.fail(
-#                     f"Traffic {name}: конструктор не принимает rng. "
-#                     "Интеграция RandomProvider в эту модель ещё не выполнена."
-#                 )
-#             raise
+class TestTrafficRNGIntegration(unittest.TestCase):
+    def create_traffic(self, name, rng):
+        params = dict(TRAFFIC_CASES[name])
+        if "transition_matrix" in params:
+            params["transition_matrix"] = params["transition_matrix"].copy()
+        try:
+            return traffic.TrafficModelFactory.create_model(
+                name, rng=rng, min_packet_size=150, max_packet_size=1500, **params
+            )
+        except TypeError as exc:
+            if "unexpected keyword argument 'rng'" in str(exc):
+                self.fail(
+                    f"Traffic {name}: конструктор не принимает rng. "
+                    "Интеграция RandomProvider в эту модель ещё не выполнена."
+                )
+            raise
 
-#     def test_no_global_random_references_in_traffic(self):
-#         source = inspect.getsource(traffic)
-#         self.assertFalse(
-#             "np.random" in source or "numpy.random" in source,
-#             "Traffic пока использует глобальный NumPy RNG",
-#         )
+    def test_no_global_random_references_in_traffic(self):
+        source = inspect.getsource(traffic)
+        self.assertFalse(
+            "np.random" in source or "numpy.random" in source,
+            "Traffic пока использует глобальный NumPy RNG",
+        )
 
-#     def test_factory_passes_provider_to_traffic_models(self):
-#         for name in TRAFFIC_CASES:
-#             with self.subTest(model=name):
-#                 rng = ControlledProvider()
-#                 model = self.create_traffic(name, rng)
-#                 self.assertIs(model.rng, rng)
+    def test_factory_passes_provider_to_traffic_models(self):
+        for name in TRAFFIC_CASES:
+            with self.subTest(model=name):
+                rng = ControlledProvider()
+                model = self.create_traffic(name, rng)
+                self.assertIs(model.rng, rng)
 
-#     def test_traffic_uses_provider_with_target_ue_id(self):
-#         for name in TRAFFIC_CASES:
-#             with self.subTest(model=name):
-#                 rng = ControlledProvider()
-#                 model = self.create_traffic(name, rng)
-#                 model.generate_traffic(37, 120, 120)
-#                 self.assertTrue(rng.calls)
-#                 self.assertEqual({call[-1] for call in rng.calls}, {37})
+    def test_traffic_uses_provider_with_target_ue_id(self):
+        expected_streams = {
+            "Poisson": {74, 75},
+            "OnOff": {74},
+            "MMPP": {74, 75},
+        }
 
-#     def test_poisson_uses_milliseconds_and_correct_integer_bounds(self):
-#         rng = ControlledProvider()
-#         model = self.create_traffic("Poisson", rng)
-#         packets = model.generate_traffic(37, 1000, 120)
-#         # При 20 пакетах/с средний интервал равен 50 мс.
-#         self.assertIn(("exponential", 50.0, 0.0, 37), rng.calls)
-#         # Старый randint исключал 1500, get_integer включает верхнюю границу.
-#         self.assertIn(("get_integer", 150, 1499, 37), rng.calls)
-#         self.assertEqual(len(packets), 2)
-#         for packet in packets:
-#             self.assertEqual(packet.ue_id, 37)
-#             self.assertEqual(packet.size, 1499)
-#             self.assertGreaterEqual(packet.creation_time, 880)
-#             self.assertLess(packet.creation_time, 1000)
+        for name in TRAFFIC_CASES:
+            with self.subTest(model=name):
+                rng = ControlledProvider()
 
-#     def test_same_seed_and_run_reproduce_traffic(self):
-#         for name in TRAFFIC_CASES:
-#             for engine in ENGINES:
-#                 with self.subTest(model=name, engine=engine):
-#                     self.assertEqual(
-#                         traffic_history(self, name, engine=engine),
-#                         traffic_history(self, name, engine=engine),
-#                     )
+                # Проверяем именно переданный генератор.
+                with patch.object(GLOBALS, "RNG", None, create=True):
+                    model = self.create_traffic(name, rng)
+                    model.generate_traffic(37, 120, 120)
 
-#     def test_other_ues_do_not_change_target_traffic(self):
-#         for name in TRAFFIC_CASES:
-#             with self.subTest(model=name):
-#                 self.assertEqual(
-#                     traffic_history(self, name),
-#                     traffic_history(self, name, others=True),
-#                 )
+                self.assertTrue(rng.calls)
+                self.assertEqual(
+                    {call[-1] for call in rng.calls},
+                    expected_streams[name],
+                )
+
+    def test_poisson_uses_milliseconds_and_correct_integer_bounds(self):
+        rng = ControlledProvider()
+
+        with patch.object(GLOBALS, "RNG", None, create=True):
+            model = self.create_traffic("Poisson", rng)
+            packets = model.generate_traffic(37, 1000, 120)
+
+        self.assertIn(
+            ("exponential", 50.0, 0.0, 74),
+            rng.calls,
+        )
+
+        self.assertIn(
+            ("get_integer", 150, 1499, 75),
+            rng.calls,
+        )
+
+        self.assertEqual(len(packets), 2)
+        self.assertEqual(
+            [packet.creation_time for packet in packets],
+            [930.0, 980.0],
+        )
+
+        for packet in packets:
+            self.assertEqual(packet.ue_id, 37)
+            self.assertEqual(packet.size, 1499)
+
+    def test_same_seed_and_run_reproduce_traffic(self):
+        for name in TRAFFIC_CASES:
+            for engine in ENGINES:
+                with self.subTest(model=name, engine=engine):
+                    self.assertEqual(
+                        traffic_history(self, name, engine=engine),
+                        traffic_history(self, name, engine=engine),
+                    )
+
+    def test_other_ues_do_not_change_target_traffic(self):
+        for name in TRAFFIC_CASES:
+            with self.subTest(model=name):
+                self.assertEqual(
+                    traffic_history(self, name),
+                    traffic_history(self, name, others=True),
+                )
 
 
 if __name__ == "__main__":

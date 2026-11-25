@@ -12,8 +12,8 @@
 #   Модели используются для имитации поведения реального сетевого трафика в симуляциях
 #   и тестовых сценариях.
 #
-# Версия: 1.1.0
-# Дата последнего изменения: 2026-01-23
+# Версия: 1.2.0
+# Дата последнего изменения: 2026-11-25
 # Автор: Норицин Иван, Дворников Андрей
 # Версия Python Kernel: 3.12.9
 #
@@ -26,6 +26,12 @@
 # - Добавлен метод reset_ue для управления жизненным циклом контекста трафика
 #   (задел под Handover и Detach сценарии).
 #
+# Изменения v1.1.0:
+# - Добавлена передача rng и tdl_rng через RandomProvider.
+# - Вызовы numpy.random заменены методами провайдера RNG.
+# - Добавлена передача UE_ID в случайные операции канала и TDL.
+# - Разделено хранение состояний UE и позиций обновления LOS/SF.
+# - Исправлены передача параметров и проверки входных данных.
 #------------------------------------------------------------------------------
 """
 
@@ -34,6 +40,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Dict, List, Optional, Tuple
+from RNG import RandomGenerator
 
 import numpy as np
 
@@ -289,20 +296,55 @@ class PoissonModel(ITrafficModel):
     Паттерн: Strategy (конкретная реализация)
     """
 
-    def __init__(self, packet_rate: float, min_packet_size: int = 150, max_packet_size: int = 1500):
+    def __init__(
+        self,
+        packet_rate: float, 
+        min_packet_size: int = 150, 
+        max_packet_size: int = 1500,
+        rng: Optional[RandomGenerator] = None,
+        stream_offset: int = 0,
+    ):
         """
         Args:
             packet_rate: Интенсивность трафика (пакетов/сек)
             min_packet_size: Минимальный размер пакета (байты)
             max_packet_size: Максимальный размер пакета (байты)
+            rng: Переданный экземпляр генератора случайных чисел.
+            stream_offset: Начальное смещение потоков этой модели.
         """
         super().__init__(min_packet_size, max_packet_size)
-        self.packet_rate = packet_rate
 
-    def generate_traffic(self, ue_id: int, current_time: int, update_interval: int) -> List[Packet]:
+        self.packet_rate = packet_rate
+        self.rng=rng
+        self.stream_offset = stream_offset
+
+    def generate_traffic(
+        self, 
+        ue_id: int, 
+        current_time: int, 
+        update_interval: int
+    ) -> List[Packet]:
         """
         Генерация пуассоновского трафика.
         """
+
+        if self.packet_rate < 0:
+            raise ValueError("packet_rate must be non-negative")
+
+        if self.packet_rate == 0 or update_interval <= 0:
+            return []
+
+        rng = getattr(GLOBALS, "RNG", None)
+
+        if rng is None:
+            if self.rng is None:
+                self.rng = RandomGenerator()
+
+            rng = self.rng
+
+        interval_stream = self.stream_offset + ue_id * 2
+        size_stream = interval_stream + 1
+
         packets = []
         generate_time = current_time - update_interval
         end_generate = current_time
@@ -310,20 +352,28 @@ class PoissonModel(ITrafficModel):
         mean_interval_ms = 1000.0 / self.packet_rate
 
         while generate_time < end_generate:
-            interval = np.random.exponential(mean_interval_ms)
+            interval = rng.exponential(
+                mean=mean_interval_ms,
+                stream_offset=interval_stream,
+            )
             generate_time += interval
 
             if generate_time > end_generate:
                 break
 
-            packet_size = np.random.randint(self.min_packet_size, self.max_packet_size)
-            packet = Packet(
-                size=packet_size,
-                ue_id=ue_id,
-                creation_time=generate_time,
-                priority=0,
+            packet_size = rng.get_integer(
+                self.min_packet_size,
+                self.max_packet_size - 1,
+                stream_offset=size_stream,
             )
-            packets.append(packet)
+            packets.append(
+                Packet(
+                    size=packet_size,
+                    ue_id=ue_id,
+                    creation_time=generate_time,
+                    priority=0,
+                )
+            )
 
         return packets
 
@@ -353,87 +403,173 @@ class OnOffModel(ITrafficModel):
         packet_rate: float,
         min_packet_size: int = 150,
         max_packet_size: int = 1500,
+        rng: Optional[RandomGenerator] = None,
+        stream_offset: int = 0,
     ):
         """
         Args:
             duration_on: Средняя длительность ON фазы (секунды)
             duration_off: Средняя длительность OFF фазы (секунды)
             packet_rate: Интенсивность в ON фазе (пакетов/сек)
+            rng: Переданный экземпляр генератора случайных чисел.
+            stream_offset: Начальное смещение потоков этой модели.
         """
         super().__init__(min_packet_size, max_packet_size)
+
         self.duration_on = duration_on
         self.duration_off = duration_off
         self.packet_rate = packet_rate
+        self.rng = rng
+        self.stream_offset = stream_offset
         self._device_states: Dict[int, Dict] = {}
+        
 
-    def generate_traffic(self, ue_id: int, current_time: int, update_interval: int) -> List[Packet]:
+    def generate_traffic(
+        self, 
+        ue_id: int, 
+        current_time: int, 
+        update_interval: int
+    ) -> List[Packet]:
         """Генерация ON/OFF трафика"""
 
+        if self.packet_rate < 0:
+            raise ValueError("packet_rate must be non-negative")
+
+        if self.packet_rate == 0 or update_interval <= 0:
+            return []
+        
         # Инициализация состояния для нового UE
         if ue_id not in self._device_states:
             self._initialize_state(ue_id, current_time, update_interval)
 
-        state_data = self._device_states[ue_id]
+        state = self._device_states[ue_id]
         packets = []
+
+        packet_size = self.max_packet_size
+        packet_interval_ms = 1000.0 / self.packet_rate
+
+        if "remaining_packet_ms" not in state:
+            state["remaining_packet_ms"] = packet_interval_ms
+
         t = current_time - update_interval
 
+
         while t < current_time:
-            if state_data["state"] == "ON":
-                end_generate = min(state_data["end_state_time"], current_time)
-                mean_interval_ms = 1000.0 / self.packet_rate
+            phase_end = state["end_state_time"]
+            segment_end = min(phase_end, current_time)
 
-                while t < end_generate:
-                    interval = np.random.exponential(mean_interval_ms)
-                    t += interval
-                    if t > end_generate:
-                        break
+            if state["state"] == "ON":
+                remaining = state["remaining_packet_ms"]
 
-                    packet_size = np.random.randint(self.min_packet_size, self.max_packet_size)
-                    packet = Packet(
-                        size=packet_size, ue_id=ue_id, creation_time=t, priority=0
+                # Генерируем пакеты только в пределах текущей ON-фазы и обрабатываемого интервала симуляции.
+                while t + remaining <= segment_end:
+                    t += remaining
+
+                    packets.append(
+                        Packet(
+                            size=packet_size,
+                            ue_id=ue_id,
+                            creation_time=t,
+                            priority=0,
+                        )
                     )
-                    packets.append(packet)
+                    remaining = packet_interval_ms
 
-                if state_data["end_state_time"] <= current_time:
+                state["remaining_packet_ms"] = (remaining - (segment_end - t))
+
+            t = segment_end
+
+            if phase_end <= current_time:
+                if state["state"] == "ON":
                     self._switch_to_off(ue_id)
-
-            elif state_data["state"] == "OFF":
-                t = min(state_data["end_state_time"], current_time)
-
-                if state_data["end_state_time"] <= current_time:
+                else:
                     self._switch_to_on(ue_id)
-
-            state_data = self._device_states[ue_id]
 
         return packets
 
-    def _initialize_state(self, ue_id: int, current_time: int, update_interval: int):
+    def _initialize_state(
+        self, 
+        ue_id: int, 
+        current_time: int, 
+        update_interval: int
+    ):
         """Инициализация состояния для нового UE"""
-        initial_state = "ON" if np.random.rand() > 0.5 else "OFF"
 
-        if initial_state == "ON":
-            duration = np.random.exponential(self.duration_on) * 1000
-        else:
-            duration = np.random.exponential(self.duration_off) * 1000
+        rng = getattr(GLOBALS, "RNG", None)
+
+        if rng is None:
+            if self.rng is None:
+                self.rng = RandomGenerator()
+
+            rng = self.rng
+
+        state_stream = self.stream_offset + ue_id * 2    
+
+        initial_state = (
+            "ON"
+            if rng.uniform(0.0, 1.0, stream_offset=state_stream) > 0.5
+            else "OFF"
+        )
+
+        mean_duration = (
+            self.duration_on
+            if initial_state == "ON"
+            else self.duration_off
+        )
+
+        duration_ms = rng.exponential(
+            mean=mean_duration,
+            stream_offset=state_stream,
+        ) * 1000.0
 
         self._device_states[ue_id] = {
             "state": initial_state,
-            "end_state_time": current_time - update_interval + duration,
+            "end_state_time": (
+                current_time - update_interval + duration_ms
+            ),
         }
 
     def _switch_to_off(self, ue_id: int):
         """Переключение в OFF состояние"""
-        state = self._device_states[ue_id]
-        duration = np.random.exponential(self.duration_off) * 1000
-        state["state"] = "OFF"
-        state["end_state_time"] = state["end_state_time"] + duration
 
+        rng = getattr(GLOBALS, "RNG", None)
+
+        if rng is None:
+            if self.rng is None:
+                self.rng = RandomGenerator()
+            rng = self.rng
+
+        state_stream = self.stream_offset + ue_id * 2
+
+        duration_ms = rng.exponential(
+            mean=self.duration_off,
+            stream_offset=state_stream,
+        ) * 1000.0
+
+        state = self._device_states[ue_id]
+        state["state"] = "OFF"
+        state["end_state_time"] += duration_ms
+        
     def _switch_to_on(self, ue_id: int):
         """Переключение в ON состояние"""
+
+        rng = getattr(GLOBALS, "RNG", None)
+
+        if rng is None:
+            if self.rng is None:
+                self.rng = RandomGenerator()
+            rng = self.rng
+
+        state_stream = self.stream_offset + ue_id * 2
+
+        duration_ms = rng.exponential(
+            mean=self.duration_on,
+            stream_offset=state_stream,
+        ) * 1000.0
+
         state = self._device_states[ue_id]
-        duration = np.random.exponential(self.duration_on) * 1000
         state["state"] = "ON"
-        state["end_state_time"] = state["end_state_time"] + duration
+        state["end_state_time"] += duration_ms
 
     def clear_state(self, ue_id: int):
         """
@@ -475,6 +611,8 @@ class MMPPModel(ITrafficModel):
         transition_matrix: np.ndarray,
         min_packet_size: float = 150,
         max_packet_size: float = 1500,
+        rng: Optional[RandomGenerator] = None,
+        stream_offset: int = 0,
     ):
         """
         Инициализация MMPP модели трафика.
@@ -483,14 +621,23 @@ class MMPPModel(ITrafficModel):
             packet_rates: Список интенсивностей трафика для каждого состояния (пакетов/сек)
             min_packet_size: Минимальный размер пакета (по умолчанию 150 байт)
             max_packet_size: Максимальный размер пакета (по умолчанию 1500 байт)
+            rng: Переданный экземпляр генератора случайных чисел.
+            stream_offset: Начальное смещение потоков этой модели.
         """
-        super().__init__(min_packet_size, max_packet_size)
-        self.transition_matrix = transition_matrix
 
+        super().__init__(min_packet_size, max_packet_size)
+
+        self.transition_matrix = transition_matrix
         self.packet_rates = packet_rates
+        self.rng = rng
+        self.stream_offset = stream_offset
         self._device_states: Dict[int, Dict] = {}
 
-    def _get_next_state(self, current_state: int) -> Tuple[int, float]:
+    def _get_next_state(
+        self, 
+        current_state: int,
+        ue_id: int = 0,
+    ) -> Tuple[int, float]:
         """
         Определение следующего состояния и времени до перехода.
 
@@ -501,19 +648,53 @@ class MMPPModel(ITrafficModel):
             next_state: следующее состояние
             time_to_transition: время до перехода (мс)
         """
+
         rates = self.transition_matrix[current_state]
         total_rate = sum(rates)
+
         if total_rate == 0:
             return current_state, float("inf")
 
-        time_to_transition = np.random.exponential(1 / total_rate) * 1000
+        rng = getattr(GLOBALS, "RNG", None)
+
+        if rng is None:
+            if self.rng is None:
+                self.rng = RandomGenerator()
+
+            rng = self.rng
+
+        state_stream = self.stream_offset + ue_id * 2
+        time_to_transition = rng.exponential(
+            mean=1.0 / total_rate,
+            stream_offset=state_stream,
+        ) * 1000.0
 
         probabilities = rates / total_rate
-        next_state = np.random.choice(len(self.packet_rates), p=probabilities)
+
+        u = rng.uniform(
+            0.0,
+            1.0,
+            stream_offset=state_stream,
+        )
+
+        cumulative_probability = 0.0
+        next_state = len(self.packet_rates) - 1
+
+        for idx, probability in enumerate(probabilities):
+            cumulative_probability += probability
+
+            if u < cumulative_probability:
+                next_state = idx
+                break
 
         return next_state, time_to_transition
 
-    def generate_traffic(self, ue_id: int, current_time: int, update_interval: int) -> List[Packet]:
+    def generate_traffic(
+        self, 
+        ue_id: int, 
+        current_time: int, 
+        update_interval: int
+    ) -> List[Packet]:
         """
         Генерация трафика для конкретного устройства за указанный интервал времени.
 
@@ -530,52 +711,108 @@ class MMPPModel(ITrafficModel):
                 'priority': приоритет пакета
             }]
         """
+
+        if update_interval <= 0:
+            return []
+
+        rng = getattr(GLOBALS, "RNG", None)
+
+        if rng is None:
+            if self.rng is None:
+                self.rng = RandomGenerator()
+
+            rng = self.rng
+
+        state_stream = self.stream_offset + ue_id * 2
+        packet_stream = state_stream + 1
+        start_time = current_time - update_interval
+
         if ue_id not in self._device_states:
-            initial_state = np.random.randint(0, len(self.packet_rates))
-            next_state, time_to_transition = self._get_next_state(initial_state)
+            initial_state = rng.get_integer(
+                0,
+                len(self.packet_rates) - 1,
+                stream_offset=state_stream,
+            )
+
+            next_state, delay = self._get_next_state(
+                initial_state,
+                ue_id=ue_id,
+            )
 
             self._device_states[ue_id] = {
                 "current_state": initial_state,
-                "transition_time": current_time - update_interval + time_to_transition,
                 "next_state": next_state,
+                "transition_time": start_time + delay,
             }
 
-        state_data = self._device_states[ue_id]
+        state = self._device_states[ue_id]
         packets = []
-        t = current_time - update_interval
+        t = start_time
 
         while t < current_time:
-            current_state = state_data["current_state"]
-            transition_time = state_data["transition_time"]
+            transition_time = state["transition_time"]
 
-            end_time = min(transition_time, current_time)
+            if transition_time <= t:
+                state["current_state"] = state["next_state"]
 
-            if self.packet_rates[current_state] > 0:
-                mean_interval_ms = 1000.0 / self.packet_rates[current_state]
+                next_state, delay = self._get_next_state(
+                    state["current_state"],
+                    ue_id=ue_id,
+                )
 
-                while t < end_time:
-                    interval = np.random.exponential(mean_interval_ms)
-                    t += interval
+                next_transition = transition_time + delay
 
-                    if t > end_time:
+                if next_transition <= transition_time:
+                    raise RuntimeError(
+                        "MMPP: время перехода не увеличивается"
+                    )
+
+                state["next_state"] = next_state
+                state["transition_time"] = next_transition
+                continue
+
+            segment_end = min(transition_time, current_time)
+            packet_rate = float(
+                self.packet_rates[state["current_state"]]
+            )
+
+            if packet_rate > 0:
+                mean_interval_ms = 1000.0 / packet_rate
+                generate_time = t
+
+                while generate_time < segment_end:
+                    interval = rng.exponential(
+                        mean=mean_interval_ms,
+                        stream_offset=packet_stream,
+                    )
+                    next_time = generate_time + interval
+
+                    if next_time <= generate_time:
+                        raise RuntimeError(
+                            "MMPP: время генерации не увеличивается"
+                        )
+
+                    if next_time > segment_end:
                         break
 
-                    packet_size = np.random.randint(self.min_packet_size, self.max_packet_size)
-                    packet = Packet(
-                        size=packet_size, ue_id=ue_id, creation_time=t, priority=0
-                    )
-                    packets.append(packet)
-            else:
-                t = end_time
+                    generate_time = next_time
 
-            # Если наступило время перехода
-            if transition_time <= current_time:
-                state_data["current_state"] = state_data["next_state"]
-                new_next_state, time_to_transition = self._get_next_state(
-                    state_data["current_state"]
-                )
-                state_data["next_state"] = new_next_state
-                state_data["transition_time"] = transition_time + time_to_transition
+                    packet_size = rng.get_integer(
+                        self.min_packet_size,
+                        self.max_packet_size - 1,
+                        stream_offset=packet_stream,
+                    )
+
+                    packets.append(
+                        Packet(
+                            size=packet_size,
+                            ue_id=ue_id,
+                            creation_time=generate_time,
+                            priority=0,
+                        )
+                    )
+
+            t = segment_end
 
         return packets
 
@@ -879,7 +1116,12 @@ class TrafficModelFactory:
     # TODO: Добавить валидацию параметров моделей
 
     @staticmethod
-    def create_model(model_type: str, **kwargs) -> ITrafficModel:
+    def create_model(
+        model_type: str,
+        rng: Optional[RandomGenerator] = None,
+        stream_offset: int = 0,
+        **kwargs,
+    ) -> ITrafficModel:
         """
         Создать модель трафика по типу.
 
@@ -936,15 +1178,31 @@ class TrafficModelFactory:
             ... )
         """
         if model_type == "Poisson":
-            return PoissonModel(**kwargs)
+            return PoissonModel(
+                rng=rng,
+                stream_offset=stream_offset,
+                **kwargs,
+            )
         elif model_type == "OnOff":
-            return OnOffModel(**kwargs)
+            return OnOffModel(
+                rng=rng,
+                stream_offset=stream_offset,
+                **kwargs,
+            )
         elif model_type == "MMPP":
-            if "transition_matrix" not in kwargs:
+            if kwargs.get("transition_matrix") is None:
                 kwargs["transition_matrix"] = np.array(
-                    [[0, 0.07, 0.03], [0.12, 0, 0.08], [0.4, 0.1, 0]]
+                    [
+                        [0, 0.07, 0.03], 
+                        [0.12, 0, 0.08], 
+                        [0.4, 0.1, 0]
+                    ]
                 )
-            return MMPPModel(**kwargs)
+            return MMPPModel(
+                rng=rng,
+                stream_offset=stream_offset,
+                **kwargs,
+            )
         elif model_type == "Periodic":
             return PeriodicModel(**kwargs)
         elif model_type == "ConstBitrate":
@@ -974,10 +1232,17 @@ class TrafficModelFactory:
 
     @staticmethod
     def create_mmpp_model(
-        packet_rates: List[float], transition_matrix: Optional[np.ndarray] = None, **kwargs
+        packet_rates: List[float], 
+        transition_matrix: Optional[np.ndarray] = None, 
+        **kwargs,
     ) -> MMPPModel:
         """Удобный метод для создания MMPP модели"""
-        return MMPPModel(packet_rates=packet_rates, transition_matrix=transition_matrix, **kwargs)
+        return TrafficModelFactory.create_model(
+            model_type="MMPP",
+            packet_rates=packet_rates, 
+            transition_matrix=transition_matrix, 
+            **kwargs
+            )
     
     @staticmethod
     def create_periodic_model(packet_interval: int, packet_size: int) -> PeriodicModel:
