@@ -358,12 +358,12 @@ class SchedulerInterface:
             print(f"[SCHEDULER] Initialized {self.__class__.__name__}")
 
     @property
-    def amc(self) -> AdaptiveModulationAndCoding:
+    def amc(self) -> "AdaptiveModulationAndCoding":
         """Текущий модуль AMC."""
         return self._amc
 
     @amc.setter
-    def amc(self, value: AdaptiveModulationAndCoding) -> None:
+    def amc(self, value: "AdaptiveModulationAndCoding") -> None:
         self._amc = value
         self._amc_view = LegacyAmcView(value)
         self.amc_view = self._amc_view
@@ -435,6 +435,7 @@ class SchedulerInterface:
         ues_with_pdcch = self._allocate_pdcch(priority_list_filtered)
         self._last_pdcch_blocked_count = len(priority_list_filtered) - len(ues_with_pdcch)
         if not ues_with_pdcch:
+            self._on_pdcch_allocation_failure(priority_list_filtered)
             return self._empty_result()
 
         # ЭТАП 6: PDSCH allocation
@@ -797,6 +798,9 @@ class SchedulerInterface:
                 print(f"[SCHEDULER] PDCCH blocked: {blocked_count} UE (no CCE available) - UE IDs: {blocked_ue_ids}")
 
         return ues_with_pdcch
+
+    def _on_pdcch_allocation_failure(self, requested_ues: List[Dict]) -> None:
+        """Обработчик для обновления состояния планировщика, если ни один UE не получил PDCCH."""
 
     def _logical_channel_multiplexing(self, tb_size: int, buffer_status_list: List) -> List[SchedulingGrant]:
         """
@@ -2007,6 +2011,32 @@ class RoundRobinScheduler(SchedulerInterface):
     def rr_rbg_offset(self, value: int) -> None:
         self.state.rr_rbg_offset = value
 
+    def _advance_ue_rotation(self, last_served_ue_id: Optional[int] = None) -> None:
+        """Сдвинуть очередь RR за последнего обслуженного UE или на одну позицию при нехватке PDCCH."""
+        priority_users = self._last_prioritized_users
+        population_size = len(priority_users)
+        if population_size == 0:
+            return
+
+        current_offset = self.state.rr_ue_offset % population_size
+        if last_served_ue_id is None:
+            step = 1
+        else:
+            last_served_idx = next(
+                (idx for idx, user in enumerate(priority_users)
+                 if user['UE_ID'] == last_served_ue_id),
+                None,
+            )
+            step = last_served_idx + 1 if last_served_idx is not None else 1
+
+        self.state.rr_ue_offset = (current_offset + step) % population_size
+
+    def _on_pdcch_allocation_failure(self, requested_ues: List[Dict]) -> None:
+        """Не допустить повторения того же порядка UE, если все запросы PDCCH отклонены."""
+        if requested_ues:
+            self._advance_ue_rotation()
+            self.state.rr_rbg_offset = 0
+
     def _calculate_priorities(self, windowed_ues: List[Dict], tti: int) -> List[Dict]:
         """
         Round Robin принцип распределения ресурсов
@@ -2056,6 +2086,7 @@ class RoundRobinScheduler(SchedulerInterface):
 
         remaining_buffer = {ue['UE_ID']: ue['bs_buffer_size'] for ue in ues_with_pdcch}
         ue_index = self.state.rr_rbg_offset
+        last_served_ue_id = None
 
         for rbg_idx in range(total_rbg):
             ue    = ues_with_pdcch[ue_index % num_ues]
@@ -2065,6 +2096,7 @@ class RoundRobinScheduler(SchedulerInterface):
                 if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, ue_id):
                     rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
                     allocation[ue_id].extend(rb_indices)
+                    last_served_ue_id = ue_id
 
                     cqi                 = self._get_wb_cqi(ue_id)
                     bits_per_rb         = self.amc.GET_BITS_PER_RB(cqi)
@@ -2074,12 +2106,23 @@ class RoundRobinScheduler(SchedulerInterface):
 
             ue_index += 1
 
-        if len(eligible_ues) > 0 and len(ues_with_pdcch) < len(eligible_ues):
-            # При нехватке PDCCH сдвигаем очередь на 1 без двойной ротации RBG
-            self.state.rr_ue_offset = (self.state.rr_ue_offset + 1) % len(eligible_ues)
+        # Если активных UE больше, чем UE, получивших PDCCH,
+        # часть пользователей не попала в список из-за max_dl_ue_tti или ограничения CCE.
+        # Сдвигаем очередь на одну позицию, чтобы пропущенные пользователи дошли до начала.
+        priority_population_size = len(self._last_prioritized_users)
+        if priority_population_size > num_ues:
+            self._advance_ue_rotation()
             self.state.rr_rbg_offset = 0
-        else:
+        elif last_served_ue_id is not None:
+            # Если все активные UE получили PDCCH, продолжаем после пользователя,
+            # который фактически получил последний RBG, а не после индекса в исходном списке.
+            self._advance_ue_rotation(last_served_ue_id)
             self.state.rr_rbg_offset = ue_index % num_ues
+        else:
+            # Если RBG не выделен (например, буфер уже пуст), не закрепляем
+            # на следующий TTI тот же порядок пользователей.
+            self._advance_ue_rotation()
+            self.state.rr_rbg_offset = 0
 
         if self.verbose:
             allocated_ues = sum(1 for rbs in allocation.values() if len(rbs) > 0)
