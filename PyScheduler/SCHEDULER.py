@@ -107,6 +107,8 @@
 # - M1: Protocol-контракты и Legacy*View-адаптеры в конце файла.
 # - M1a: оценка PDSCH вынесена в стратегии ResourcePrefilter (DefaultPrefilter /
 #   PassThroughPrefilter); каждый алгоритм задаёт стратегию явно в __init__.
+# - M2a/M2b: смещения ротации RR и FD_FGS вынесены в SchedulerState
+#   (владелец — SchedulerInterface; свойства rr_*_offset сохранены).
 #------------------------------------------------------------------------------
 """
 
@@ -344,9 +346,9 @@ class SchedulerInterface:
         self.verbose = verbose
 
         self.harq_manager = None  # Заготовка для HARQ
+        self.state = SchedulerState()
         self._cqi_view = LegacyCqiView(self)
         self._grid_view = LegacyGridView(self.lte_grid)
-        self._amc_view = LegacyAmcView(self.amc)
         # Стратегию prefilter каждый алгоритм задаёт явно в своём __init__
         # (DefaultPrefilter или PassThroughPrefilter): неявного значения по умолчанию нет,
         # чтобы новый планировщик не унаследовал 95%-фильтрацию случайно.
@@ -354,6 +356,17 @@ class SchedulerInterface:
 
         if self.verbose:
             print(f"[SCHEDULER] Initialized {self.__class__.__name__}")
+
+    @property
+    def amc(self) -> "AdaptiveModulationAndCoding":
+        """Текущий модуль AMC."""
+        return self._amc
+
+    @amc.setter
+    def amc(self, value: "AdaptiveModulationAndCoding") -> None:
+        self._amc = value
+        self._amc_view = LegacyAmcView(value)
+        self.amc_view = self._amc_view
 
     def schedule(self, tti: int, users: List[Dict]) -> Dict:
         """
@@ -422,6 +435,7 @@ class SchedulerInterface:
         ues_with_pdcch = self._allocate_pdcch(priority_list_filtered)
         self._last_pdcch_blocked_count = len(priority_list_filtered) - len(ues_with_pdcch)
         if not ues_with_pdcch:
+            self._on_pdcch_allocation_failure(priority_list_filtered)
             return self._empty_result()
 
         # ЭТАП 6: PDSCH allocation
@@ -785,6 +799,9 @@ class SchedulerInterface:
 
         return ues_with_pdcch
 
+    def _on_pdcch_allocation_failure(self, requested_ues: List[Dict]) -> None:
+        """Обработчик для обновления состояния планировщика, если ни один UE не получил PDCCH."""
+
     def _logical_channel_multiplexing(self, tb_size: int, buffer_status_list: List) -> List[SchedulingGrant]:
         """
         Мультиплексирование логических каналов  в пределах одного транспортного 
@@ -908,8 +925,6 @@ class SchedulerInterface:
             # блока (на основе allocated_rbs и MCS), но пока что у нас этого нет
             max_bits  = allocated_rbs * bits_per_rb
             max_bytes = max_bits // GLOBALS.BITS_PER_BYTE
-            #ВНИМАНИЕ! Временный костыль.
-            remainder_bits = max_bits % GLOBALS.BITS_PER_BYTE
 
             if max_bytes <= 0:
                 ue.UPD_DL_THROUGHPUT_BPS(0, time_interval_ms)
@@ -951,7 +966,7 @@ class SchedulerInterface:
 
                 qci_tput_tracker.update_all_qcis(ueid, bytes_per_qci)
 
-            transmitted_bits = GLOBALS.bytes_to_bits(total_bytes) + remainder_bits
+            transmitted_bits = GLOBALS.bytes_to_bits(total_bytes)
             self.last_ue_transmitted_bits[ueid] = transmitted_bits
             ue.UPD_DL_THROUGHPUT_BPS(transmitted_bits, time_interval_ms)
 
@@ -1027,10 +1042,18 @@ class SchedulerInterface:
             print("[SCHEDULER] Empty result: No UE to schedule")
         #TODO: можно добавить *reason чтобы возвращал в консоль причину
 
+        self.pdcch_manager.reset_tti()
         self._last_priority_list_full = []
+        self._last_priority_list = []
+        self._last_prioritized_users = []
+        self._last_priority_list_size = 0
+        self._last_avg_priority_value = 0.0
+        self._last_pdcch_blocked_count = 0
         self._update_stats(self._last_tti, 0, 0, 0)
+        self._save_timing_stats(0.0, 0.0, 0.0)
         self._last_allocation = {}
         self._last_users = []
+        self.last_ue_transmitted_bits = {}
 
         return {
             'allocation': {},
@@ -1968,9 +1991,51 @@ class RoundRobinScheduler(SchedulerInterface):
 
     def __init__(self, lte_grid, bs, **kwargs):
         super().__init__(lte_grid, bs, **kwargs)
-        self.rr_rbg_offset = 0 #можно сделать механизм без ротации RBG
-        self.rr_ue_offset = 0
         self.prefilter_strategy = PassThroughPrefilter("Round Robin distributes evenly")
+
+    @property
+    def rr_ue_offset(self) -> int:
+        """Смещение ротации очереди пользователей (хранится в self.state)."""
+        return self.state.rr_ue_offset
+
+    @rr_ue_offset.setter
+    def rr_ue_offset(self, value: int) -> None:
+        self.state.rr_ue_offset = value
+
+    @property
+    def rr_rbg_offset(self) -> int:
+        """Смещение ротации RBG (хранится в self.state)."""
+        return self.state.rr_rbg_offset
+
+    @rr_rbg_offset.setter
+    def rr_rbg_offset(self, value: int) -> None:
+        self.state.rr_rbg_offset = value
+
+    def _advance_ue_rotation(self, last_served_ue_id: Optional[int] = None) -> None:
+        """Сдвинуть очередь RR за последнего обслуженного UE или на одну позицию при нехватке PDCCH."""
+        priority_users = self._last_prioritized_users
+        population_size = len(priority_users)
+        if population_size == 0:
+            return
+
+        current_offset = self.state.rr_ue_offset % population_size
+        if last_served_ue_id is None:
+            step = 1
+        else:
+            last_served_idx = next(
+                (idx for idx, user in enumerate(priority_users)
+                 if user['UE_ID'] == last_served_ue_id),
+                None,
+            )
+            step = last_served_idx + 1 if last_served_idx is not None else 1
+
+        self.state.rr_ue_offset = (current_offset + step) % population_size
+
+    def _on_pdcch_allocation_failure(self, requested_ues: List[Dict]) -> None:
+        """Не допустить повторения того же порядка UE, если все запросы PDCCH отклонены."""
+        if requested_ues:
+            self._advance_ue_rotation()
+            self.state.rr_rbg_offset = 0
 
     def _calculate_priorities(self, windowed_ues: List[Dict], tti: int) -> List[Dict]:
         """
@@ -1985,7 +2050,7 @@ class RoundRobinScheduler(SchedulerInterface):
         else:
             ues_to_plan = num_ues
 
-        start_idx   = self.rr_ue_offset % num_ues
+        start_idx   = self.state.rr_ue_offset % num_ues
         rotated_ues = windowed_ues[start_idx:] + windowed_ues[:start_idx]
 
         for idx, user in enumerate(rotated_ues):
@@ -1993,7 +2058,7 @@ class RoundRobinScheduler(SchedulerInterface):
 
         if self.verbose:
             top_ue = rotated_ues[0]['UE_ID']
-            print(f"[SCHEDULER.RoundRobin TTI {tti}] Priority: Rotated (start UE {top_ue}, offset={self.rr_ue_offset})")
+            print(f"[SCHEDULER.RoundRobin TTI {tti}] Priority: Rotated (start UE {top_ue}, offset={self.state.rr_ue_offset})")
 
         return rotated_ues
 
@@ -2019,44 +2084,51 @@ class RoundRobinScheduler(SchedulerInterface):
         if num_ues == 0:
             return allocation
 
-        eligible_ids = [ue['UE_ID'] for ue in eligible_ues]
-        ue_index     = self.rr_rbg_offset
-        last_served_idx = -1
+        remaining_buffer = {ue['UE_ID']: ue['bs_buffer_size'] for ue in ues_with_pdcch}
+        ue_index = self.state.rr_rbg_offset
+        last_served_ue_id = None
 
         for rbg_idx in range(total_rbg):
             ue    = ues_with_pdcch[ue_index % num_ues]
             ue_id = ue['UE_ID']
 
-            if ue['bs_buffer_size'] > 0:
+            if remaining_buffer[ue_id] > 0:
                 if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, ue_id):
                     rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
                     allocation[ue_id].extend(rb_indices)
-
-                    try:
-                        current_idx = eligible_ids.index(ue_id)
-                        if current_idx > last_served_idx:
-                            last_served_idx = current_idx
-                    except ValueError:
-                        pass
+                    last_served_ue_id = ue_id
 
                     cqi                 = self._get_wb_cqi(ue_id)
                     bits_per_rb         = self.amc.GET_BITS_PER_RB(cqi)
                     transmitted_bits    = len(rb_indices) * bits_per_rb
                     transmitted_bytes   = transmitted_bits // 8
-                    ue['bs_buffer_size'] = max(0, ue['bs_buffer_size'] - transmitted_bytes)
+                    remaining_buffer[ue_id] = max(0, remaining_buffer[ue_id] - transmitted_bytes)
 
             ue_index += 1
 
-        self.rr_rbg_offset = ue_index % num_ues
-
-        if last_served_idx >= 0 and len(eligible_ues) > 0:
-            self.rr_ue_offset = (last_served_idx + 1) % len(eligible_ues)
+        # Если активных UE больше, чем UE, получивших PDCCH,
+        # часть пользователей не попала в список из-за max_dl_ue_tti или ограничения CCE.
+        # Сдвигаем очередь на одну позицию, чтобы пропущенные пользователи дошли до начала.
+        priority_population_size = len(self._last_prioritized_users)
+        if priority_population_size > num_ues:
+            self._advance_ue_rotation()
+            self.state.rr_rbg_offset = 0
+        elif last_served_ue_id is not None:
+            # Если все активные UE получили PDCCH, продолжаем после пользователя,
+            # который фактически получил последний RBG, а не после индекса в исходном списке.
+            self._advance_ue_rotation(last_served_ue_id)
+            self.state.rr_rbg_offset = ue_index % num_ues
+        else:
+            # Если RBG не выделен (например, буфер уже пуст), не закрепляем
+            # на следующий TTI тот же порядок пользователей.
+            self._advance_ue_rotation()
+            self.state.rr_rbg_offset = 0
 
         if self.verbose:
             allocated_ues = sum(1 for rbs in allocation.values() if len(rbs) > 0)
             total_rb = sum(len(rbs) for rbs in allocation.values())
             print(f"[SCHEDULER.RoundRobin TTI {tti}] PDSCH: {allocated_ues} UE, {total_rb} RB total "
-                  f"(next_offset={self.rr_rbg_offset})")
+                  f"(next_offset={self.state.rr_rbg_offset})")
 
         return allocation
 
@@ -2326,9 +2398,25 @@ class FDxFairGreedyScheduler(SchedulerInterface):
 
     def __init__(self, lte_grid, bs, **kwargs):
         super().__init__(lte_grid, bs, **kwargs)
-        self.rr_rbg_offset = 0 #можно сделать механизм без ротации RBG
-        self.rr_ue_offset = 0
         self.prefilter_strategy = PassThroughPrefilter("FD-FGS per-RBG selection")
+
+    @property
+    def rr_ue_offset(self) -> int:
+        """Смещение ротации очереди пользователей (хранится в self.state)."""
+        return self.state.rr_ue_offset
+
+    @rr_ue_offset.setter
+    def rr_ue_offset(self, value: int) -> None:
+        self.state.rr_ue_offset = value
+
+    @property
+    def rr_rbg_offset(self) -> int:
+        """Смещение ротации RBG (хранится в self.state)."""
+        return self.state.rr_rbg_offset
+
+    @rr_rbg_offset.setter
+    def rr_rbg_offset(self, value: int) -> None:
+        self.state.rr_rbg_offset = value
 
     def _calculate_priorities(self, windowed_ues: List[Dict], tti: int) -> List[Dict]:
         """
@@ -2347,7 +2435,7 @@ class FDxFairGreedyScheduler(SchedulerInterface):
         else:
             ues_to_plan = num_ues
 
-        start_idx   = self.rr_ue_offset % num_ues
+        start_idx   = self.state.rr_ue_offset % num_ues
         rotated_ues = windowed_ues[start_idx:] + windowed_ues[:start_idx]
 
         for idx, user in enumerate(rotated_ues):
@@ -2355,7 +2443,7 @@ class FDxFairGreedyScheduler(SchedulerInterface):
 
         if self.verbose:
             top_ue = rotated_ues[0]['UE_ID']
-            print(f"[SCHEDULER.FDxFGS TTI {tti}] Priority: Rotated (start UE {top_ue}, offset={self.rr_ue_offset})")
+            print(f"[SCHEDULER.FDxFGS TTI {tti}] Priority: Rotated (start UE {top_ue}, offset={self.state.rr_ue_offset})")
 
         return rotated_ues
 
@@ -2376,7 +2464,7 @@ class FDxFairGreedyScheduler(SchedulerInterface):
             return allocation
 
         eligible_id_map = {ue['UE_ID']: idx for idx, ue in enumerate(eligible_ues)}
-        ue_index        = self.rr_rbg_offset
+        ue_index        = self.state.rr_rbg_offset
         last_served_idx = -1
 
         remaining_buffer = {
@@ -2448,15 +2536,15 @@ class FDxFairGreedyScheduler(SchedulerInterface):
                 current_idx = eligible_id_map.get(ue_id, -1)
                 last_served_idx = current_idx
 
-        self.rr_rbg_offset = ue_index % num_ues
+        self.state.rr_rbg_offset = ue_index % num_ues
         if last_served_idx >= 0 and len(eligible_ues) > 0:
-            self.rr_ue_offset = (last_served_idx + 1) % len(eligible_ues)
+            self.state.rr_ue_offset = (last_served_idx + 1) % len(eligible_ues)
 
         if self.verbose:
             allocated_ues = sum(1 for rbs in allocation.values() if len(rbs) > 0)
             total_rb      = sum(len(rbs) for rbs in allocation.values())
             print(f"[SCHEDULER.FDхFGS TTI {tti}] PDSCH: {allocated_ues} UE, {total_rb} RB total "
-                  f"(next_offset={self.rr_rbg_offset})")
+                  f"(next_offset={self.state.rr_rbg_offset})")
 
         return allocation
 
@@ -3151,6 +3239,14 @@ class QosAwareScheduler(SchedulerInterface):
 #==============================================================================
 #                    ИНТЕРФЕЙСЫ СТРАТЕГИЙ И VIEW-АДАПТЕРЫ
 #==============================================================================
+
+@dataclass(slots=True)
+class SchedulerState:
+    """Явное состояние ротации планировщика (шаги M2a/M2b)."""
+
+    rr_ue_offset: int = 0
+    rr_rbg_offset: int = 0
+
 
 class CqiView(Protocol):
     """Контракт чтения широкополосного (WB) и подполосного (SB) CQI."""
