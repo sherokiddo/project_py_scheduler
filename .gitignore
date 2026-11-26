@@ -8,7 +8,20 @@ PyScheduler/emp_stats_qos.csv
 PyScheduler/emp_stats.json
 PyScheduler/emp_stats_detailed.json
 PyScheduler/stats.csv
+PyScheduler/lte_stats.csv
 PyScheduler/output.txt
 .spyproject/**
 *.log
 logs/
+.git.accidental-backup/
+# Результаты запуска из корня репозитория
+/emp_stats.csv
+/emp_stats_detailed.csv
+/emp_stats_qos.csv
+/emp_stats.json
+/emp_stats_detailed.json
+/lte_stats.csv
+/output.txt
+
+# Кэш pytest
+.pytest_cache/
