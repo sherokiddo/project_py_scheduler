@@ -349,7 +349,6 @@ class SchedulerInterface:
         self.state = SchedulerState()
         self._cqi_view = LegacyCqiView(self)
         self._grid_view = LegacyGridView(self.lte_grid)
-        self._amc_view = LegacyAmcView(self.amc)
         # Стратегию prefilter каждый алгоритм задаёт явно в своём __init__
         # (DefaultPrefilter или PassThroughPrefilter): неявного значения по умолчанию нет,
         # чтобы новый планировщик не унаследовал 95%-фильтрацию случайно.
@@ -357,6 +356,17 @@ class SchedulerInterface:
 
         if self.verbose:
             print(f"[SCHEDULER] Initialized {self.__class__.__name__}")
+
+    @property
+    def amc(self) -> AdaptiveModulationAndCoding:
+        """Текущий модуль AMC."""
+        return self._amc
+
+    @amc.setter
+    def amc(self, value: AdaptiveModulationAndCoding) -> None:
+        self._amc = value
+        self._amc_view = LegacyAmcView(value)
+        self.amc_view = self._amc_view
 
     def schedule(self, tti: int, users: List[Dict]) -> Dict:
         """
@@ -911,8 +921,6 @@ class SchedulerInterface:
             # блока (на основе allocated_rbs и MCS), но пока что у нас этого нет
             max_bits  = allocated_rbs * bits_per_rb
             max_bytes = max_bits // GLOBALS.BITS_PER_BYTE
-            #ВНИМАНИЕ! Временный костыль.
-            remainder_bits = max_bits % GLOBALS.BITS_PER_BYTE
 
             if max_bytes <= 0:
                 ue.UPD_DL_THROUGHPUT_BPS(0, time_interval_ms)
@@ -954,7 +962,7 @@ class SchedulerInterface:
 
                 qci_tput_tracker.update_all_qcis(ueid, bytes_per_qci)
 
-            transmitted_bits = GLOBALS.bytes_to_bits(total_bytes) + remainder_bits
+            transmitted_bits = GLOBALS.bytes_to_bits(total_bytes)
             self.last_ue_transmitted_bits[ueid] = transmitted_bits
             ue.UPD_DL_THROUGHPUT_BPS(transmitted_bits, time_interval_ms)
 
@@ -1030,10 +1038,18 @@ class SchedulerInterface:
             print("[SCHEDULER] Empty result: No UE to schedule")
         #TODO: можно добавить *reason чтобы возвращал в консоль причину
 
+        self.pdcch_manager.reset_tti()
         self._last_priority_list_full = []
+        self._last_priority_list = []
+        self._last_prioritized_users = []
+        self._last_priority_list_size = 0
+        self._last_avg_priority_value = 0.0
+        self._last_pdcch_blocked_count = 0
         self._update_stats(self._last_tti, 0, 0, 0)
+        self._save_timing_stats(0.0, 0.0, 0.0)
         self._last_allocation = {}
         self._last_users = []
+        self.last_ue_transmitted_bits = {}
 
         return {
             'allocation': {},
@@ -2038,38 +2054,32 @@ class RoundRobinScheduler(SchedulerInterface):
         if num_ues == 0:
             return allocation
 
-        eligible_ids = [ue['UE_ID'] for ue in eligible_ues]
-        ue_index     = self.state.rr_rbg_offset
-        last_served_idx = -1
+        remaining_buffer = {ue['UE_ID']: ue['bs_buffer_size'] for ue in ues_with_pdcch}
+        ue_index = self.state.rr_rbg_offset
 
         for rbg_idx in range(total_rbg):
             ue    = ues_with_pdcch[ue_index % num_ues]
             ue_id = ue['UE_ID']
 
-            if ue['bs_buffer_size'] > 0:
+            if remaining_buffer[ue_id] > 0:
                 if self.lte_grid.ALLOCATE_RBG(tti, rbg_idx, ue_id):
                     rb_indices = self.lte_grid.GET_RBG_INDICES(rbg_idx)
                     allocation[ue_id].extend(rb_indices)
-
-                    try:
-                        current_idx = eligible_ids.index(ue_id)
-                        if current_idx > last_served_idx:
-                            last_served_idx = current_idx
-                    except ValueError:
-                        pass
 
                     cqi                 = self._get_wb_cqi(ue_id)
                     bits_per_rb         = self.amc.GET_BITS_PER_RB(cqi)
                     transmitted_bits    = len(rb_indices) * bits_per_rb
                     transmitted_bytes   = transmitted_bits // 8
-                    ue['bs_buffer_size'] = max(0, ue['bs_buffer_size'] - transmitted_bytes)
+                    remaining_buffer[ue_id] = max(0, remaining_buffer[ue_id] - transmitted_bytes)
 
             ue_index += 1
 
-        self.state.rr_rbg_offset = ue_index % num_ues
-
-        if last_served_idx >= 0 and len(eligible_ues) > 0:
-            self.state.rr_ue_offset = (last_served_idx + 1) % len(eligible_ues)
+        if len(eligible_ues) > 0 and len(ues_with_pdcch) < len(eligible_ues):
+            # При нехватке PDCCH сдвигаем очередь на 1 без двойной ротации RBG
+            self.state.rr_ue_offset = (self.state.rr_ue_offset + 1) % len(eligible_ues)
+            self.state.rr_rbg_offset = 0
+        else:
+            self.state.rr_rbg_offset = ue_index % num_ues
 
         if self.verbose:
             allocated_ues = sum(1 for rbs in allocation.values() if len(rbs) > 0)
